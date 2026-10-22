@@ -55,7 +55,7 @@
          (%spec-blen s))))
     (List append
       (List filter (fn (_ r) (not (str=? (List ref 1 r) "")))
-        (List map (fn (_ r) (list r (trim (vt-row h r)))) (List range 0 24)))
+        (List map (fn (_ r) (list r (trim (vt-row h r)))) (List range 0 (first (vt-size h)))))
       (list (list 'cursor (first (vt-cursor h)) (rest (vt-cursor h)))))))
 
 ; TEXT's screen by tmux/vt's engine, as spec-rows reads it.

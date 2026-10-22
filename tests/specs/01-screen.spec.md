@@ -369,3 +369,24 @@ what every sequence does from there.
 ```
 ---
     ("^[1;1H^[0mab^[0;31mc^[0m                                                                             ^[3;1H^[0;31mz^[0m                                                                               " 0)
+
+### a render at an origin puts each row's cursor move where the screen sits on the terminal
+
+```tmux
+(do (def h (vt-origin! (vt-make 2 10) 12 41))
+    (spec-feed! vt-feed-pure! h "ab")
+    (def n (vt-render-pure! h))
+    (write (spec-rendered h n)))
+```
+---
+    "^[13;42H^[0mab        ^[14;42H^[0m          "
+
+### a screen carried to a new size keeps its cells where they fit, its cursor and its origin
+
+```tmux
+(do (def h (vt-origin! (spec-screen vt-feed-pure! "one\r\ntwo\r\nthree") 3 4))
+    (def n (vt-carry h 2 3))
+    (write (list (spec-rows n) (vt-size n))))
+```
+---
+    (((0 "one") (1 "two") ('cursor 1 3)) (2 . 3))

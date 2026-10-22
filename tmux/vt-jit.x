@@ -27,7 +27,7 @@
 
 (module tmux/vt-jit)
 
-(import tmux/vt vt-make vt-row vt-attrs vt-cursor vt-out vt-feed-pure! vt-render-pure!
+(import tmux/vt vt-make vt-origin! vt-row vt-attrs vt-cursor vt-out vt-feed-pure! vt-render-pure!
   vt-feed-compiled! vt-render-compiled! vt-adopt!)
 (import x/tool/jit-group jit-group)
 
@@ -39,7 +39,8 @@
         (pair 'SROW 18) (pair 'SCOL 19)
         (pair 'IN 40) (pair 'POS 41) (pair 'END 42) (pair 'MODE 43) (pair 'K 44)
         (pair 'J 45) (pair 'X 46) (pair 'NMODE 47) (pair 'NK 48) (pair 'NJ 49) (pair 'B 50)
-        (pair 'OUT 6) (pair 'RR 51) (pair 'RC 52) (pair 'RS 53) (pair 'RO 54) (pair 'RA 55)))
+        (pair 'OUT 6) (pair 'RR 51) (pair 'RC 52) (pair 'RS 53) (pair 'RO 54) (pair 'RA 55)
+        (pair 'OROW 56) (pair 'OCOL 57)))
 (def %vj-params 20)
 
 (def %vj-word (fn (_ name) (Assoc entry name %vj-words)))
@@ -93,6 +94,12 @@
             (self (list 'if (list '< (List ref 1 e) (List ref 2 e)) (List ref 1 e) (List ref 2 e))))
           ((eq? (first e) 'LF)
             (self '(if (= ROW BOT) (SCROLL-UP TOP BOT 1) (if (< ROW (- ROWS 1)) (set ROW (+ ROW 1)) 0))))
+          ((eq? (first e) 'DIGITS)
+            ; a number of at most three digits, in decimal
+            (self (list 'do (list 'set 'X (List ref 1 e))
+                    '(if (< X 10) (EMIT (+ 48 X))
+                       (if (< X 100) (do (EMIT (+ 48 (/ X 10))) (EMIT (+ 48 (% X 10))))
+                         (do (EMIT (+ 48 (/ X 100))) (EMIT (+ 48 (% (/ X 10) 10))) (EMIT (+ 48 (% X 10)))))))))
           ((eq? (first e) 'EMIT)
             (self (list 'do (list '%mem-byte-set-at! 'OUT 'RO (List ref 1 e)) '(set RO (+ RO 1)))))
           ((eq? (first e) 'PUSH)
@@ -279,11 +286,10 @@
          ((= (%mem-byte-ref-at DIRTY RR) 0) (do (set RR (+ RR 1)) (self a)))
          ((= RS 0)
            (do (EMIT 27) (EMIT 91)
-               (set X (+ RR 1))
-               (if (< X 10) (EMIT (+ 48 X))
-                 (if (< X 100) (do (EMIT (+ 48 (/ X 10))) (EMIT (+ 48 (% X 10))))
-                   (do (EMIT (+ 48 (/ X 100))) (EMIT (+ 48 (% (/ X 10) 10))) (EMIT (+ 48 (% X 10))))))
-               (EMIT 59) (EMIT 49) (EMIT 72)
+               (DIGITS (+ RR (+ 1 OROW)))
+               (EMIT 59)
+               (DIGITS (+ 1 OCOL))
+               (EMIT 72)
                (set RC 0) (set RS 1)
                (self a)))
          ((= RC COLS)
@@ -404,12 +410,13 @@
       #f)))
 
 ; An exercise fed to two 24x80 screens in reads of CHUNK bytes, one by
-; tmux/vt's engine and one by ENGINE, each read rendered by both.  Answers
-; #t, or the byte offset after the first read they disagree on.
+; tmux/vt's engine and one by ENGINE, each read rendered by both at
+; terminal row 2, column 41, as a pane is.  Answers #t, or the byte
+; offset after the first read they disagree on.
 (def vt-agree
   (fn (_ engine ex chunk)
-    (def a (vt-make 24 80))
-    (def b (vt-make 24 80))
+    (def a (vt-origin! (vt-make 24 80) 2 41))
+    (def b (vt-origin! (vt-make 24 80) 2 41))
     (def base (%ptr->int (%str->ptr (first ex))))
     (def len (rest ex))
     ((fn (self at)
@@ -437,7 +444,7 @@
 ; change to them.
 (def vt-jit-make
   (fn (_)
-    (jit-group "x-tmux-vt-2" (fn (_) (list (vt-jit-form) (vt-render-form)))
+    (jit-group "x-tmux-vt-3" (fn (_) (list (vt-jit-form) (vt-render-form)))
       (fn (_ fns replayed?)
         (def engine (pair (first fns) (first (rest fns))))
         (unless replayed?
