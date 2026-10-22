@@ -53,12 +53,15 @@
 ; cursor and the parser.  PARAMS holds up to 16 CSI parameters.  Words 40
 ; on are the compiled engine's (tmux/vt-jit names them): IN, POS and END
 ; its input, 51 to 54 its render's row, column, state and output count.
+; Words 56 and 57 are where on the terminal a render puts the screen's
+; top-left cell, a row and a column from 0.
 (def %ROWS 0) (def %COLS 8) (def %CP 16) (def %AP 24) (def %DP 32) (def %SP 40)
 (def %OP 48) (def %ONE 56) (def %ROW 64) (def %COL 72) (def %ATTR 88)
 (def %STATE 96) (def %NUM 104) (def %NP 112) (def %PRIVATE 120) (def %TOP 128)
 (def %BOTTOM 136) (def %SROW 144) (def %SCOL 152) (def %PARAMS 160)
 (def %IN 320) (def %POS 328) (def %END 336)
-(def %RR 408) (def %RC 416) (def %RS 424) (def %RO 432) (def %WORDS 64)
+(def %RR 408) (def %RC 416) (def %RS 424) (def %RO 432)
+(def %OROW 448) (def %OCOL 456) (def %WORDS 64)
 
 (def %w (fn (_ s o) (%pref s o 8)))
 (def %w! (fn (_ s o x) (%pset s o x 8)))
@@ -396,7 +399,8 @@
 (def %render-row!
   (fn (_ s r at)
     (if (= (%pref (%addr s %DP) r 1) 0) at
-      (%render-runs! s r 0 (%b! (%b! (%b! (%dec! (%b! (%b! at 27) 91) (+ r 1)) 59) 49) 72)))))
+      (%render-runs! s r 0
+        (%b! (%dec! (%b! (%dec! (%b! (%b! at 27) 91) (+ r (+ 1 (%w s %OROW)))) 59) (+ 1 (%w s %OCOL))) 72)))))
 (def %render-runs!
   (fn (self s r c at)
     (if (= c (%w s %COLS)) at
@@ -415,6 +419,43 @@
 
 (def vt-out (fn (_ h) (%addr (rest h) %OP)))
 (def vt-cursor (fn (_ h) (pair (%w (rest h) %ROW) (%w (rest h) %COL))))
+(def vt-size (fn (_ h) (pair (%w (rest h) %ROWS) (%w (rest h) %COLS))))
+
+; Where a render puts the screen: its top-left cell at terminal row ROW,
+; column COL, each from 0.
+(def vt-origin!
+  (fn (_ h row col)
+    (%w! (rest h) %OROW row)
+    (%w! (rest h) %OCOL col)
+    h))
+
+; Every row marked, so the next render writes the whole screen.
+(def vt-touch!
+  (fn (_ h)
+    (def s (rest h))
+    (%call %c-memset (%addr s %DP) 1 (%w s %ROWS))
+    h))
+
+; A new screen of ROWS x COLS with H's cells and attributes where they
+; fit, its cursor, attribute and origin; a pane resized.  The scroll
+; region is the whole new screen.
+(def vt-carry
+  (fn (_ h rows cols)
+    (def n (vt-make rows cols))
+    (def s (rest h))
+    (def t (rest n))
+    (def keep-rows (%min rows (%w s %ROWS)))
+    (def keep-cols (%min cols (%w s %COLS)))
+    ((fn (self r)
+       (when (< r keep-rows)
+         (do (%call %c-memcpy (%at t %CP r 0) (%at s %CP r 0) keep-cols)
+             (%call %c-memcpy (%at t %AP r 0) (%at s %AP r 0) keep-cols)
+             (self (+ r 1)))))
+     0)
+    (%w! t %ROW (%min (%w s %ROW) (- rows 1)))
+    (%w! t %COL (%min (%w s %COL) cols))
+    (%w! t %ATTR (%w s %ATTR))
+    (vt-origin! n (%w s %OROW) (%w s %OCOL))))
 (def vt-row
   (fn (_ h r)
     (def s (rest h))
@@ -454,5 +495,6 @@
   (fn (_ h)
     (if (null? %engine) (vt-render-pure! h) (vt-render-compiled! (rest %engine) h))))
 
-(provide tmux/vt vt-make vt-feed! vt-render! vt-out vt-cursor vt-row vt-attrs
-  vt-feed-pure! vt-render-pure! vt-feed-compiled! vt-render-compiled! vt-adopt! vt-compiled?)
+(provide tmux/vt vt-make vt-feed! vt-render! vt-out vt-cursor vt-size vt-origin! vt-touch! vt-carry
+  vt-row vt-attrs vt-feed-pure! vt-render-pure! vt-feed-compiled! vt-render-compiled! vt-adopt!
+  vt-compiled?)

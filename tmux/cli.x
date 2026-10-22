@@ -6,10 +6,13 @@
 ; @copyright 2026 Jon Ruttan
 ; @license MIT No Attribution (MIT-0)
 ;
-; Sessions and panes are still to come.  What is here is the screen's
-; engine and the `vt` commands that exercise it:
+; tmux's commands, as far as they are here:
 ;
-;   vt check FILE         FILE fed in 4096-byte reads to a screen by
+;   new-session, new      a window of panes on this terminal (tmux/session)
+;
+; and the `vt` commands that exercise the screen's engine:
+;
+;   vt check FILE        FILE fed in 4096-byte reads to a screen by
 ;                         tmux/vt's engine and to one by the compiled
 ;                         engine, compared after each read
 ;   vt bench FILE         FILE fed and rendered by each engine, timed
@@ -22,6 +25,7 @@
 (import tmux/vt vt-make vt-feed! vt-render! vt-row vt-cursor vt-feed-pure! vt-render-pure!
   vt-feed-compiled! vt-render-compiled! vt-adopt!)
 (import tmux/vt-jit vt-jit-make vt-exercise vt-same?)
+(import tmux/session tmux-session)
 
 (def %clock (prim-ref (lit sys) (lit clock)))
 (def %make-str (prim-ref (lit str) (lit make)))
@@ -110,20 +114,22 @@
 
 (def %usage
   (fn (_)
-    (%write 2 "usage: x -l tmux -- vt check|bench|dump FILE | vt exercise SEED N\n")
+    (%write 2 "usage: x -l tmux -- new-session | vt check|bench|dump FILE | vt exercise SEED N\n")
     2))
 
 ; The command line run; answers the exit status.
 (def tmux-main
   (fn (_ ops)
     (def arg (fn (_ i) (if (< i (List length ops)) (List ref i ops) ())))
-    (if (if (str=? (first ops) "vt") (not (null? (arg 2))) #f)
-      (match
-        ((str=? (arg 1) "check") (%check (arg 2)))
-        ((str=? (arg 1) "bench") (%bench (arg 2)))
-        ((str=? (arg 1) "dump") (%dump (arg 2)))
-        ((if (str=? (arg 1) "exercise") (not (null? (arg 3))) #f) (%exercise (%int (arg 2)) (%int (arg 3))))
-        (#t (%usage)))
-      (%usage))))
+    (match
+      ((if (str=? (first ops) "new-session") #t (str=? (first ops) "new")) (tmux-session))
+      ((if (str=? (first ops) "vt") (not (null? (arg 2))) #f)
+        (match
+          ((str=? (arg 1) "check") (%check (arg 2)))
+          ((str=? (arg 1) "bench") (%bench (arg 2)))
+          ((str=? (arg 1) "dump") (%dump (arg 2)))
+          ((if (str=? (arg 1) "exercise") (not (null? (arg 3))) #f) (%exercise (%int (arg 2)) (%int (arg 3))))
+          (#t (%usage))))
+      (#t (%usage)))))
 
 (provide tmux/cli tmux-main)

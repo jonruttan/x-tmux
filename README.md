@@ -4,11 +4,29 @@ A terminal multiplexer on x-lang, after tmux, as a lang bundle.
 
     x -l tmux -- [COMMAND [ARGS]]
 
-Sessions and panes are still to come.  What is here is the screen every
-pane will keep: the bytes a program writes, read as a terminal reads
-them, into a grid of cells and attributes, and the rows that changed
-rendered back out as a terminal redraws them.  tmux is what it is
-tested against.
+`new-session` (or `new`) opens a window of panes on the terminal it runs
+in, each a shell on a pseudo-terminal, laid out and bordered as tmux lays
+out its panes, with tmux's status line.  Each pane keeps a screen: the
+bytes its program writes, read as a terminal reads them, into a grid of
+cells and attributes, and the rows that changed rendered back out at the
+pane's place.  tmux is what it is tested against.
+
+## Panes
+
+The prefix is C-b, and after it:
+
+    %     split the active pane left and right
+    "     split it top and bottom
+    o     the next pane
+    x     kill the active pane
+    d     leave, ending the panes
+    C-b   a C-b to the pane
+
+A pane whose shell exits is removed and its space given to its sibling;
+the window follows the terminal's size.  There is no server yet, so
+leaving ends the panes rather than detaching from them; and no
+alternate-screen save, so a full-screen program's last screen stays when
+it exits.
 
 ## The screen
 
@@ -29,6 +47,7 @@ and bracketed-paste modes.
 
 ## Commands
 
+    new-session, new      a window of panes on this terminal
     vt check FILE         FILE fed to a screen by each engine, compared
                           after every 4096-byte read
     vt bench FILE         FILE fed and rendered by each engine, timed
@@ -43,7 +62,14 @@ and bracketed-paste modes.
 `tests/specs/01-screen` pins the reference against what tmux 3.8 shows
 for the same bytes; `02-compiled` holds the compiled engine to the
 reference, read by read, on exercises fed in reads that end inside
-sequences.
+sequences; `03-layout` holds the split tree to the pane sizes tmux 3.8
+reports for the same splits.
+
+    X=/path/to/x sh tests/oracle/panes.sh
+
+runs x-tmux inside a real tmux pane, drives it with send-keys and reads
+it with capture-pane: typing, both splits, the next pane, a kill, a shell
+exiting, a resize and leaving, each pane's size checked by `stty size`.
 
 ## Install
 
