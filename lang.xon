@@ -1,0 +1,13 @@
+; lang.xon -- what this bundle is.
+
+(lang "tmux")
+
+; Self-contained: this bundle depends on nothing but the platform.
+;
+; Helium, plus exactly the libraries this bundle imports and nothing
+; ambient: a screen is bytes and words, none of the tower.
+(dialect he)
+
+(requires-release "v0.35.0")
+
+(entry "run.x")
