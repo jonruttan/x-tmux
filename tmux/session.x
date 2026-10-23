@@ -26,7 +26,8 @@
 (import tmux/vt vt-make vt-feed! vt-render! vt-out vt-cursor vt-size vt-origin! vt-touch! vt-carry)
 (import tmux/vt-jit vt-jit!)
 (import tmux/layout layout-rects layout-borders layout-split layout-remove layout-panes)
-(import tmux/pty pty-spawn pty-window!)
+(import x/sys/file)
+(import x/sys/pty)
 
 (def %make-str (prim-ref (lit str) (lit make)))
 (def %str->ptr (prim-ref (lit str) (lit ->ptr)))
@@ -85,6 +86,21 @@
 
 ; --- panes --------------------------------------------------------------
 
+; SHELL, or /bin/sh, on a new pseudo-terminal of COLS x ROWS with TERM
+; screen: (PID . MASTER), the master non-blocking, or nil.  The child
+; closes the other panes' masters.
+(def %shell
+  (fn (_ cols rows)
+    (def child (Pty fork cols rows (List map %pane-fd %panes)))
+    (match
+      ((null? child) ())
+      ((= (first child) 0)
+        (do (Sys setenv "TERM" "screen")
+            (def shell ((fn (_ s) (if (if (null? s) #t (= (Str8 length s) 0)) "/bin/sh" s)) (Sys getenv "SHELL")))
+            (Sys exec shell ())
+            (Sys exit 127)))
+      (#t (do (Sys nonblock! (rest child)) child)))))
+
 ; A shell in a new pane of RECT, numbered next.
 (def %spawn!
   (fn (_ rect)
@@ -92,7 +108,7 @@
     (set! %next (+ %next 1))
     (def rows (List ref 2 rect))
     (def cols (List ref 3 rect))
-    (def child (pty-spawn cols rows "screen" (List map %pane-fd %panes)))
+    (def child (%shell cols rows))
     (when (null? child) (Err raise 'io "x-tmux: no pseudo-terminal for a pane" ()))
     (def screen (vt-origin! (vt-make rows cols) (first rect) (List ref 1 rect)))
     (set! %panes (List append %panes (list (list id (first child) (rest child) screen rect))))
@@ -113,7 +129,7 @@
         (def screen
           (if (if (= (first (vt-size old)) rows) (= (rest (vt-size old)) cols) #f)
             old
-            (do (pty-window! (%pane-fd p) cols rows) (vt-carry old rows cols))))
+            (do (Pty window! (%pane-fd p) cols rows) (vt-carry old rows cols))))
         (vt-origin! screen (first rect) (List ref 1 rect))
         (vt-touch! screen)
         (%set-pane! (list (%pane-id p) (%pane-pid p) (%pane-fd p) screen rect)))
