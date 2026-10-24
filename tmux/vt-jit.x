@@ -44,7 +44,8 @@
         (pair 'OROW 56) (pair 'OCOL 57)
         (pair 'SC 36) (pair 'SA 37) (pair 'ALT 38) (pair 'ASAVED 39)
         (pair 'AROW 58) (pair 'ACOL 59) (pair 'AATTR 60)
-        (pair 'EXT 10) (pair 'SEXT 61) (pair 'UNEED 63) (pair 'RX 65) (pair 'RN 66)))
+        (pair 'EXT 10) (pair 'SEXT 61) (pair 'UNEED 63) (pair 'RX 65) (pair 'RN 66)
+        (pair 'MAP 67) (pair 'SMAP 68) (pair 'RT 70) (pair 'RE 71) (pair 'RH 72) (pair 'RB 73)))
 (def %vj-params 20)
 
 ; A cell's extended slot copied with it when the cell holds a character
@@ -65,7 +66,15 @@
 ; (descending), 5 apply SGR parameter K, 6 save cells K..J-1 to the
 ; alternate screen's buffers, 7 restore them, 8 look from parameter K for
 ; one naming an alternate screen, 9 blank cells K..J-1 with the default
-; attribute.  A copy chains to NMODE with NK and NJ when it ends.
+; attribute, 10 blank the screen's rows RT..RE-1, 11 turn the map's rows
+; K..RE up one X times, 12 down, 13 save the map then the cells, 14
+; restore the map.  Modes 1, 2, 3, 7 and 10 chain to NMODE with NK and NJ
+; when they end.
+;
+; Cells are found through the row map, (CELL ROW COL), and the dirty
+; marks go by the screen's rows: an edit within a row marks it as it
+; starts, and the modes that walk cells mark none, except the alternate
+; screen's, which cover every row.
 (def %vj-expand
   (fn (self e)
     (if (symbol? e)
@@ -87,26 +96,22 @@
             (self (list 'do
                     (list 'set 'ROW (list 'CLAMP (List ref 1 e) '(- ROWS 1)))
                     (list 'set 'COL (list 'CLAMP (List ref 2 e) '(- COLS 1))))))
-          ((eq? (first e) 'BLANK)
-            (self (list 'do (list 'set 'K (List ref 1 e)) (list 'set 'J (List ref 2 e))
-                    '(set NMODE 0) '(set MODE 1))))
+          ((eq? (first e) 'ROWAT) (self (list '%mem-ref-at 'MAP (List ref 1 e))))
+          ((eq? (first e) 'CELL) (self (list '+ (list '* (list 'ROWAT (List ref 1 e)) 'COLS) (List ref 2 e))))
+          ((eq? (first e) 'BLANK-IN-ROW)
+            ; the cursor's row's columns A..B-1 blanked, the row marked
+            (self (list 'do (list 'set 'K (list 'CELL 'ROW (List ref 1 e))) (list 'set 'J (list 'CELL 'ROW (List ref 2 e)))
+                    '(%mem-byte-set-at! DIRTY ROW 1) '(set NMODE 0) '(set MODE 1))))
+          ((eq? (first e) 'BLANK-ROWS)
+            (self (list 'do (list 'set 'RT (List ref 1 e)) (list 'set 'RE (List ref 2 e))
+                    '(set K 0) '(set J 0) '(set NMODE 0) '(set MODE 10))))
           ((eq? (first e) 'SCROLL-UP)
-            ; rows TOP..BOT up N: copy, then blank the freed rows
+            ; rows TOP..BOT up N: the map turned, a freed row blanked a turn
             (self (list 'do (list 'set 'X (list 'MIN (List ref 3 e) (list '+ (list '- (List ref 2 e) (List ref 1 e)) 1)))
-                    (list 'set 'K (list '* (List ref 1 e) 'COLS))
-                    (list 'set 'J (list '* (list '+ (List ref 1 e) 'X) 'COLS))
-                    (list 'set 'NK (list '* (list '+ (list '- (List ref 2 e) 'X) 1) 'COLS))
-                    (list 'set 'NJ (list '* (list '+ (List ref 2 e) 1) 'COLS))
-                    (list 'set 'X (list '* (list '- (list '+ (list '- (List ref 2 e) (List ref 1 e)) 1) 'X) 'COLS))
-                    '(set NMODE 1) '(set MODE 2))))
+                    (list 'set 'K (List ref 1 e)) (list 'set 'RE (List ref 2 e)) '(set J 0) '(set MODE 11))))
           ((eq? (first e) 'SCROLL-DOWN)
             (self (list 'do (list 'set 'X (list 'MIN (List ref 3 e) (list '+ (list '- (List ref 2 e) (List ref 1 e)) 1)))
-                    (list 'set 'NK (list '* (List ref 1 e) 'COLS))
-                    (list 'set 'NJ (list '* (list '+ (List ref 1 e) 'X) 'COLS))
-                    (list 'set 'K (list '- (list '* (list '+ (List ref 2 e) 1) 'COLS) 1))
-                    (list 'set 'J (list '- (list '* (list '+ (list '- (List ref 2 e) 'X) 1) 'COLS) 1))
-                    (list 'set 'X (list '* (list '- (list '+ (list '- (List ref 2 e) (List ref 1 e)) 1) 'X) 'COLS))
-                    '(set NMODE 1) '(set MODE 3))))
+                    (list 'set 'K (List ref 1 e)) (list 'set 'RE (List ref 2 e)) '(set J 0) '(set MODE 12))))
           ((eq? (first e) 'MIN)
             (self (list 'if (list '< (List ref 1 e) (List ref 2 e)) (List ref 1 e) (List ref 2 e))))
           ((eq? (first e) 'LF)
@@ -118,14 +123,13 @@
                     (list 'if '(= ALT 1) '(set MODE 0)
                       (list 'do (list 'set 'ASAVED (list 'if (list '= (List ref 1 e) 1049) 1 0))
                         '(set AROW ROW) '(set ACOL COL) '(set AATTR ATTR) '(set ALT 1)
-                        '(set K 0) '(set J (* ROWS COLS)) '(set NMODE 9) '(set NK 0) '(set NJ (* ROWS COLS))
-                        '(set MODE 6)))
+                        '(set K 0) '(set MODE 13)))
                     (list 'if '(= ALT 0) '(set MODE 0)
                       (list 'do
                         (list 'if (list 'and (list '= (List ref 1 e) 1049) '(= ASAVED 1))
                           '(do (set ROW AROW) (set COL ACOL) (set ATTR AATTR)) 0)
                         '(set ASAVED 0) '(set ALT 0)
-                        '(set K 0) '(set J (* ROWS COLS)) '(set NMODE 0) '(set NK 0) '(set NJ 0)
+                        '(set K 0) '(set J (* ROWS COLS)) '(set NMODE 14) '(set NK 0) '(set NJ 0)
                         '(set MODE 7))))))
           ((eq? (first e) 'DIGITS)
             ; a number of at most three digits, in decimal
@@ -140,33 +144,62 @@
                     '(set NP (+ NP 1)) '(set NUM -1))))
           (#t (List map self e)))))))
 
-; One cell of a mode's walk: its dirty row marked.
+; One cell of a mode's walk over the whole buffer: its row marked.
 (def %vj-dirty '(%mem-byte-set-at! DIRTY (/ K COLS) 1))
 (def %vj-chain '(do (set MODE NMODE) (set K NK) (set J NJ) (set NMODE 0)))
 
+; One turn of blanking cells K..J-1 with ATTR: a word where K is
+; word-aligned and eight remain, else a byte.
+(def %vj-blank-step
+  '(if (and (= (& K 7) 0) (< (+ K 7) J))
+     (do (%mem-set-at! CELLS (>> K 3) 2314885530818453536)
+         (%mem-set-at! ATTRS (>> K 3) (* ATTR 72340172838076673))
+         (set K (+ K 8)))
+     (do (%mem-byte-set-at! CELLS K 32) (%mem-byte-set-at! ATTRS K ATTR) (set K (+ K 1)))))
+
+; One turn of a map's turn, up (UP #t) or down: the end row set aside, a
+; row moved, and at the far end the set-aside row put back, marked, and
+; blanked by mode 1, which comes back here while X turns remain.
+(def %vj-turn
+  (fn (_ up)
+    (def from (if up '(+ RT 1) '(- RT 1)))
+    (def far (if up 'RE 'K))
+    (list 'if '(= J 0)
+      (list 'do (list 'set 'RH (list 'ROWAT (if up 'K 'RE))) (list 'set 'RT (if up 'K 'RE)) '(set J 1))
+      (list 'if (if up '(< RT RE) '(> RT K))
+        (list 'do (list '%mem-set-at! 'MAP 'RT (list 'ROWAT from)) '(%mem-byte-set-at! DIRTY RT 1)
+              (list 'set 'RT from))
+        (list 'do (list '%mem-set-at! 'MAP far 'RH) (list '%mem-byte-set-at! 'DIRTY far 1) '(set X (- X 1))
+              (list 'set 'NMODE (list 'if '(> X 0) (if up 11 12) 0)) '(set NK K) '(set NJ 0)
+              '(set K (* RH COLS)) '(set J (+ K COLS)) '(set MODE 1))))))
+
 (def %vj-modes
   (list 'match
-    ; a word a turn where both ends are word-aligned and eight remain,
-    ; else a byte; a word's two ends mark their rows
-    (list '(= MODE 1)
-      (list 'if '(< K J)
-        (list 'if '(and (= (& K 7) 0) (< (+ K 7) J))
-          (list 'do '(%mem-set-at! CELLS (>> K 3) 2314885530818453536)
-                '(%mem-set-at! ATTRS (>> K 3) (* ATTR 72340172838076673))
-                %vj-dirty '(%mem-byte-set-at! DIRTY (/ (+ K 7) COLS) 1) '(set K (+ K 8)))
-          (list 'do '(%mem-byte-set-at! CELLS K 32) '(%mem-byte-set-at! ATTRS K ATTR) %vj-dirty '(set K (+ K 1))))
-        '(set MODE 0)))
+    (list '(= MODE 1) (list 'if '(< K J) %vj-blank-step %vj-chain))
+    (list '(= MODE 10)
+      (list 'if '(< K J) %vj-blank-step
+        '(if (< RT RE)
+           (do (set K (CELL RT 0)) (set J (+ K COLS)) (%mem-byte-set-at! DIRTY RT 1) (set RT (+ RT 1)))
+           (do (set MODE NMODE) (set K NK) (set J NJ) (set NMODE 0)))))
+    (list '(= MODE 11) (%vj-turn #t))
+    (list '(= MODE 12) (%vj-turn #f))
+    (list '(= MODE 13)
+      '(if (< K ROWS)
+         (do (%mem-set-at! SMAP K (ROWAT K)) (set K (+ K 1)))
+         (do (set K 0) (set J (* ROWS COLS)) (set NMODE 9) (set NK 0) (set NJ (* ROWS COLS)) (set MODE 6))))
+    (list '(= MODE 14)
+      '(if (< K ROWS) (do (%mem-set-at! MAP K (%mem-ref-at SMAP K)) (set K (+ K 1))) (set MODE 0)))
+    ; a word a turn where both ends are word-aligned and eight remain, else a byte
     (list '(= MODE 2)
       (list 'if '(> X 0)
         (list 'if (list 'and '(> X 7) (list 'and '(and (= (& K 7) 0) (= (& J 7) 0))
                                           (%vj-ascii-word '(%mem-ref-at CELLS (>> J 3)))))
           (list 'do '(%mem-set-at! CELLS (>> K 3) (%mem-ref-at CELLS (>> J 3)))
                 '(%mem-set-at! ATTRS (>> K 3) (%mem-ref-at ATTRS (>> J 3)))
-                %vj-dirty '(%mem-byte-set-at! DIRTY (/ (+ K 7) COLS) 1)
                 '(set K (+ K 8)) '(set J (+ J 8)) '(set X (- X 8)))
           (list 'do (%vj-slot-copy 'EXT 'K 'EXT 'CELLS 'J)
                 '(%mem-byte-set-at! CELLS K (%mem-byte-ref-at CELLS J))
-                '(%mem-byte-set-at! ATTRS K (%mem-byte-ref-at ATTRS J)) %vj-dirty
+                '(%mem-byte-set-at! ATTRS K (%mem-byte-ref-at ATTRS J))
                 '(set K (+ K 1)) '(set J (+ J 1)) '(set X (- X 1))))
         %vj-chain))
     (list '(= MODE 3)
@@ -175,11 +208,10 @@
                                           (%vj-ascii-word '(%mem-ref-at CELLS (>> (- J 7) 3)))))
           (list 'do '(%mem-set-at! CELLS (>> (- K 7) 3) (%mem-ref-at CELLS (>> (- J 7) 3)))
                 '(%mem-set-at! ATTRS (>> (- K 7) 3) (%mem-ref-at ATTRS (>> (- J 7) 3)))
-                %vj-dirty '(%mem-byte-set-at! DIRTY (/ (- K 7) COLS) 1)
                 '(set K (- K 8)) '(set J (- J 8)) '(set X (- X 8)))
           (list 'do (%vj-slot-copy 'EXT 'K 'EXT 'CELLS 'J)
                 '(%mem-byte-set-at! CELLS K (%mem-byte-ref-at CELLS J))
-                '(%mem-byte-set-at! ATTRS K (%mem-byte-ref-at ATTRS J)) %vj-dirty
+                '(%mem-byte-set-at! ATTRS K (%mem-byte-ref-at ATTRS J))
                 '(set K (- K 1)) '(set J (- J 1)) '(set X (- X 1))))
         %vj-chain))
     (list '(= MODE 6)
@@ -238,7 +270,7 @@
 ; wide character the byte takes half of has its other half blanked.
 (def %vj-print
   '(if (< COL COLS)
-     (do (set X (+ (* ROW COLS) COL))
+     (do (set X (CELL ROW COL))
          (if (and (> COL 0) (= (%mem-byte-ref-at CELLS X) 129)) (%mem-byte-set-at! CELLS (- X 1) 32) 0)
          (if (and (< (+ COL 1) COLS) (= (%mem-byte-ref-at CELLS (+ X 1)) 129)) (%mem-byte-set-at! CELLS (+ X 1) 32) 0)
          (%mem-byte-set-at! CELLS X B)
@@ -286,31 +318,40 @@
      ((= B 71) (GOTO ROW (- (ARG 0 1) 1)))
      ((= B 100) (GOTO (- (ARG 0 1) 1) COL))
      ((= B 75)
-       (match ((= (ARG 0 0) 0) (BLANK (+ (* ROW COLS) COL) (* (+ ROW 1) COLS)))
-              ((= (ARG 0 0) 1) (BLANK (* ROW COLS) (+ (* ROW COLS) (MIN (+ COL 1) COLS))))
-              (#t (BLANK (* ROW COLS) (* (+ ROW 1) COLS)))))
+       (match ((= (ARG 0 0) 0) (BLANK-IN-ROW (MIN COL COLS) COLS))
+              ((= (ARG 0 0) 1) (BLANK-IN-ROW 0 (MIN (+ COL 1) COLS)))
+              (#t (BLANK-IN-ROW 0 COLS))))
+     ; below: the cursor's row from it, then the rows after; above: the
+     ; rows before, then the cursor's row to it
      ((= B 74)
-       (match ((= (ARG 0 0) 0) (BLANK (+ (* ROW COLS) COL) (* ROWS COLS)))
-              ((= (ARG 0 0) 1) (BLANK 0 (+ (* ROW COLS) (MIN (+ COL 1) COLS))))
-              (#t (BLANK 0 (* ROWS COLS)))))
+       (match ((= (ARG 0 0) 0)
+                (do (BLANK-IN-ROW (MIN COL COLS) COLS)
+                    (set RT (+ ROW 1)) (set RE ROWS) (set NMODE 10) (set NK 0) (set NJ 0)))
+              ((= (ARG 0 0) 1)
+                (do (BLANK-ROWS 0 ROW)
+                    (%mem-byte-set-at! DIRTY ROW 1)
+                    (set NMODE 1) (set NK (CELL ROW 0)) (set NJ (CELL ROW (MIN (+ COL 1) COLS)))))
+              (#t (BLANK-ROWS 0 ROWS))))
      ((= B 114)
        (if (and (< (ARG 0 1) (ARG 1 ROWS)) (< (ARG 1 ROWS) (+ ROWS 1)))
          (do (set TOP (- (ARG 0 1) 1)) (set BOT (- (ARG 1 ROWS) 1)) (GOTO 0 0))
          0))
      ((= B 76) (if (and (< (- TOP 1) ROW) (< ROW (+ BOT 1))) (SCROLL-DOWN ROW BOT (ARG 0 1)) 0))
      ((= B 77) (if (and (< (- TOP 1) ROW) (< ROW (+ BOT 1))) (SCROLL-UP ROW BOT (ARG 0 1)) 0))
-     ((= B 88) (BLANK (+ (* ROW COLS) COL) (+ (* ROW COLS) (MIN COLS (+ COL (ARG 0 1))))))
+     ((= B 88) (BLANK-IN-ROW (MIN COL COLS) (MIN COLS (+ COL (ARG 0 1)))))
      ((= B 80)
        (do (set X (MIN (ARG 0 1) (- COLS COL)))
-           (set K (+ (* ROW COLS) COL)) (set J (+ (+ (* ROW COLS) COL) X))
-           (set NK (- (* (+ ROW 1) COLS) X)) (set NJ (* (+ ROW 1) COLS))
+           (set K (CELL ROW COL)) (set J (+ (CELL ROW COL) X))
+           (set NK (- (CELL ROW COLS) X)) (set NJ (CELL ROW COLS))
            (set X (- (- COLS COL) X))
+           (%mem-byte-set-at! DIRTY ROW 1)
            (set NMODE 1) (set MODE 2)))
      ((= B 64)
        (do (set X (MIN (ARG 0 1) (- COLS COL)))
-           (set NK (+ (* ROW COLS) COL)) (set NJ (+ (+ (* ROW COLS) COL) X))
-           (set K (- (* (+ ROW 1) COLS) 1)) (set J (- (- (* (+ ROW 1) COLS) 1) X))
+           (set NK (CELL ROW COL)) (set NJ (+ (CELL ROW COL) X))
+           (set K (- (CELL ROW COLS) 1)) (set J (- (- (CELL ROW COLS) 1) X))
            (set X (- (- COLS COL) X))
+           (%mem-byte-set-at! DIRTY ROW 1)
            (set NMODE 1) (set MODE 3)))
      ((= B 104) (if (= PRIV 1) (do (set K 0) (set MODE 8)) 0))
      ((= B 108) (if (= PRIV 1) (do (set K 0) (set MODE 8)) 0))
@@ -361,6 +402,7 @@
 ; The render, compiled: vt.x's vt-render! as a loop over RR (the row), RC
 ; (the column) and RS (0 a row to start, 1 a run to start, 2 in a run of
 ; attribute RA, 3 writing a slot's bytes, RX of RN), writing at OUT + RO.
+; RB is the row's first cell, found through the map as the row starts.
 ; Answers RO, the byte count.
 (def %vr-body
   '(fn (self a)
@@ -373,12 +415,12 @@
                (EMIT 59)
                (DIGITS (+ 1 OCOL))
                (EMIT 72)
-               (set RC 0) (set RS 1)
+               (set RC 0) (set RS 1) (set RB (CELL RR 0))
                (self a)))
          ((= RC COLS)
            (do (%mem-byte-set-at! DIRTY RR 0) (set RR (+ RR 1)) (set RS 0) (self a)))
          ((= RS 1)
-           (do (set RA (%mem-byte-ref-at ATTRS (+ (* RR COLS) RC)))
+           (do (set RA (%mem-byte-ref-at ATTRS (+ RB RC)))
                (set X (- RA 1))
                (EMIT 27) (EMIT 91) (EMIT 48)
                (if (= (& X 1) 1) (do (EMIT 59) (EMIT 49)) 0)
@@ -389,21 +431,21 @@
                (self a)))
          ((= RS 3)
            (if (< RX RN)
-             (do (EMIT (%mem-byte-ref-at EXT (+ (* (+ (* RR COLS) RC) 16) RX))) (set RX (+ RX 1)) (self a))
-             (do (if (and (= (%mem-byte-ref-at EXT (+ (* (+ (* RR COLS) RC) 16) 15)) 2)
-                          (not (and (< (+ RC 1) COLS) (= (%mem-byte-ref-at CELLS (+ (+ (* RR COLS) RC) 1)) 129))))
+             (do (EMIT (%mem-byte-ref-at EXT (+ (* (+ RB RC) 16) RX))) (set RX (+ RX 1)) (self a))
+             (do (if (and (= (%mem-byte-ref-at EXT (+ (* (+ RB RC) 16) 15)) 2)
+                          (not (and (< (+ RC 1) COLS) (= (%mem-byte-ref-at CELLS (+ (+ RB RC) 1)) 129))))
                    (do (EMIT 27) (EMIT 91) (DIGITS (+ RR (+ 1 OROW))) (EMIT 59) (DIGITS (+ RC (+ 2 OCOL))) (EMIT 72))
                    0)
                  (set RC (+ RC 1)) (set RS 2) (self a))))
-         ((= (%mem-byte-ref-at ATTRS (+ (* RR COLS) RC)) RA)
+         ((= (%mem-byte-ref-at ATTRS (+ RB RC)) RA)
            (match
-             ((< (%mem-byte-ref-at CELLS (+ (* RR COLS) RC)) 128)
-               (do (EMIT (%mem-byte-ref-at CELLS (+ (* RR COLS) RC))) (set RC (+ RC 1)) (self a)))
-             ((= (%mem-byte-ref-at CELLS (+ (* RR COLS) RC)) 128)
-               (do (set RN (%mem-byte-ref-at EXT (+ (* (+ (* RR COLS) RC) 16) 14))) (set RX 0) (set RS 3) (self a)))
+             ((< (%mem-byte-ref-at CELLS (+ RB RC)) 128)
+               (do (EMIT (%mem-byte-ref-at CELLS (+ RB RC))) (set RC (+ RC 1)) (self a)))
+             ((= (%mem-byte-ref-at CELLS (+ RB RC)) 128)
+               (do (set RN (%mem-byte-ref-at EXT (+ (* (+ RB RC) 16) 14))) (set RX 0) (set RS 3) (self a)))
              (#t
-               (do (if (and (> RC 0) (and (= (%mem-byte-ref-at CELLS (- (+ (* RR COLS) RC) 1)) 128)
-                                          (= (%mem-byte-ref-at EXT (+ (* (- (+ (* RR COLS) RC) 1) 16) 15)) 2)))
+               (do (if (and (> RC 0) (and (= (%mem-byte-ref-at CELLS (- (+ RB RC) 1)) 128)
+                                          (= (%mem-byte-ref-at EXT (+ (* (- (+ RB RC) 1) 16) 15)) 2)))
                      0
                      (EMIT 32))
                    (set RC (+ RC 1)) (self a)))))
@@ -556,7 +598,7 @@
 ; change to them.
 (def vt-jit-make
   (fn (_)
-    (jit-group "x-tmux-vt-5" (fn (_) (list (vt-jit-form) (vt-render-form)))
+    (jit-group "x-tmux-vt-7" (fn (_) (list (vt-jit-form) (vt-render-form)))
       (fn (_ fns replayed?)
         (def engine (pair (first fns) (first (rest fns))))
         (unless replayed?

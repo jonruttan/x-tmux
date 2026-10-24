@@ -35,7 +35,10 @@ same engine with x-lang's assembler lane, proves it against the
 reference on a random exercise of every sequence the screen reads, and
 adopts it; where there is no JIT, or the two disagree, the reference
 stays.  Compiled, a full 24x80 coloured repaint is read and rendered in
-about 0.16 ms, against about 45 ms for the reference.
+about 0.16 ms, against about 45 ms for the reference.  The rows are
+reached through a row map, as tmux keeps its lines: a scroll turns the
+region's part of the map and blanks the rows it frees, so a line
+scrolled off a 24x80 screen costs about 1 µs compiled.
 
 Read: printable bytes (wrapping at the margin, tmux's cursor running to
 column 80 before a wrap), CR, LF, VT, FF, BS, TAB; CUP, HVP, CUU, CUD,
