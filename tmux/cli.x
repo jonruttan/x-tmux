@@ -8,7 +8,15 @@
 ;
 ; tmux's commands, as far as they are here:
 ;
-;   new-session, new      a window of panes on this terminal (tmux/session)
+;   new-session, new [-d] [-s NAME]      a session made and shown here,
+;                                        or with -d only made
+;   attach-session, attach, a [-t NAME]  a session shown here
+;   list-sessions, ls                    the sessions
+;   kill-server                          every session ended, and the server
+;
+; each led by the socket, as tmux's: -S PATH, or -L NAME for
+; $TMUX_TMPDIR/x-tmux-UID/NAME, $TMUX_TMPDIR /tmp when it is not set and
+; NAME default when there is no -L;
 ;
 ; and the `vt` commands that exercise the screen's engine:
 ;
@@ -25,7 +33,7 @@
 (import tmux/vt vt-make vt-feed! vt-render! vt-row vt-cursor vt-feed-pure! vt-render-pure!
   vt-feed-compiled! vt-render-compiled! vt-adopt!)
 (import tmux/vt-jit vt-jit-make vt-exercise vt-same?)
-(import tmux/session tmux-session)
+(import tmux/client tmux-new tmux-attach tmux-ask)
 
 (def %clock (prim-ref (lit sys) (lit clock)))
 (def %make-str (prim-ref (lit str) (lit make)))
@@ -114,15 +122,52 @@
 
 (def %usage
   (fn (_)
-    (%write 2 "usage: x -l tmux -- new-session | vt check|bench|dump FILE | vt exercise SEED N\n")
+    (%write 2 (Str8 append "usage: x -l tmux -- [-L NAME | -S PATH] new-session [-d] [-s NAME] |"
+                " attach-session [-t NAME] | list-sessions | kill-server\n"
+                "       x -l tmux -- vt check|bench|dump FILE | vt exercise SEED N\n"))
     2))
+
+(def %one-of? (fn (_ s names) (List any? (fn (_ n) (str=? s n)) names)))
+
+; The socket's path for -L NAME.
+(def %socket
+  (fn (_ name)
+    (def dir ((fn (_ d) (if (if (null? d) #t (= (Str8 length d) 0)) "/tmp" d)) (Sys getenv "TMUX_TMPDIR")))
+    (Str8 append dir "/x-tmux-" (%num (Sys getuid)) "/" name)))
+
+; The value of FLAG among a command's OPS, or nil; with no value, whether
+; it is there.
+(def %flag
+  (fn (self ops flag valued)
+    (match
+      ((null? ops) (if valued () #f))
+      ((str=? (first ops) flag) (if valued (if (null? (rest ops)) () (first (rest ops))) #t))
+      (#t (self (rest ops) flag valued)))))
+(def %or-empty (fn (_ s) (if (null? s) "" s)))
+
+; A tmux command at the socket PATH.
+(def %command
+  (fn (_ path ops)
+    (def cmd (first ops))
+    (match
+      ((%one-of? cmd (list "new-session" "new"))
+        (tmux-new path (%flag ops "-d" #f) (%or-empty (%flag ops "-s" #t))))
+      ((%one-of? cmd (list "attach-session" "attach" "a"))
+        (tmux-attach path (%or-empty (%flag ops "-t" #t))))
+      ((%one-of? cmd (list "list-sessions" "ls")) (tmux-ask path 76))
+      ((str=? cmd "kill-server") (tmux-ask path 75))
+      (#t (%usage)))))
 
 ; The command line run; answers the exit status.
 (def tmux-main
   (fn (_ ops)
     (def arg (fn (_ i) (if (< i (List length ops)) (List ref i ops) ())))
+    ; the launcher pipes the program to the engine on fd 0 and parks the
+    ; user's terminal on fd 3, as x-ash and the REPL reclaim it
+    (guard (e ()) (do (Sys dup2 3 0) (Sys close 3)))
     (match
-      ((if (str=? (first ops) "new-session") #t (str=? (first ops) "new")) (tmux-session))
+      ((if (str=? (first ops) "-S") (not (null? (arg 2))) #f) (%command (arg 1) (rest (rest ops))))
+      ((if (str=? (first ops) "-L") (not (null? (arg 2))) #f) (%command (%socket (arg 1)) (rest (rest ops))))
       ((if (str=? (first ops) "vt") (not (null? (arg 2))) #f)
         (match
           ((str=? (arg 1) "check") (%check (arg 2)))
@@ -130,6 +175,6 @@
           ((str=? (arg 1) "dump") (%dump (arg 2)))
           ((if (str=? (arg 1) "exercise") (not (null? (arg 3))) #f) (%exercise (%int (arg 2)) (%int (arg 3))))
           (#t (%usage))))
-      (#t (%usage)))))
+      (#t (%command (%socket "default") ops)))))
 
 (provide tmux/cli tmux-main)
