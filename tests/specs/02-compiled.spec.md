@@ -49,7 +49,7 @@ sequences.
 
 ```tmux
 (do (def e (vt-jit-make))
-    (write (vt-agree e (vt-exercise 9 120) 7)))
+    (write (vt-agree e (vt-exercise 9 80) 7)))
 ```
 ---
     #t

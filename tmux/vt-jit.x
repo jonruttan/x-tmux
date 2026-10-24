@@ -523,7 +523,7 @@
 ; terminal row 2, column 41, as a pane is.  Answers #t, or the byte
 ; offset after the first read they disagree on.  x collects only when
 ; asked, and tmux/vt's engine and render allocate as they go, so the heap
-; is collected after every read: what is live is two screens.
+; is collected every eighth read: what is live is two screens.
 (def vt-agree
   (fn (_ engine ex chunk)
     (def a (vt-origin! (vt-make 24 80) 2 41))
@@ -533,7 +533,7 @@
     ((fn (self at)
        (if (< at len)
          (do (def n (if (< (- len at) chunk) (- len at) chunk))
-             (Heap collect)
+             (if (= (& (%quot at chunk) 7) 0) (Heap collect) ())
              (vt-feed-pure! a (+ base at) n)
              (vt-feed-compiled! (first engine) b (+ base at) n)
              (def na (vt-render-pure! a))
