@@ -16,6 +16,12 @@
 ; region's part of the map and blanks the rows it frees, rather than
 ; moving the cells.  The dirty buffer goes by the screen's rows.
 ;
+; A line feed that scrolls the main screen's region first copies the
+; region's top row to the history, as tmux keeps one: three more buffers
+; of LIMIT rows, a ring whose oldest row gives way to a new one once it is
+; full.  An erase of the whole screen scrolls it into the history too.  A
+; deleted line and the alternate screen keep none.
+;
 ; A cell's byte is its character when that is ASCII.  A character past
 ; ASCII is kept in the cell's 16-byte slot of the extended buffer -- its
 ; UTF-8 bytes (up to 14, combining characters appended), their count, and
@@ -54,10 +60,12 @@
 
 ; libc, looked up when a screen is made: a handle is a fact of the process
 (def %c-memcpy ()) (def %c-memmove ()) (def %c-memset ()) (def %c-strcspn ())
-(def %c-strspn ())
+(def %c-strspn ()) (def %c-memcmp ()) (def %c-memchr ())
 (def %resolve!
   (fn (_)
     (def lib (%dlopen () 1))
+    (set! %c-memcmp (%dlsym lib "memcmp"))
+    (set! %c-memchr (%dlsym lib "memchr"))
     (set! %c-memcpy (%dlsym lib "memcpy"))
     (set! %c-memmove (%dlsym lib "memmove"))
     (set! %c-memset (%dlsym lib "memset"))
@@ -76,7 +84,10 @@
 ; a character read in part (its bits so far and the bytes it still
 ; needs), and the two bytes a render's runs of ASCII stop at.  Then the
 ; row map's address, the saved screen's map's, and a map's worth of
-; scratch; words 70 to 73 are the compiled engine's again.
+; scratch; words 70 to 73 are the compiled engine's again.  Words 74 to 79
+; are the history's: its cells', attributes' and extended slots'
+; addresses, the most rows it keeps, its oldest row's slot, and how many
+; rows it holds.  Word 80 is the compiled engine's.
 (def %ROWS 0) (def %COLS 8) (def %CP 16) (def %AP 24) (def %DP 32) (def %SP 40)
 (def %OP 48) (def %ONE 56) (def %ROW 64) (def %COL 72) (def %EP 80) (def %ATTR 88)
 (def %STATE 96) (def %NUM 104) (def %NP 112) (def %PRIVATE 120) (def %TOP 128)
@@ -87,7 +98,11 @@
 (def %OROW 448) (def %OCOL 456) (def %AROW 464) (def %ACOL 472) (def %AATTR 480)
 (def %SEP 488) (def %UACC 496) (def %UNEED 504) (def %MARKS 512)
 (def %MAP 536) (def %SMAP 544) (def %TMAP 552)
-(def %WORDS 74)
+(def %HC 592) (def %HA 600) (def %HX 608) (def %HLIM 616) (def %HHEAD 624) (def %HCOUNT 632)
+(def %WORDS 81)
+
+; The rows of history a screen keeps, tmux's history-limit.
+(def %HISTORY 2000)
 
 ; A cell's byte for a character in the extended buffer, and for padding.
 (def %WIDE 128) (def %PAD 129)
@@ -118,8 +133,10 @@
 
 ; A screen: (KEEP . S), S the state's pointer, KEEP what holds the
 ; buffers alive.
-(def vt-make
-  (fn (_ rows cols)
+(def vt-make (fn (_ rows cols) (vt-make-history rows cols %HISTORY)))
+; One that keeps LIMIT rows of history.
+(def vt-make-history
+  (fn (_ rows cols limit)
     (%resolve!)
     (def words (%buffer (* 8 %WORDS) 0))
     (def s (%str->ptr words))
@@ -138,6 +155,11 @@
     (def map (%identity rows))
     (def saved-map (%identity rows))
     (def scratch (%buffer (* 8 rows) 0))
+    (def history-cells (%buffer (* limit cols) 32))
+    (def history-attrs (%buffer (* limit cols) 1))
+    (def history-ext (%buffer (* 16 (* limit cols)) 0))
+    (%w! s %HC (%ptr->int (%str->ptr history-cells))) (%w! s %HA (%ptr->int (%str->ptr history-attrs)))
+    (%w! s %HX (%ptr->int (%str->ptr history-ext))) (%w! s %HLIM limit)
     (%w! s %MAP (%ptr->int (%str->ptr map))) (%w! s %SMAP (%ptr->int (%str->ptr saved-map)))
     (%w! s %TMAP (%ptr->int (%str->ptr scratch)))
     (%w! s %ROWS rows) (%w! s %COLS cols)
@@ -149,7 +171,7 @@
     (%w! s %MARKS (%ptr->int (%str->ptr marks)))
     (%w! s %ATTR 1) (%w! s %NUM -1) (%w! s %BOTTOM (- rows 1))
     (pair (list words cells attrs dirty stop out one saved-cells saved-attrs ext saved-ext marks
-            map saved-map scratch)
+            map saved-map scratch history-cells history-attrs history-ext)
           s)))
 
 ; A row map in order: row I in buffer row I.
@@ -214,8 +236,36 @@
   (fn (_ s)
     (def row (%w s %ROW))
     (if (= row (%w s %BOTTOM))
-      (%scroll! s (%w s %TOP) row 1)
+      (%scroll-up! s (%w s %TOP) row)
       (if (< row (- (%w s %ROWS) 1)) (%w! s %ROW (+ row 1)) ()))))
+(def %scroll-up!
+  (fn (_ s top bottom)
+    (if (%keeps? s) (%keep-row! s top) ())
+    (%scroll! s top bottom 1)))
+
+; Whether the screen keeps what scrolls off: the main screen, with a
+; history.
+(def %keeps? (fn (_ s) (if (= (%w s %ALT) 0) (< 0 (%w s %HLIM)) #f)))
+; Screen row R copied to the history as its newest row, the oldest giving
+; way once it is full.
+(def %keep-row!
+  (fn (_ s r)
+    (def cols (%w s %COLS))
+    (def count (%w s %HCOUNT))
+    (def from (* (%row s r) cols))
+    (def to (* (%history-slot s count) cols))
+    (%call %c-memcpy (%int->ptr (+ (%w s %HC) to)) (%int->ptr (+ (%w s %CP) from)) cols)
+    (%call %c-memcpy (%int->ptr (+ (%w s %HA) to)) (%int->ptr (+ (%w s %AP) from)) cols)
+    (%call %c-memcpy (%int->ptr (+ (%w s %HX) (* 16 to))) (%int->ptr (+ (%w s %EP) (* 16 from))) (* 16 cols))
+    (if (< count (%w s %HLIM))
+      (%w! s %HCOUNT (+ count 1))
+      (%w! s %HHEAD (%history-slot s 1)))
+    (+ r 1)))
+; The slot of history row I, 0 the oldest.
+(def %history-slot
+  (fn (_ s i)
+    (def j (+ (%w s %HHEAD) i))
+    (if (< j (%w s %HLIM)) j (- j (%w s %HLIM)))))
 
 (def %newline! (fn (_ s) (%w! s %COL 0) (%linefeed! s)))
 
@@ -462,11 +512,28 @@
     (match ((= m 0) (%blank! s row col (- cols 1)))
            ((= m 1) (%blank! s row 0 (%min col (- cols 1))))
            (#t (%blank! s row 0 (- cols 1))))))
+; An erase of the whole screen, 2 or 0 from the top-left cell, scrolls its
+; rows to the last one used into the history first, as tmux's
+; scroll-on-clear does; 3 empties the history.  A row is used when a cell
+; is not blank.
 (def %erase-screen!
   (fn (_ s m row col rows cols)
-    (match ((= m 0) (%below! s row col rows cols))
+    (match ((= m 0) (do (if (if (= row 0) (= col 0) #f) (%keep-screen! s) ()) (%below! s row col rows cols)))
            ((= m 1) (%above! s row col cols))
-           (#t (%blank-rows! s 0 rows)))))
+           ((= m 2) (do (%keep-screen! s) (%blank-rows! s 0 rows)))
+           ((= m 3) (do (%w! s %HCOUNT 0) (%w! s %HHEAD 0)))
+           (#t ()))))
+(def %keep-screen!
+  (fn (_ s)
+    (if (%keeps? s)
+      ((fn (self r n) (if (< r n) (self (%keep-row! s r) n) ())) 0 (%used s (%w s %ROWS)))
+      ())))
+; The rows to the last used one, of the first N.
+(def %used
+  (fn (self s n)
+    (if (if (< 0 n) (%blank-row? s (- n 1)) #f) (self s (- n 1)) n)))
+(def %blank-row?
+  (fn (_ s r) (not (< (%call %c-strspn (%at s %CP r 0) (%str->ptr " ")) (%w s %COLS)))))
 (def %below! (fn (_ s row col rows cols) (%blank! s row col (- cols 1)) (%blank-rows! s (+ row 1) rows)))
 (def %above! (fn (_ s row col cols) (%blank-rows! s 0 row) (%blank! s row 0 (%min col (- cols 1)))))
 (def %delete-chars!
@@ -696,15 +763,16 @@
 
 ; A new screen of ROWS x COLS with H's cells and attributes where they
 ; fit, the main screen's too while the alternate one is up, its cursor,
-; attribute, alternate-screen state and origin; a pane resized.  The
-; scroll region is the whole new screen.
+; attribute, alternate-screen state, history and origin; a pane resized.
+; The scroll region is the whole new screen.
 (def vt-carry
   (fn (_ h rows cols)
-    (def n (vt-make rows cols))
     (def s (rest h))
+    (def n (vt-make-history rows cols (%w s %HLIM)))
     (def t (rest n))
     (%carry-cells! s t %MAP %CP %AP %EP rows cols)
     (%carry-cells! s t %SMAP %SCP %SAP %SEP rows cols)
+    (%carry-history! s t cols)
     (%w! t %ROW (%min (%w s %ROW) (- rows 1)))
     (%w! t %COL (%min (%w s %COL) cols))
     (%w! t %ATTR (%w s %ATTR))
@@ -728,28 +796,122 @@
                (* 16 keep-cols))
              (self (+ r 1)))))
      0)))
+; S's history copied to T's, which is new and empty: its newest rows, as
+; many as T keeps, oldest first.
+(def %carry-history!
+  (fn (_ s t cols)
+    (def n (%min (%w s %HCOUNT) (%w t %HLIM)))
+    (def skip (- (%w s %HCOUNT) n))
+    ((fn (self i)
+       (when (< i n)
+         (do (%copy-row! t i %HC %HA %HX (%w s %HC) (%w s %HA) (%w s %HX)
+               (* (%history-slot s (+ skip i)) (%w s %COLS)) (%min cols (%w s %COLS)))
+             (self (+ i 1)))))
+     0)
+    (%w! t %HCOUNT n)))
+; KEEP-COLS cells from cell FROM of the buffers at CELLS, ATTRS and EXT to
+; buffer row R of T's buffers at words TC, TA and TX.
+(def %copy-row!
+  (fn (_ t r tc ta tx cells attrs ext from keep-cols)
+    (def to (* r (%w t %COLS)))
+    (%call %c-memcpy (%int->ptr (+ (%w t tc) to)) (%int->ptr (+ cells from)) keep-cols)
+    (%call %c-memcpy (%int->ptr (+ (%w t ta) to)) (%int->ptr (+ attrs from)) keep-cols)
+    (%call %c-memcpy (%int->ptr (+ (%w t tx) (* 16 to))) (%int->ptr (+ ext (* 16 from))) (* 16 keep-cols))))
+
 ; Row R's text: its characters in UTF-8, padding as nothing, as tmux's
 ; capture-pane writes a row.
 (def vt-row
   (fn (_ h r)
     (def s (rest h))
+    (def at (* (%row s r) (%w s %COLS)))
+    (%text s (+ (%w s %CP) at) (+ (%w s %EP) (* 16 at)))))
+; The text of the row whose cells start at address CELLS, their slots at EXT.
+(def %text
+  (fn (_ s cells ext)
     (def cols (%w s %COLS))
     (def buf (%make-str (+ 1 (* 14 cols))))
     (def p (%ptr->int (%str->ptr buf)))
-    (def n ((fn (self c at) (if (= c cols) at (self (+ c 1) (%row-cell! s r c at)))) 0 p))
+    (def n ((fn (self c at) (if (= c cols) at (self (+ c 1) (%text-cell! cells ext c at)))) 0 p))
     ((prim-ref (lit str) (lit byte-sub)) buf 0 (- n p))))
-(def %row-cell!
-  (fn (_ s r c at)
-    (def b (%cell s r c))
+(def %text-cell!
+  (fn (_ cells ext c at)
+    (def b (%pref (%int->ptr cells) c 1))
     (match
       ((< b 128) (%b! at b))
       ((= b %WIDE) ((fn (_ slot) (do (%call %c-memcpy (%int->ptr at) slot (%pref slot 14 1)) (+ at (%pref slot 14 1))))
-                     (%slot s %EP r c)))
+                     (%int->ptr (+ ext (* 16 c)))))
       (#t at))))
+; Row R's length: its cells to the last one not blank.
+(def vt-row-length
+  (fn (_ h r)
+    (def s (rest h))
+    ((fn (loop c) (if (if (< 0 c) (= (%cell s r (- c 1)) 32) #f) (loop (- c 1)) c)) (%w s %COLS))))
 (def vt-attrs
   (fn (_ h r)
     (def s (rest h))
     ((prim-ref (lit str) (lit byte-sub)) (List ref 2 (first h)) (* (%row s r) (%w s %COLS)) (%w s %COLS))))
+
+; The rows of history the screen holds.  The alternate screen adds none,
+; but shows the main screen's above it, as tmux's does.
+(def vt-history (fn (_ h) (%w (rest h) %HCOUNT)))
+; History row I's text and attributes, 0 the oldest.
+(def vt-history-row
+  (fn (_ h i)
+    (def s (rest h))
+    (def at (* (%history-slot s i) (%w s %COLS)))
+    (%text s (+ (%w s %HC) at) (+ (%w s %HX) (* 16 at)))))
+(def vt-history-attrs
+  (fn (_ h i)
+    (def s (rest h))
+    ((prim-ref (lit str) (lit byte-sub)) (List ref 16 (first h)) (* (%history-slot s i) (%w s %COLS)) (%w s %COLS))))
+
+; Whether A's and B's histories, of one width, hold the same rows: each
+; row's cells and attributes, and its text where a character is past
+; ASCII, since a slot no cell uses may hold anything.
+(def vt-history-same?
+  (fn (_ a b)
+    (def s (rest a))
+    (def t (rest b))
+    (def n (%w s %HCOUNT))
+    (if (= n (%w t %HCOUNT))
+      ((fn (self i) (if (= i n) #t (if (%history-row-same? a b i) (self (+ i 1)) #f))) 0)
+      #f)))
+(def %history-row-same?
+  (fn (_ a b i)
+    (def s (rest a))
+    (def t (rest b))
+    (def cols (%w s %COLS))
+    (def p (%int->ptr (+ (%w s %HC) (* (%history-slot s i) cols))))
+    (def q (%int->ptr (+ (%w t %HC) (* (%history-slot t i) cols))))
+    (if (= 0 (%call %c-memcmp p q cols))
+      (if (= 0 (%call %c-memcmp (%int->ptr (+ (%w s %HA) (* (%history-slot s i) cols)))
+                 (%int->ptr (+ (%w t %HA) (* (%history-slot t i) cols))) cols))
+        (if (= 0 (%call %c-memchr p %WIDE cols))
+          #t
+          (str=? (vt-history-row a i) (vt-history-row b i)))
+        #f)
+      #f)))
+
+; A screen the size of H showing its rows OFF up from the bottom: history
+; row COUNT - OFF on, then the screen's rows, COUNT the history's rows it
+; shows.  A copy mode's view; it keeps no history of its own.
+(def vt-view
+  (fn (_ h off)
+    (def s (rest h))
+    (def rows (%w s %ROWS))
+    (def cols (%w s %COLS))
+    (def count (vt-history h))
+    (def v (vt-make-history rows cols 0))
+    (def t (rest v))
+    ((fn (self r)
+       (when (< r rows)
+         (do (def line (+ r (- count off)))
+             (if (< line count)
+               (%copy-row! t r %CP %AP %EP (%w s %HC) (%w s %HA) (%w s %HX) (* (%history-slot s line) cols) cols)
+               (%copy-row! t r %CP %AP %EP (%w s %CP) (%w s %AP) (%w s %EP) (* (%row s (- line count)) cols) cols))
+             (self (+ r 1)))))
+     0)
+    (vt-origin! v (%w s %OROW) (%w s %OCOL))))
 
 ; The compiled engine's two functions, each (fn (self a)) over a screen's
 ; words: the feed reads IN from POS to END, the render writes from RO.
@@ -788,6 +950,8 @@
   (fn (_ h)
     (if (null? %engine) (vt-render-pure! h) (vt-render-compiled! (rest %engine) h))))
 
-(provide tmux/vt vt-make vt-feed! vt-render! vt-out vt-cursor vt-size vt-origin! vt-touch! vt-carry
-  vt-row vt-attrs vt-feed-pure! vt-render-pure! vt-feed-compiled! vt-render-compiled! vt-adopt!
+(provide tmux/vt vt-make vt-make-history vt-feed! vt-render! vt-out vt-cursor vt-size vt-origin!
+  vt-touch! vt-carry vt-row vt-row-length vt-attrs vt-history vt-history-row vt-history-attrs
+  vt-history-same? vt-view
+  vt-feed-pure! vt-render-pure! vt-feed-compiled! vt-render-compiled! vt-adopt!
   vt-compiled?)

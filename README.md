@@ -22,11 +22,34 @@ The prefix is C-b, and after it:
     o     the next pane
     x     kill the active pane
     d     detach
+    [     copy mode
+    PgUp  copy mode, a page up; a page down to the bottom leaves it
     C-b   a C-b to the pane
 
 A pane whose shell exits is removed and its space given to its sibling;
 the window follows the terminal's size.  A session ends with its last
 pane, and the server with its last session.
+
+## Copy mode
+
+Each pane keeps the 2000 rows that scroll off its top, as tmux keeps its
+history.  Copy mode shows the pane as it was when the mode began, history
+and all, with tmux's position at its top right, and moves through it as
+tmux's does, with tmux's keys: emacs's, or vi's when `VISUAL` or `EDITOR`
+names vi.
+
+    Up Down          the cursor a row, scrolling at the top and bottom
+                     (emacs C-p C-n, vi k j)
+    Left Right       a column (emacs C-f, vi h l)
+    PgUp PgDn        a page, two rows short of the pane (emacs M-v C-v;
+                     vi C-f, a page down)
+    vi C-u C-d       half a page
+    Home End         the row's start and end (emacs C-a C-e, vi 0 $)
+    emacs M-< M->    the top of the history and the bottom (vi g G)
+    q                leave (emacs Escape and C-c too)
+
+Not yet: selecting and copying, searching, and the time a row entered the
+history, which tmux shows beside the position.
 
 ## The screen
 
@@ -38,7 +61,10 @@ stays.  Compiled, a full 24x80 coloured repaint is read and rendered in
 about 0.16 ms, against about 45 ms for the reference.  The rows are
 reached through a row map, as tmux keeps its lines: a scroll turns the
 region's part of the map and blanks the rows it frees, so a line
-scrolled off a 24x80 screen costs about 1 µs compiled.
+scrolled off a 24x80 screen costs about 1 µs compiled.  A line feed at the
+bottom of a region on the main screen copies the region's top row to the
+history first, and an erase of the whole screen copies the rows in use,
+as tmux's scroll-on-clear does; ED 3 empties the history.
 
 Read: printable bytes (wrapping at the margin, tmux's cursor running to
 column 80 before a wrap), CR, LF, VT, FF, BS, TAB; CUP, HVP, CUU, CUD,
@@ -50,8 +76,8 @@ swallowed.  UTF-8: a character takes the cells its width gives, wide
 ones two and combining marks none, by a table that agrees with tmux 3.8;
 a byte no character starts with, or a character cut short, is U+FFFD.
 The compiled engine hands each byte past ASCII to the reference, so text
-past ASCII reads at the reference's speed.  Not yet: scrollback, mouse
-and bracketed-paste modes.
+past ASCII reads at the reference's speed, and each ED.  Not yet: SU and
+SD, mouse and bracketed-paste modes.
 
 ## Commands
 
@@ -81,14 +107,15 @@ Each may be led by `-L NAME` or `-S PATH` for the server's socket,
 for the same bytes; `02-compiled` holds the compiled engine to the
 reference, read by read, on exercises fed in reads that end inside
 sequences; `03-layout` holds the split tree to the pane sizes tmux 3.8
-reports for the same splits.
+reports for the same splits; `04-copy` holds copy mode's moves to the
+positions and cursors tmux 3.8 reports for the same keys.
 
     X=/path/to/x sh tests/oracle/panes.sh
 
 runs x-tmux inside a real tmux pane, drives it with send-keys and reads
 it with capture-pane: typing, both splits, the next pane, a kill, a shell
-exiting, a resize, each pane's size checked by `stty size`; then
-detaching, `ls`, attaching again, the last pane exiting and
+exiting, a resize, each pane's size checked by `stty size`; copy mode;
+then detaching, `ls`, attaching again, the last pane exiting and
 `kill-server`, with tmux's messages.
 
 ## Install
