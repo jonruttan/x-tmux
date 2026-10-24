@@ -11,6 +11,14 @@
 ; A row written since the last render is marked in the dirty buffer, and a
 ; render writes those rows alone, as a terminal redraws them.
 ;
+; A cell's byte is its character when that is ASCII.  A character past
+; ASCII is kept in the cell's 16-byte slot of the extended buffer -- its
+; UTF-8 bytes (up to 14, combining characters appended), their count, and
+; its width -- and the cell's byte is 128; the second cell of a wide
+; character is 129, a padding cell.  As tmux keeps them: printing over
+; either half of a wide character blanks the other, and the edits that
+; move cells (insert, delete, erase) move padding as any cell.
+;
 ; This file is the reference engine, in x: printable bytes go in as runs
 ; (strcspn finds a run's end, memcpy and memset place it), escape sequences
 ; a byte at a time.  tmux/vt-jit compiles the same engine and, once it
@@ -22,6 +30,8 @@
 ; rebuilds its body each time it runs.
 
 (module tmux/vt)
+
+(import tmux/width char-width)
 
 (def %make-str (prim-ref (lit str) (lit make)))
 (def %str->ptr (prim-ref (lit str) (lit ->ptr)))
@@ -57,31 +67,39 @@
 ; top-left cell, a row and a column from 0.  The alternate screen's words:
 ; the saved cells' and attributes' addresses, whether the alternate screen
 ; is up, whether ?1049 saved the cursor, and the row, column and attribute
-; it saved.
+; it saved.  UTF-8's: the extended buffer's address and the saved one's,
+; a character read in part (its bits so far and the bytes it still
+; needs), and the two bytes a render's runs of ASCII stop at.
 (def %ROWS 0) (def %COLS 8) (def %CP 16) (def %AP 24) (def %DP 32) (def %SP 40)
-(def %OP 48) (def %ONE 56) (def %ROW 64) (def %COL 72) (def %ATTR 88)
+(def %OP 48) (def %ONE 56) (def %ROW 64) (def %COL 72) (def %EP 80) (def %ATTR 88)
 (def %STATE 96) (def %NUM 104) (def %NP 112) (def %PRIVATE 120) (def %TOP 128)
 (def %BOTTOM 136) (def %SROW 144) (def %SCOL 152) (def %PARAMS 160)
 (def %SCP 288) (def %SAP 296) (def %ALT 304) (def %ASAVED 312)
 (def %IN 320) (def %POS 328) (def %END 336)
 (def %RR 408) (def %RC 416) (def %RS 424) (def %RO 432)
 (def %OROW 448) (def %OCOL 456) (def %AROW 464) (def %ACOL 472) (def %AATTR 480)
-(def %WORDS 64)
+(def %SEP 488) (def %UACC 496) (def %UNEED 504) (def %MARKS 512)
+(def %WORDS 72)
+
+; A cell's byte for a character in the extended buffer, and for padding.
+(def %WIDE 128) (def %PAD 129)
 
 (def %w (fn (_ s o) (%pref s o 8)))
 (def %w! (fn (_ s o x) (%pset s o x 8)))
 (def %addr (fn (_ s o) (%int->ptr (%pref s o 8))))
 
-; The bytes a printable run stops at: every control byte and DEL.
+; The bytes a printable run stops at: every control byte, DEL, and every
+; byte past ASCII, which the UTF-8 reader takes.
 (def %stops
   (fn (_)
-    (def s (%make-str 33))
+    (def s (%make-str 161))
     (def p (%str->ptr s))
-    ((fn (self i) (if (< i 32) (self (%stop! p i)) ())) 1)
+    ((fn (self i) (if (< i 32) (self (%stop! p (- i 1) i)) ())) 1)
     (%pset p 31 127 1)
-    (%pset p 32 0 1)
+    ((fn (self i) (if (< i 256) (self (%stop! p (- i 96) i)) ())) 128)
+    (%pset p 160 0 1)
     s))
-(def %stop! (fn (_ p i) (%pset p (- i 1) i 1) (+ i 1)))
+(def %stop! (fn (_ p at b) (%pset p at b 1) (+ b 1)))
 
 (def %buffer
   (fn (_ n fill)
@@ -105,15 +123,25 @@
     (def one (%buffer 1 1))
     (def saved-cells (%buffer (* rows cols) 32))
     (def saved-attrs (%buffer (* rows cols) 1))
+    (def ext (%buffer (* 16 (* rows cols)) 0))
+    (def saved-ext (%buffer (* 16 (* rows cols)) 0))
+    (def marks (%buffer 2 %WIDE))
+    (%pset (%str->ptr marks) 1 %PAD 1)
     (%w! s %ROWS rows) (%w! s %COLS cols)
     (%w! s %CP (%ptr->int (%str->ptr cells))) (%w! s %AP (%ptr->int (%str->ptr attrs)))
     (%w! s %DP (%ptr->int (%str->ptr dirty))) (%w! s %SP (%ptr->int (%str->ptr stop)))
     (%w! s %OP (%ptr->int (%str->ptr out))) (%w! s %ONE (%ptr->int (%str->ptr one)))
     (%w! s %SCP (%ptr->int (%str->ptr saved-cells))) (%w! s %SAP (%ptr->int (%str->ptr saved-attrs)))
+    (%w! s %EP (%ptr->int (%str->ptr ext))) (%w! s %SEP (%ptr->int (%str->ptr saved-ext)))
+    (%w! s %MARKS (%ptr->int (%str->ptr marks)))
     (%w! s %ATTR 1) (%w! s %NUM -1) (%w! s %BOTTOM (- rows 1))
-    (pair (list words cells attrs dirty stop out one saved-cells saved-attrs) s)))
+    (pair (list words cells attrs dirty stop out one saved-cells saved-attrs ext saved-ext marks) s)))
 
 (def %at (fn (_ s base row col) (%int->ptr (+ (%w s base) (+ (* row (%w s %COLS)) col)))))
+; A cell's slot in an extended buffer, BASE %EP or %SEP.
+(def %slot (fn (_ s base row col) (%int->ptr (+ (%w s base) (* 16 (+ (* row (%w s %COLS)) col))))))
+(def %cell (fn (_ s row col) (%pref (%at s %CP row col) 0 1)))
+(def %cell! (fn (_ s row col b) (%pset (%at s %CP row col) 0 b 1)))
 (def %dirty! (fn (_ s row) (%pset (%addr s %DP) row 1 1)))
 (def %dirty-rows! (fn (_ s a b) (%call %c-memset (%at s %DP 0 a) 1 (+ (- b a) 1))))
 
@@ -144,7 +172,8 @@
 (def %move-rows!
   (fn (_ s to from n)
     (%call %c-memmove (%at s %CP to 0) (%at s %CP from 0) n)
-    (%call %c-memmove (%at s %AP to 0) (%at s %AP from 0) n)))
+    (%call %c-memmove (%at s %AP to 0) (%at s %AP from 0) n)
+    (%call %c-memmove (%slot s %EP to 0) (%slot s %EP from 0) (* 16 n))))
 
 (def %linefeed!
   (fn (_ s)
@@ -170,11 +199,118 @@
     (def row (%w s %ROW))
     (def col (%w s %COL))
     (def k (%min n (- cols col)))
+    (%unpair! s row col (+ col (- k 1)))
     (%call %c-memcpy (%at s %CP row col) (%int->ptr p) k)
     (%call %c-memset (%at s %AP row col) (%w s %ATTR) k)
     (%dirty! s row)
     (%w! s %COL (+ col k))
     k))
+
+; Cells A..B of ROW about to be printed over: a wide character they take
+; only half of has its other half blanked, as tmux blanks it.
+(def %unpair!
+  (fn (_ s row a b)
+    (if (if (< 0 a) (= (%cell s row a) %PAD) #f) (%cell! s row (- a 1) 32) ())
+    (if (if (< (+ b 1) (%w s %COLS)) (= (%cell s row (+ b 1)) %PAD) #f) (%cell! s row (+ b 1) 32) ())))
+
+; --- UTF-8 ---------------------------------------------------------------
+
+; One byte past ASCII, or one that ends a character read in part: the
+; character's bits gathered, and the character put when it is whole.  A
+; byte that cannot start a character, or a character cut short, is put as
+; U+FFFD, as tmux puts it; answers #f when B was not taken and is to be
+; read again, after a character it cut short.
+(def %utf8!
+  (fn (_ s b)
+    (def need (%w s %UNEED))
+    (match
+      ((< 0 need)
+        (if (if (< 127 b) (< b 192) #f)
+          (%utf8-more! s b need)
+          (%utf8-cut! s)))
+      ((if (< 193 b) (< b 224) #f) (%utf8-start! s (& b 31) 1))
+      ((if (< 223 b) (< b 240) #f) (%utf8-start! s (& b 15) 2))
+      ((if (< 239 b) (< b 245) #f) (%utf8-start! s (& b 7) 3))
+      (#t (%char! s 65533)))))
+(def %utf8-start! (fn (_ s bits need) (%w! s %UACC bits) (%w! s %UNEED need) #t))
+(def %utf8-more!
+  (fn (_ s b need)
+    (%w! s %UACC (| (<< (%w s %UACC) 6) (& b 63)))
+    (%w! s %UNEED (- need 1))
+    (if (= need 1) (%char! s (%w s %UACC)) #t)))
+(def %utf8-cut! (fn (_ s) (%w! s %UNEED 0) (%char! s 65533) #f))
+
+; CP's UTF-8 bytes written at P: answers how many.
+(def %encode!
+  (fn (_ p cp)
+    (match
+      ((< cp 128) (do (%pset p 0 cp 1) 1))
+      ((< cp 2048) (do (%pset p 0 (| 192 (>> cp 6)) 1) (%pset p 1 (| 128 (& cp 63)) 1) 2))
+      ((< cp 65536) (do (%pset p 0 (| 224 (>> cp 12)) 1) (%pset p 1 (| 128 (& (>> cp 6) 63)) 1)
+                        (%pset p 2 (| 128 (& cp 63)) 1) 3))
+      (#t (do (%pset p 0 (| 240 (>> cp 18)) 1) (%pset p 1 (| 128 (& (>> cp 12) 63)) 1)
+              (%pset p 2 (| 128 (& (>> cp 6) 63)) 1) (%pset p 3 (| 128 (& cp 63)) 1) 4)))))
+
+; A whole character put at the cursor, by its width: wide or narrow, a
+; wrap first when it does not fit; or joined to the character before the
+; cursor.  Answers #t.
+(def %char!
+  (fn (_ s cp)
+    (def w (char-width cp))
+    (if (= w 0) (%join! s cp) (%put-char! s cp w))
+    #t))
+(def %put-char!
+  (fn (_ s cp w)
+    (if (< (%w s %COLS) (+ (%w s %COL) w)) (%newline! s) ())
+    (def row (%w s %ROW))
+    (def col (%w s %COL))
+    (%unpair! s row col (+ col (- w 1)))
+    (def slot (%slot s %EP row col))
+    (%pset slot 14 (%encode! slot cp) 1)
+    (%pset slot 15 w 1)
+    (%cell! s row col %WIDE)
+    (%pset (%at s %AP row col) 0 (%w s %ATTR) 1)
+    (if (= w 2) (%pad! s row (+ col 1) (%w s %ATTR)) ())
+    (%dirty! s row)
+    (%w! s %COL (+ col w))))
+(def %pad! (fn (_ s row col attr) (%cell! s row col %PAD) (%pset (%at s %AP row col) 0 attr 1)))
+
+; A zero-width character joined to the cell before the cursor (the wide
+; character it belongs to, when that cell is padding), its bytes appended
+; while the slot has room; at the row's start it is dropped.  U+FE0F, the
+; emoji presentation selector, widens a narrow character the cursor is
+; just past, when the row has room.
+(def %join!
+  (fn (_ s cp)
+    (def col (%w s %COL))
+    (if (= col 0) () (%join-at! s cp (%w s %ROW) (%min (- col 1) (- (%w s %COLS) 1))))))
+(def %join-at!
+  (fn (_ s cp row at)
+    (def c (if (if (< 0 at) (= (%cell s row at) %PAD) #f) (- at 1) at))
+    (if (= (%cell s row c) %WIDE) () (%to-slot! s row c))
+    (def slot (%slot s %EP row c))
+    (def n (%pref slot 14 1))
+    (def tmp (%make-str 5))
+    (def k (%encode! (%str->ptr tmp) cp))
+    (if (< (+ n k) 15) (%append! slot n (%str->ptr tmp) k) ())
+    (if (if (= cp 65039) (if (= (%pref slot 15 1) 1) (if (= (+ c 1) (%w s %COL)) (< (%w s %COL) (%w s %COLS)) #f) #f) #f)
+      (%widen! s row c slot)
+      ())
+    (%dirty! s row)))
+(def %append! (fn (_ slot n p k) (%call %c-memcpy (%int->ptr (+ (%ptr->int slot) n)) p k) (%pset slot 14 (+ n k) 1)))
+(def %to-slot!
+  (fn (_ s row c)
+    (def slot (%slot s %EP row c))
+    (%pset slot 0 (%cell s row c) 1)
+    (%pset slot 14 1 1)
+    (%pset slot 15 1 1)
+    (%cell! s row c %WIDE)))
+(def %widen!
+  (fn (_ s row c slot)
+    (%unpair! s row (+ c 1) (+ c 1))
+    (%pset slot 15 2 1)
+    (%pad! s row (+ c 1) (%pref (%at s %AP row c) 0 1))
+    (%w! s %COL (+ c 2))))
 
 ; A move to (ROW, COL), each kept on the screen.
 (def %goto!
@@ -254,6 +390,7 @@
     (def n (* (%w s %ROWS) (%w s %COLS)))
     (%call %c-memcpy (%addr s %SCP) (%addr s %CP) n)
     (%call %c-memcpy (%addr s %SAP) (%addr s %AP) n)
+    (%call %c-memcpy (%addr s %SEP) (%addr s %EP) (* 16 n))
     (%call %c-memset (%addr s %CP) 32 n)
     (%call %c-memset (%addr s %AP) 1 n)
     (%dirty-rows! s 0 (- (%w s %ROWS) 1))
@@ -268,6 +405,7 @@
     (def n (* (%w s %ROWS) (%w s %COLS)))
     (%call %c-memcpy (%addr s %CP) (%addr s %SCP) n)
     (%call %c-memcpy (%addr s %AP) (%addr s %SAP) n)
+    (%call %c-memcpy (%addr s %EP) (%addr s %SEP) (* 16 n))
     (%dirty-rows! s 0 (- (%w s %ROWS) 1))
     (if (if cursor (= (%w s %ASAVED) 1) #f) (%alt-cursor! s) ())
     (%w! s %ASAVED 0)
@@ -307,7 +445,8 @@
 (def %shift!
   (fn (_ s row to from n)
     (%call %c-memmove (%at s %CP row to) (%at s %CP row from) n)
-    (%call %c-memmove (%at s %AP row to) (%at s %AP row from) n)))
+    (%call %c-memmove (%at s %AP row to) (%at s %AP row from) n)
+    (%call %c-memmove (%slot s %EP row to) (%slot s %EP row from) (* 16 n))))
 
 ; The parser's states: 0 ground, 1 after ESC, 2 in a CSI, 3 in an OSC,
 ; 4 one byte to swallow (a charset designation).
@@ -399,16 +538,20 @@
 
 ; One step from I: a printable run, a control byte, or an escaped byte;
 ; answers where the next step starts.
+; An ASCII byte where a character was being read cuts it short first.
 (def %step!
   (fn (_ s stop i end)
+    (def b (%pref (%int->ptr i) 0 1))
+    (if (if (< 0 (%w s %UNEED)) (< b 128) #f) (%utf8-cut! s) ())
     (if (= (%w s %STATE) 0)
-      (%ground-step! s i (%min (%call %c-strcspn (%int->ptr i) stop) (- end i)))
+      (%ground-step! s i b (%min (%call %c-strcspn (%int->ptr i) stop) (- end i)))
       (%escaped-step! s i))))
 (def %ground-step!
-  (fn (_ s i run)
-    (if (< 0 run)
-      (%ran! s i run)
-      (%controlled! s i))))
+  (fn (_ s i b run)
+    (match
+      ((< 0 run) (%ran! s i run))
+      ((< b 128) (%controlled! s i))
+      (#t (if (%utf8! s b) (+ i 1) i)))))
 (def %ran! (fn (_ s i run) (%put! s i run) (+ i run)))
 (def %controlled! (fn (_ s i) (%control! s (%pref (%int->ptr i) 0 1)) (+ i 1)))
 (def %escaped-step! (fn (_ s i) (%escaped! s (%pref (%int->ptr i) 0 1)) (+ i 1)))
@@ -462,9 +605,38 @@
     (%max 1 (%min (%call %c-strspn (%at s %AP r c) one) (- (%w s %COLS) c)))))
 (def %render-run!
   (fn (_ s r c k at)
-    (def at1 (%sgr-bytes! at (%pref (%at s %AP r c) 0 1)))
-    (%call %c-memcpy (%int->ptr at1) (%at s %CP r c) k)
-    (+ at1 k)))
+    (%emit-cells! s r c (+ c k) (%sgr-bytes! at (%pref (%at s %AP r c) 0 1)))))
+
+; Cells C..E-1 of row R written from AT: runs of ASCII as they are, a
+; character past ASCII as its slot's bytes, padding as nothing after the
+; wide character it belongs to.  So that the terminal's cursor stays on
+; the cells, padding a wide character no longer has is written as a
+; blank, and a wide character with no padding after it is followed by a
+; move to the next cell.
+(def %emit-cells!
+  (fn (self s r c e at)
+    (if (= c e) at
+      ((fn (_ n)
+         (match
+           ((< 0 n) (do (%call %c-memcpy (%int->ptr at) (%at s %CP r c) n) (self s r (+ c n) e (+ at n))))
+           ((= (%cell s r c) %WIDE) (self s r (+ c 1) e (%emit-wide! s r c at)))
+           (#t (self s r (+ c 1) e (if (%padding? s r c) at (%b! at 32))))))
+       (%min (%call %c-strcspn (%at s %CP r c) (%addr s %MARKS)) (- e c))))))
+(def %emit-wide!
+  (fn (_ s r c at)
+    (def slot (%slot s %EP r c))
+    (def n (%pref slot 14 1))
+    (%call %c-memcpy (%int->ptr at) slot n)
+    (if (if (= (%pref slot 15 1) 2) (not (%padded? s r c)) #f)
+      (%cup! (+ at n) (+ r (+ 1 (%w s %OROW))) (+ c (+ 2 (%w s %OCOL))))
+      (+ at n))))
+(def %padded? (fn (_ s r c) (if (< (+ c 1) (%w s %COLS)) (= (%cell s r (+ c 1)) %PAD) #f)))
+(def %padding?
+  (fn (_ s r c)
+    (if (< 0 c)
+      (if (= (%cell s r (- c 1)) %WIDE) (= (%pref (%slot s %EP r (- c 1)) 15 1) 2) #f)
+      #f)))
+(def %cup! (fn (_ at row col) (%b! (%dec! (%b! (%dec! (%b! (%b! at 27) 91) row) 59) col) 72)))
 
 (def vt-out (fn (_ h) (%addr (rest h) %OP)))
 (def vt-cursor (fn (_ h) (pair (%w (rest h) %ROW) (%w (rest h) %COL))))
@@ -494,8 +666,8 @@
     (def n (vt-make rows cols))
     (def s (rest h))
     (def t (rest n))
-    (%carry-cells! s t %CP %AP rows cols)
-    (%carry-cells! s t %SCP %SAP rows cols)
+    (%carry-cells! s t %CP %AP %EP rows cols)
+    (%carry-cells! s t %SCP %SAP %SEP rows cols)
     (%w! t %ROW (%min (%w s %ROW) (- rows 1)))
     (%w! t %COL (%min (%w s %COL) cols))
     (%w! t %ATTR (%w s %ATTR))
@@ -504,19 +676,34 @@
     (%w! t %AATTR (%w s %AATTR))
     (vt-origin! n (%w s %OROW) (%w s %OCOL))))
 (def %carry-cells!
-  (fn (_ s t cells attrs rows cols)
+  (fn (_ s t cells attrs ext rows cols)
     (def keep-rows (%min rows (%w s %ROWS)))
     (def keep-cols (%min cols (%w s %COLS)))
     ((fn (self r)
        (when (< r keep-rows)
          (do (%call %c-memcpy (%at t cells r 0) (%at s cells r 0) keep-cols)
              (%call %c-memcpy (%at t attrs r 0) (%at s attrs r 0) keep-cols)
+             (%call %c-memcpy (%slot t ext r 0) (%slot s ext r 0) (* 16 keep-cols))
              (self (+ r 1)))))
      0)))
+; Row R's text: its characters in UTF-8, padding as nothing, as tmux's
+; capture-pane writes a row.
 (def vt-row
   (fn (_ h r)
     (def s (rest h))
-    ((prim-ref (lit str) (lit byte-sub)) (List ref 1 (first h)) (* r (%w s %COLS)) (%w s %COLS))))
+    (def cols (%w s %COLS))
+    (def buf (%make-str (+ 1 (* 14 cols))))
+    (def p (%ptr->int (%str->ptr buf)))
+    (def n ((fn (self c at) (if (= c cols) at (self (+ c 1) (%row-cell! s r c at)))) 0 p))
+    ((prim-ref (lit str) (lit byte-sub)) buf 0 (- n p))))
+(def %row-cell!
+  (fn (_ s r c at)
+    (def b (%cell s r c))
+    (match
+      ((< b 128) (%b! at b))
+      ((= b %WIDE) ((fn (_ slot) (do (%call %c-memcpy (%int->ptr at) slot (%pref slot 14 1)) (+ at (%pref slot 14 1))))
+                     (%slot s %EP r c)))
+      (#t at))))
 (def vt-attrs
   (fn (_ h r)
     (def s (rest h))
@@ -524,11 +711,18 @@
 
 ; The compiled engine's two functions, each (fn (self a)) over a screen's
 ; words: the feed reads IN from POS to END, the render writes from RO.
+; The feed answers 1 at a byte it leaves to this file's engine -- one past
+; ASCII, or one where a character is part read -- with POS at it: that
+; byte is fed here, over the same words, and the compiled feed goes on.
 (def vt-feed-compiled!
   (fn (_ feed h p len)
     (def s (rest h))
     (%w! s %IN p) (%w! s %POS 0) (%w! s %END len)
-    (feed (%ptr->int s))))
+    ((fn (self)
+       (when (= (feed (%ptr->int s)) 1)
+         (do (vt-feed-pure! h (+ p (%w s %POS)) 1)
+             (%w! s %POS (+ (%w s %POS) 1))
+             (self)))))))
 
 (def vt-render-compiled!
   (fn (_ render h)

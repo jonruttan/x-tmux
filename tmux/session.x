@@ -23,6 +23,7 @@
 
 (import x/sys/posix)
 (import x/repl/term)
+(import x/sys/gc)
 (import tmux/vt vt-make vt-feed! vt-render! vt-out vt-cursor vt-size vt-origin! vt-touch! vt-carry)
 (import tmux/vt-jit vt-jit!)
 (import tmux/layout layout-rects layout-borders layout-split layout-remove layout-panes)
@@ -260,8 +261,17 @@
     (def at (%str->ptr %buf))
     (def got (%int (%call %c-read (%pane-fd p) at 4096)))
     (if (< 0 got)
-      (do (%pset at got 0 1) (vt-feed! (%pane-screen p) (%ptr->int at) got))
+      (do (%pset at got 0 1) (vt-feed! (%pane-screen p) (%ptr->int at) got) (%moved! got))
       (when (if (= got 0) #t (%gone? (%pane-pid p))) (%remove! (%pane-id p))))))
+
+; Bytes fed since the heap was last collected: x collects only when
+; asked, and a session runs for as long as its panes do.
+(def %fed 0)
+(def %collect-every 65536)
+(def %moved!
+  (fn (_ n)
+    (set! %fed (+ %fed n))
+    (when (< %collect-every %fed) (do (Heap collect) (set! %fed 0)))))
 
 ; Whether a pane's program has ended: waitpid with WNOHANG.
 (def %gone? (fn (_ pid) (not (= 0 (%int (%call %c-waitpid pid 0 1))))))

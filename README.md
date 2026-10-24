@@ -41,7 +41,11 @@ CUF, CUB, CHA, VPA; EL, ED, ECH; ICH, DCH; IL, DL; DECSTBM, IND, RI,
 NEL; DECSC, DECRC; SGR bold, reverse, foreground and background; the
 alternate screen, ?1049 (with the cursor saved and restored), ?47 and
 ?1047, as tmux keeps it; OSC strings and charset designations,
-swallowed.  Not yet: UTF-8 widths (a byte is a cell), scrollback, mouse
+swallowed.  UTF-8: a character takes the cells its width gives, wide
+ones two and combining marks none, by a table that agrees with tmux 3.8;
+a byte no character starts with, or a character cut short, is U+FFFD.
+The compiled engine hands each byte past ASCII to the reference, so text
+past ASCII reads at the reference's speed.  Not yet: scrollback, mouse
 and bracketed-paste modes.
 
 ## Commands

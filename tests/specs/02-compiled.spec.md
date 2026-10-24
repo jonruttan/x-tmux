@@ -49,7 +49,7 @@ sequences.
 
 ```tmux
 (do (def e (vt-jit-make))
-    (write (vt-agree e (vt-exercise 9 120) 7)))
+    (write (vt-agree e (vt-exercise 9 80) 7)))
 ```
 ---
     #t
@@ -76,3 +76,13 @@ sequences.
 ```
 ---
     (((0 "main") ('cursor 0 4)) ((0 "main") (4 "    y") ('cursor 4 5)) ((0 "myin") ('cursor 0 2)) ((0 "main") ('cursor 0 7)) ((0 "main") ('cursor 0 4)) ((0 "main") ('cursor 0 5)))
+
+### the UTF-8 cases, by the compiled engine, which hands each byte past ASCII to tmux/vt's
+
+```tmux
+(do (vt-jit!)
+    (write (List map (fn (_ t) (spec-rows (spec-screen vt-feed! t)))
+             (list "\xe6\x97\xa5\xe6\x9c\xacx" "e\xcc\x81x" "\xe6\x97\xa5\xe6\x9c\xac^[1;2HX" "\xe6\x97\xa5\xe6\x9c\xac^[1;1HX" "a\xc3xb" "\xe2\x9d\xa4\xef\xb8\x8f^[1;8H#" "\xe6\x97\xa5\xe6\x9c\xac^[1;1H^[1P^[1;8H#" "\xf0\x9f\x98\x80^[2;79H\xe6\x97\xa5"))))
+```
+---
+    (((0 "日本x") ('cursor 0 5)) ((0 "éx") ('cursor 0 2)) ((0 " X本") ('cursor 0 2)) ((0 "X 本") ('cursor 0 1)) ((0 "a�xb") ('cursor 0 4)) ((0 "❤️     #") ('cursor 0 8)) ((0 "本    #") ('cursor 0 8)) ((0 "😀") (1 "                                                                              日") ('cursor 1 80)))

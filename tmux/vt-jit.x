@@ -30,6 +30,7 @@
 (import tmux/vt vt-make vt-origin! vt-row vt-attrs vt-cursor vt-out vt-feed-pure! vt-render-pure!
   vt-feed-compiled! vt-render-compiled! vt-adopt!)
 (import x/tool/jit-group jit-group)
+(import x/sys/gc)
 
 ; Word indices, vt.x's byte offsets over 8, then the compiled loop's own.
 (def %vj-words
@@ -42,8 +43,20 @@
         (pair 'OUT 6) (pair 'RR 51) (pair 'RC 52) (pair 'RS 53) (pair 'RO 54) (pair 'RA 55)
         (pair 'OROW 56) (pair 'OCOL 57)
         (pair 'SC 36) (pair 'SA 37) (pair 'ALT 38) (pair 'ASAVED 39)
-        (pair 'AROW 58) (pair 'ACOL 59) (pair 'AATTR 60)))
+        (pair 'AROW 58) (pair 'ACOL 59) (pair 'AATTR 60)
+        (pair 'EXT 10) (pair 'SEXT 61) (pair 'UNEED 63) (pair 'RX 65) (pair 'RN 66)))
 (def %vj-params 20)
+
+; A cell's extended slot copied with it when the cell holds a character
+; past ASCII: the slot's two words, the cell at index I of SRC to index J
+; of DST.  And whether a word of eight cells holds none.
+(def %vj-slot-copy
+  (fn (_ dst j src cells i)
+    (list 'if (list '= (list '%mem-byte-ref-at cells i) 128)
+      (list 'do (list '%mem-set-at! dst (list '* j 2) (list '%mem-ref-at src (list '* i 2)))
+                (list '%mem-set-at! dst (list '+ (list '* j 2) 1) (list '%mem-ref-at src (list '+ (list '* i 2) 1))))
+      0)))
+(def %vj-ascii-word (fn (_ word) (list '= (list '& (list '>> word 7) 72340172838076673) 0)))
 
 (def %vj-word (fn (_ name) (Assoc entry name %vj-words)))
 
@@ -145,43 +158,49 @@
         '(set MODE 0)))
     (list '(= MODE 2)
       (list 'if '(> X 0)
-        (list 'if '(and (> X 7) (and (= (& K 7) 0) (= (& J 7) 0)))
+        (list 'if (list 'and '(> X 7) (list 'and '(and (= (& K 7) 0) (= (& J 7) 0))
+                                          (%vj-ascii-word '(%mem-ref-at CELLS (>> J 3)))))
           (list 'do '(%mem-set-at! CELLS (>> K 3) (%mem-ref-at CELLS (>> J 3)))
                 '(%mem-set-at! ATTRS (>> K 3) (%mem-ref-at ATTRS (>> J 3)))
                 %vj-dirty '(%mem-byte-set-at! DIRTY (/ (+ K 7) COLS) 1)
                 '(set K (+ K 8)) '(set J (+ J 8)) '(set X (- X 8)))
-          (list 'do '(%mem-byte-set-at! CELLS K (%mem-byte-ref-at CELLS J))
+          (list 'do (%vj-slot-copy 'EXT 'K 'EXT 'CELLS 'J)
+                '(%mem-byte-set-at! CELLS K (%mem-byte-ref-at CELLS J))
                 '(%mem-byte-set-at! ATTRS K (%mem-byte-ref-at ATTRS J)) %vj-dirty
                 '(set K (+ K 1)) '(set J (+ J 1)) '(set X (- X 1))))
         %vj-chain))
     (list '(= MODE 3)
       (list 'if '(> X 0)
-        (list 'if '(and (> X 7) (and (= (& (+ K 1) 7) 0) (= (& (+ J 1) 7) 0)))
+        (list 'if (list 'and '(> X 7) (list 'and '(and (= (& (+ K 1) 7) 0) (= (& (+ J 1) 7) 0))
+                                          (%vj-ascii-word '(%mem-ref-at CELLS (>> (- J 7) 3)))))
           (list 'do '(%mem-set-at! CELLS (>> (- K 7) 3) (%mem-ref-at CELLS (>> (- J 7) 3)))
                 '(%mem-set-at! ATTRS (>> (- K 7) 3) (%mem-ref-at ATTRS (>> (- J 7) 3)))
                 %vj-dirty '(%mem-byte-set-at! DIRTY (/ (- K 7) COLS) 1)
                 '(set K (- K 8)) '(set J (- J 8)) '(set X (- X 8)))
-          (list 'do '(%mem-byte-set-at! CELLS K (%mem-byte-ref-at CELLS J))
+          (list 'do (%vj-slot-copy 'EXT 'K 'EXT 'CELLS 'J)
+                '(%mem-byte-set-at! CELLS K (%mem-byte-ref-at CELLS J))
                 '(%mem-byte-set-at! ATTRS K (%mem-byte-ref-at ATTRS J)) %vj-dirty
                 '(set K (- K 1)) '(set J (- J 1)) '(set X (- X 1))))
         %vj-chain))
     (list '(= MODE 6)
       (list 'if '(< K J)
-        '(if (< (+ K 7) J)
-           (do (%mem-set-at! SC (>> K 3) (%mem-ref-at CELLS (>> K 3)))
+        (list 'if (list 'and '(< (+ K 7) J) (%vj-ascii-word '(%mem-ref-at CELLS (>> K 3))))
+          '(do (%mem-set-at! SC (>> K 3) (%mem-ref-at CELLS (>> K 3)))
                (%mem-set-at! SA (>> K 3) (%mem-ref-at ATTRS (>> K 3)))
                (set K (+ K 8)))
-           (do (%mem-byte-set-at! SC K (%mem-byte-ref-at CELLS K))
-               (%mem-byte-set-at! SA K (%mem-byte-ref-at ATTRS K))
-               (set K (+ K 1))))
+          (list 'do (%vj-slot-copy 'SEXT 'K 'EXT 'CELLS 'K)
+                '(%mem-byte-set-at! SC K (%mem-byte-ref-at CELLS K))
+                '(%mem-byte-set-at! SA K (%mem-byte-ref-at ATTRS K))
+                '(set K (+ K 1))))
         %vj-chain))
     (list '(= MODE 7)
       (list 'if '(< K J)
-        (list 'if '(< (+ K 7) J)
+        (list 'if (list 'and '(< (+ K 7) J) (%vj-ascii-word '(%mem-ref-at SC (>> K 3))))
           (list 'do '(%mem-set-at! CELLS (>> K 3) (%mem-ref-at SC (>> K 3)))
                 '(%mem-set-at! ATTRS (>> K 3) (%mem-ref-at SA (>> K 3)))
                 %vj-dirty '(%mem-byte-set-at! DIRTY (/ (+ K 7) COLS) 1) '(set K (+ K 8)))
-          (list 'do '(%mem-byte-set-at! CELLS K (%mem-byte-ref-at SC K))
+          (list 'do (%vj-slot-copy 'EXT 'K 'SEXT 'SC 'K)
+                '(%mem-byte-set-at! CELLS K (%mem-byte-ref-at SC K))
                 '(%mem-byte-set-at! ATTRS K (%mem-byte-ref-at SA K))
                 %vj-dirty '(set K (+ K 1))))
         %vj-chain))
@@ -215,10 +234,13 @@
         '(set MODE 0)))))
 
 ; A printable byte at the cursor.  A cursor past the last column wraps
-; first, and the byte is read again once the wrap's scroll is done.
+; first, and the byte is read again once the wrap's scroll is done.  A
+; wide character the byte takes half of has its other half blanked.
 (def %vj-print
   '(if (< COL COLS)
      (do (set X (+ (* ROW COLS) COL))
+         (if (and (> COL 0) (= (%mem-byte-ref-at CELLS X) 129)) (%mem-byte-set-at! CELLS (- X 1) 32) 0)
+         (if (and (< (+ COL 1) COLS) (= (%mem-byte-ref-at CELLS (+ X 1)) 129)) (%mem-byte-set-at! CELLS (+ X 1) 32) 0)
          (%mem-byte-set-at! CELLS X B)
          (%mem-byte-set-at! ATTRS X ATTR)
          (%mem-byte-set-at! DIRTY ROW 1)
@@ -323,17 +345,23 @@
       (list 'do %vj-modes '(self a))
       (list 'if '(< POS END)
         (list 'do '(set B (%mem-byte-ref-at IN POS))
-          (list 'if '(> STATE 0)
-            %vj-escaped
-            (list 'if '(and (> B 31) (not (= B 127))) %vj-print %vj-control))
-          '(self a))
+          ; a byte past ASCII, or one where a character is part read, is
+          ; tmux/vt's: answer 1, POS at it, for the driver to hand over
+          (list 'if '(or (> UNEED 0) (and (= STATE 0) (> B 127)))
+            1
+            (list 'do
+              (list 'if '(> STATE 0)
+                %vj-escaped
+                (list 'if '(and (> B 31) (not (= B 127))) %vj-print %vj-control))
+              '(self a))))
         0))))
 
 (def vt-jit-form (fn (_) (%vj-expand %vj-body)))
 
 ; The render, compiled: vt.x's vt-render! as a loop over RR (the row), RC
 ; (the column) and RS (0 a row to start, 1 a run to start, 2 in a run of
-; attribute RA), writing at OUT + RO.  Answers RO, the byte count.
+; attribute RA, 3 writing a slot's bytes, RX of RN), writing at OUT + RO.
+; Answers RO, the byte count.
 (def %vr-body
   '(fn (self a)
      (if (< RR ROWS)
@@ -359,8 +387,26 @@
                (EMIT 109)
                (set RS 2)
                (self a)))
+         ((= RS 3)
+           (if (< RX RN)
+             (do (EMIT (%mem-byte-ref-at EXT (+ (* (+ (* RR COLS) RC) 16) RX))) (set RX (+ RX 1)) (self a))
+             (do (if (and (= (%mem-byte-ref-at EXT (+ (* (+ (* RR COLS) RC) 16) 15)) 2)
+                          (not (and (< (+ RC 1) COLS) (= (%mem-byte-ref-at CELLS (+ (+ (* RR COLS) RC) 1)) 129))))
+                   (do (EMIT 27) (EMIT 91) (DIGITS (+ RR (+ 1 OROW))) (EMIT 59) (DIGITS (+ RC (+ 2 OCOL))) (EMIT 72))
+                   0)
+                 (set RC (+ RC 1)) (set RS 2) (self a))))
          ((= (%mem-byte-ref-at ATTRS (+ (* RR COLS) RC)) RA)
-           (do (EMIT (%mem-byte-ref-at CELLS (+ (* RR COLS) RC))) (set RC (+ RC 1)) (self a)))
+           (match
+             ((< (%mem-byte-ref-at CELLS (+ (* RR COLS) RC)) 128)
+               (do (EMIT (%mem-byte-ref-at CELLS (+ (* RR COLS) RC))) (set RC (+ RC 1)) (self a)))
+             ((= (%mem-byte-ref-at CELLS (+ (* RR COLS) RC)) 128)
+               (do (set RN (%mem-byte-ref-at EXT (+ (* (+ (* RR COLS) RC) 16) 14))) (set RX 0) (set RS 3) (self a)))
+             (#t
+               (do (if (and (> RC 0) (and (= (%mem-byte-ref-at CELLS (- (+ (* RR COLS) RC) 1)) 128)
+                                          (= (%mem-byte-ref-at EXT (+ (* (- (+ (* RR COLS) RC) 1) 16) 15)) 2)))
+                     0
+                     (EMIT 32))
+                   (set RC (+ RC 1)) (self a)))))
          (#t (do (set RS 1) (self a))))
        RO)))
 
@@ -394,8 +440,10 @@
 ; N operations from SEED as bytes: printable runs, CR and LF, backspace and
 ; tab, CSI sequences with up to two parameters (some empty), ESC 7 8 M D E,
 ; an OSC title, a charset designation, the alternate screen (?1049, ?47,
-; ?1047), a two-byte UTF-8 character.  Answers (BUF . LEN), BUF
-; NUL-terminated.
+; ?1047), and characters past ASCII: narrow, wide, an emoji, a combining
+; mark, a heart widened by U+FE0F, a zero-width space, a byte no
+; character starts with and a character cut short.  Answers (BUF . LEN),
+; BUF NUL-terminated.
 (def vt-exercise
   (fn (_ seed n)
     (def buf (%make-str (+ (* n 96) 1)))
@@ -406,7 +454,7 @@
 
 (def %op
   (fn (_ loop i x at p)
-    (def k (%rem x 20))
+    (def k (%rem x 24))
     (def y (%lcg x))
     (loop (+ i 1) (%lcg y)
       (match
@@ -419,8 +467,13 @@
         ((= k 15) (%put p (%put p (%put p (%put p (%put p at 27) 93) 48) 59) 7))
         ((= k 16) (%put p (%put p (%put p at 27) 40) 66))
         ((= k 17) (%alt p at (= (& y 1) 0) (%pick (list 1049 47 1047 1049) (%rem (>> y 1) 4))))
-        ((= k 18) (%put p (%put p at 195) 169))
+        ((< k 23) (%bytes p at (%pick %chars (%rem y 8))))
         (#t (%put p at 9))))))
+
+(def %chars
+  (list (list 195 169) (list 230 151 165) (list 240 159 152 128) (list 204 129)
+        (list 226 157 164 239 184 143) (list 226 128 139) (list 255) (list 195)))
+(def %bytes (fn (self p at bs) (if (null? bs) at (self p (%put p at (first bs)) (rest bs)))))
 
 (def %run
   (fn (self p at n y)
@@ -468,7 +521,9 @@
 ; An exercise fed to two 24x80 screens in reads of CHUNK bytes, one by
 ; tmux/vt's engine and one by ENGINE, each read rendered by both at
 ; terminal row 2, column 41, as a pane is.  Answers #t, or the byte
-; offset after the first read they disagree on.
+; offset after the first read they disagree on.  x collects only when
+; asked, and tmux/vt's engine and render allocate as they go, so the heap
+; is collected every eighth read: what is live is two screens.
 (def vt-agree
   (fn (_ engine ex chunk)
     (def a (vt-origin! (vt-make 24 80) 2 41))
@@ -478,6 +533,7 @@
     ((fn (self at)
        (if (< at len)
          (do (def n (if (< (- len at) chunk) (- len at) chunk))
+             (if (= (& (%quot at chunk) 7) 0) (Heap collect) ())
              (vt-feed-pure! a (+ base at) n)
              (vt-feed-compiled! (first engine) b (+ base at) n)
              (def na (vt-render-pure! a))
@@ -500,7 +556,7 @@
 ; change to them.
 (def vt-jit-make
   (fn (_)
-    (jit-group "x-tmux-vt-4" (fn (_) (list (vt-jit-form) (vt-render-form)))
+    (jit-group "x-tmux-vt-5" (fn (_) (list (vt-jit-form) (vt-render-form)))
       (fn (_ fns replayed?)
         (def engine (pair (first fns) (first (rest fns))))
         (unless replayed?

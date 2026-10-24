@@ -10,6 +10,7 @@
 #   type      a command typed in the first pane, and its output
 #   alt       a program on the alternate screen, its screen gone when it
 #             leaves, the shell's lines back
+#   utf8      wide and combining characters, each in its cells
 #   split -h  C-b %: a second pane right of the first, the border between,
 #             each pane's terminal its own size (stty size)
 #   split -v  C-b ": a third pane below the second
@@ -62,6 +63,14 @@ wait_for 'FULL-SCREEN'
 check "alt -- the program's screen shows alone" "$(screen | grep -c '^one$') $(row 1)" "0 FULL-SCREEN"
 wait_for 'after-alt'
 check "alt -- its screen gone when it leaves, the shell's lines back" "$(screen | grep -c '^FULL-SCREEN') $(screen | grep -c '^one$') $(screen | grep -c '^after-alt$')" "0 1 1"
+tmux send-keys -t "$s" 'clear' Enter
+sleep 1
+
+# utf8
+tmux send-keys -t "$s" "printf '\\346\\227\\245\\346\\234\\254|e\\314\\201|\\360\\237\\230\\200|\\n'" Enter
+wait_for '|'
+want=$(printf '\346\227\245\346\234\254|e\314\201|\360\237\230\200|')
+check "utf8 -- wide and combining characters in a pane, as tmux shows them" "$(screen | grep -cxF "$want")" "1"
 tmux send-keys -t "$s" 'clear' Enter
 sleep 1
 
