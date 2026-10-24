@@ -40,15 +40,19 @@
         (pair 'IN 40) (pair 'POS 41) (pair 'END 42) (pair 'MODE 43) (pair 'K 44)
         (pair 'J 45) (pair 'X 46) (pair 'NMODE 47) (pair 'NK 48) (pair 'NJ 49) (pair 'B 50)
         (pair 'OUT 6) (pair 'RR 51) (pair 'RC 52) (pair 'RS 53) (pair 'RO 54) (pair 'RA 55)
-        (pair 'OROW 56) (pair 'OCOL 57)))
+        (pair 'OROW 56) (pair 'OCOL 57)
+        (pair 'SC 36) (pair 'SA 37) (pair 'ALT 38) (pair 'ASAVED 39)
+        (pair 'AROW 58) (pair 'ACOL 59) (pair 'AATTR 60)))
 (def %vj-params 20)
 
 (def %vj-word (fn (_ name) (Assoc entry name %vj-words)))
 
 ; The modes: 0 reading bytes, 1 blank cells K..J-1, 2 copy X cells up
 ; (K the destination, J the source, ascending), 3 copy X cells down
-; (descending), 5 apply SGR parameter K.  A copy chains to NMODE with
-; NK and NJ when it ends.
+; (descending), 5 apply SGR parameter K, 6 save cells K..J-1 to the
+; alternate screen's buffers, 7 restore them, 8 look from parameter K for
+; one naming an alternate screen, 9 blank cells K..J-1 with the default
+; attribute.  A copy chains to NMODE with NK and NJ when it ends.
 (def %vj-expand
   (fn (self e)
     (if (symbol? e)
@@ -94,6 +98,22 @@
             (self (list 'if (list '< (List ref 1 e) (List ref 2 e)) (List ref 1 e) (List ref 2 e))))
           ((eq? (first e) 'LF)
             (self '(if (= ROW BOT) (SCROLL-UP TOP BOT 1) (if (< ROW (- ROWS 1)) (set ROW (+ ROW 1)) 0))))
+          ((eq? (first e) 'ALT-SWITCH)
+            ; the alternate screen up (h) or down (l) for mode P, as tmux/vt's
+            ; %alt-on! and %alt-off!: a save then a clear, or a restore
+            (self (list 'if '(= B 104)
+                    (list 'if '(= ALT 1) '(set MODE 0)
+                      (list 'do (list 'set 'ASAVED (list 'if (list '= (List ref 1 e) 1049) 1 0))
+                        '(set AROW ROW) '(set ACOL COL) '(set AATTR ATTR) '(set ALT 1)
+                        '(set K 0) '(set J (* ROWS COLS)) '(set NMODE 9) '(set NK 0) '(set NJ (* ROWS COLS))
+                        '(set MODE 6)))
+                    (list 'if '(= ALT 0) '(set MODE 0)
+                      (list 'do
+                        (list 'if (list 'and (list '= (List ref 1 e) 1049) '(= ASAVED 1))
+                          '(do (set ROW AROW) (set COL ACOL) (set ATTR AATTR)) 0)
+                        '(set ASAVED 0) '(set ALT 0)
+                        '(set K 0) '(set J (* ROWS COLS)) '(set NMODE 0) '(set NK 0) '(set NJ 0)
+                        '(set MODE 7))))))
           ((eq? (first e) 'DIGITS)
             ; a number of at most three digits, in decimal
             (self (list 'do (list 'set 'X (List ref 1 e))
@@ -145,6 +165,40 @@
                 '(%mem-byte-set-at! ATTRS K (%mem-byte-ref-at ATTRS J)) %vj-dirty
                 '(set K (- K 1)) '(set J (- J 1)) '(set X (- X 1))))
         %vj-chain))
+    (list '(= MODE 6)
+      (list 'if '(< K J)
+        '(if (< (+ K 7) J)
+           (do (%mem-set-at! SC (>> K 3) (%mem-ref-at CELLS (>> K 3)))
+               (%mem-set-at! SA (>> K 3) (%mem-ref-at ATTRS (>> K 3)))
+               (set K (+ K 8)))
+           (do (%mem-byte-set-at! SC K (%mem-byte-ref-at CELLS K))
+               (%mem-byte-set-at! SA K (%mem-byte-ref-at ATTRS K))
+               (set K (+ K 1))))
+        %vj-chain))
+    (list '(= MODE 7)
+      (list 'if '(< K J)
+        (list 'if '(< (+ K 7) J)
+          (list 'do '(%mem-set-at! CELLS (>> K 3) (%mem-ref-at SC (>> K 3)))
+                '(%mem-set-at! ATTRS (>> K 3) (%mem-ref-at SA (>> K 3)))
+                %vj-dirty '(%mem-byte-set-at! DIRTY (/ (+ K 7) COLS) 1) '(set K (+ K 8)))
+          (list 'do '(%mem-byte-set-at! CELLS K (%mem-byte-ref-at SC K))
+                '(%mem-byte-set-at! ATTRS K (%mem-byte-ref-at SA K))
+                %vj-dirty '(set K (+ K 1))))
+        %vj-chain))
+    (list '(= MODE 8)
+      '(if (< K NP)
+         (if (or (= (P K) 1049) (or (= (P K) 47) (= (P K) 1047)))
+           (ALT-SWITCH (P K))
+           (set K (+ K 1)))
+         (set MODE 0)))
+    (list '(= MODE 9)
+      (list 'if '(< K J)
+        (list 'if '(< (+ K 7) J)
+          (list 'do '(%mem-set-at! CELLS (>> K 3) 2314885530818453536)
+                '(%mem-set-at! ATTRS (>> K 3) 72340172838076673)
+                %vj-dirty '(%mem-byte-set-at! DIRTY (/ (+ K 7) COLS) 1) '(set K (+ K 8)))
+          (list 'do '(%mem-byte-set-at! CELLS K 32) '(%mem-byte-set-at! ATTRS K 1) %vj-dirty '(set K (+ K 1))))
+        '(set MODE 0)))
     (list #t
       (list 'if '(< K NP)
         '(do (set X (- ATTR 1))
@@ -236,7 +290,8 @@
            (set K (- (* (+ ROW 1) COLS) 1)) (set J (- (- (* (+ ROW 1) COLS) 1) X))
            (set X (- (- COLS COL) X))
            (set NMODE 1) (set MODE 3)))
-     ((= B 104) (if (and (= PRIV 1) (= (ARG 0 0) 1049)) (BLANK 0 (* ROWS COLS)) 0))
+     ((= B 104) (if (= PRIV 1) (do (set K 0) (set MODE 8)) 0))
+     ((= B 108) (if (= PRIV 1) (do (set K 0) (set MODE 8)) 0))
      (#t 0)))
 
 (def %vj-csi
@@ -338,8 +393,9 @@
 
 ; N operations from SEED as bytes: printable runs, CR and LF, backspace and
 ; tab, CSI sequences with up to two parameters (some empty), ESC 7 8 M D E,
-; an OSC title, a charset designation, the alternate screen, a two-byte
-; UTF-8 character.  Answers (BUF . LEN), BUF NUL-terminated.
+; an OSC title, a charset designation, the alternate screen (?1049, ?47,
+; ?1047), a two-byte UTF-8 character.  Answers (BUF . LEN), BUF
+; NUL-terminated.
 (def vt-exercise
   (fn (_ seed n)
     (def buf (%make-str (+ (* n 96) 1)))
@@ -362,7 +418,7 @@
         ((= k 14) (%put p (%put p at 27) (%pick (list 55 56 77 68 69) (%rem y 5))))
         ((= k 15) (%put p (%put p (%put p (%put p (%put p at 27) 93) 48) 59) 7))
         ((= k 16) (%put p (%put p (%put p at 27) 40) 66))
-        ((= k 17) (%alt p at (= (& y 1) 0)))
+        ((= k 17) (%alt p at (= (& y 1) 0) (%pick (list 1049 47 1047 1049) (%rem (>> y 1) 4))))
         ((= k 18) (%put p (%put p at 195) 169))
         (#t (%put p at 9))))))
 
@@ -385,9 +441,9 @@
     (%put p at2 f)))
 
 (def %alt
-  (fn (_ p at on)
+  (fn (_ p at on mode)
     (def at1 (%put p (%put p (%put p at 27) 91) 63))
-    (%put p (%digits4 p at1 1049) (if on 104 108))))
+    (%put p (if (< mode 100) (%digits p at1 mode) (%digits4 p at1 mode)) (if on 104 108))))
 (def %digits4
   (fn (_ p at n)
     (%put p (%put p (%put p (%put p at (+ 48 (%quot n 1000))) (+ 48 (%rem (%quot n 100) 10)))
@@ -444,7 +500,7 @@
 ; change to them.
 (def vt-jit-make
   (fn (_)
-    (jit-group "x-tmux-vt-3" (fn (_) (list (vt-jit-form) (vt-render-form)))
+    (jit-group "x-tmux-vt-4" (fn (_) (list (vt-jit-form) (vt-render-form)))
       (fn (_ fns replayed?)
         (def engine (pair (first fns) (first (rest fns))))
         (unless replayed?

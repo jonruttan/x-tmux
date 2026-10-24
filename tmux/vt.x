@@ -54,14 +54,19 @@
 ; on are the compiled engine's (tmux/vt-jit names them): IN, POS and END
 ; its input, 51 to 54 its render's row, column, state and output count.
 ; Words 56 and 57 are where on the terminal a render puts the screen's
-; top-left cell, a row and a column from 0.
+; top-left cell, a row and a column from 0.  The alternate screen's words:
+; the saved cells' and attributes' addresses, whether the alternate screen
+; is up, whether ?1049 saved the cursor, and the row, column and attribute
+; it saved.
 (def %ROWS 0) (def %COLS 8) (def %CP 16) (def %AP 24) (def %DP 32) (def %SP 40)
 (def %OP 48) (def %ONE 56) (def %ROW 64) (def %COL 72) (def %ATTR 88)
 (def %STATE 96) (def %NUM 104) (def %NP 112) (def %PRIVATE 120) (def %TOP 128)
 (def %BOTTOM 136) (def %SROW 144) (def %SCOL 152) (def %PARAMS 160)
+(def %SCP 288) (def %SAP 296) (def %ALT 304) (def %ASAVED 312)
 (def %IN 320) (def %POS 328) (def %END 336)
 (def %RR 408) (def %RC 416) (def %RS 424) (def %RO 432)
-(def %OROW 448) (def %OCOL 456) (def %WORDS 64)
+(def %OROW 448) (def %OCOL 456) (def %AROW 464) (def %ACOL 472) (def %AATTR 480)
+(def %WORDS 64)
 
 (def %w (fn (_ s o) (%pref s o 8)))
 (def %w! (fn (_ s o x) (%pset s o x 8)))
@@ -98,12 +103,15 @@
     (def stop (%stops))
     (def out (%make-str (+ 64 (* rows (+ 16 (* cols 12))))))
     (def one (%buffer 1 1))
+    (def saved-cells (%buffer (* rows cols) 32))
+    (def saved-attrs (%buffer (* rows cols) 1))
     (%w! s %ROWS rows) (%w! s %COLS cols)
     (%w! s %CP (%ptr->int (%str->ptr cells))) (%w! s %AP (%ptr->int (%str->ptr attrs)))
     (%w! s %DP (%ptr->int (%str->ptr dirty))) (%w! s %SP (%ptr->int (%str->ptr stop)))
     (%w! s %OP (%ptr->int (%str->ptr out))) (%w! s %ONE (%ptr->int (%str->ptr one)))
+    (%w! s %SCP (%ptr->int (%str->ptr saved-cells))) (%w! s %SAP (%ptr->int (%str->ptr saved-attrs)))
     (%w! s %ATTR 1) (%w! s %NUM -1) (%w! s %BOTTOM (- rows 1))
-    (pair (list words cells attrs dirty stop out one) s)))
+    (pair (list words cells attrs dirty stop out one saved-cells saved-attrs) s)))
 
 (def %at (fn (_ s base row col) (%int->ptr (+ (%w s base) (+ (* row (%w s %COLS)) col)))))
 (def %dirty! (fn (_ s row) (%pset (%addr s %DP) row 1 1)))
@@ -223,8 +231,49 @@
       ((= f 88) (%blank! s row col (%min (- cols 1) (- (+ col (%arg s 0 1)) 1))))
       ((= f 80) (%delete-chars! s row col cols (%min (%arg s 0 1) (- cols col))))
       ((= f 64) (%insert-chars! s row col cols (%min (%arg s 0 1) (- cols col))))
-      ((= f 104) (if (if (= (%w s %PRIVATE) 1) (= (%p s 0) 1049) #f) (%blank-rows! s 0 rows) ()))
+      ((= f 104) (if (= (%w s %PRIVATE) 1) (%alt-on! s (%alt-mode s 0)) ()))
+      ((= f 108) (if (= (%w s %PRIVATE) 1) (%alt-off! s (%alt-mode s 0)) ()))
       (#t ()))))
+
+; The alternate screen, as tmux keeps it.  ?1049h saves the cursor and its
+; attribute, then shows a cleared screen; ?47h and ?1047h show one without
+; the save.  Any of them with l brings the main screen back, and ?1049l the
+; cursor ?1049h saved.  Up already, an h does nothing, and down, an l.  A
+; sequence acts on the first of its parameters that names one of the
+; three; the screen it clears takes the default attribute.
+(def %alt-mode
+  (fn (self s i)
+    (if (< i (%w s %NP))
+      ((fn (_ p) (if (if (= p 1049) #t (if (= p 47) #t (= p 1047))) p (self s (+ i 1)))) (%p s i))
+      0)))
+(def %alt-on!
+  (fn (_ s mode)
+    (if (if (= mode 0) #t (= (%w s %ALT) 1)) () (%alt-save! s (= mode 1049)))))
+(def %alt-save!
+  (fn (_ s cursor)
+    (def n (* (%w s %ROWS) (%w s %COLS)))
+    (%call %c-memcpy (%addr s %SCP) (%addr s %CP) n)
+    (%call %c-memcpy (%addr s %SAP) (%addr s %AP) n)
+    (%call %c-memset (%addr s %CP) 32 n)
+    (%call %c-memset (%addr s %AP) 1 n)
+    (%dirty-rows! s 0 (- (%w s %ROWS) 1))
+    (%w! s %ASAVED (if cursor 1 0))
+    (%w! s %AROW (%w s %ROW)) (%w! s %ACOL (%w s %COL)) (%w! s %AATTR (%w s %ATTR))
+    (%w! s %ALT 1)))
+(def %alt-off!
+  (fn (_ s mode)
+    (if (if (= mode 0) #t (= (%w s %ALT) 0)) () (%alt-restore! s (= mode 1049)))))
+(def %alt-restore!
+  (fn (_ s cursor)
+    (def n (* (%w s %ROWS) (%w s %COLS)))
+    (%call %c-memcpy (%addr s %CP) (%addr s %SCP) n)
+    (%call %c-memcpy (%addr s %AP) (%addr s %SAP) n)
+    (%dirty-rows! s 0 (- (%w s %ROWS) 1))
+    (if (if cursor (= (%w s %ASAVED) 1) #f) (%alt-cursor! s) ())
+    (%w! s %ASAVED 0)
+    (%w! s %ALT 0)))
+(def %alt-cursor!
+  (fn (_ s) (%w! s %ROW (%w s %AROW)) (%w! s %COL (%w s %ACOL)) (%w! s %ATTR (%w s %AATTR))))
 
 (def %in-region? (fn (_ s row) (if (< row (%w s %TOP)) #f (< row (+ (%w s %BOTTOM) 1)))))
 ; A region whose top is not above its bottom, or that leaves the screen,
@@ -437,25 +486,33 @@
     h))
 
 ; A new screen of ROWS x COLS with H's cells and attributes where they
-; fit, its cursor, attribute and origin; a pane resized.  The scroll
-; region is the whole new screen.
+; fit, the main screen's too while the alternate one is up, its cursor,
+; attribute, alternate-screen state and origin; a pane resized.  The
+; scroll region is the whole new screen.
 (def vt-carry
   (fn (_ h rows cols)
     (def n (vt-make rows cols))
     (def s (rest h))
     (def t (rest n))
+    (%carry-cells! s t %CP %AP rows cols)
+    (%carry-cells! s t %SCP %SAP rows cols)
+    (%w! t %ROW (%min (%w s %ROW) (- rows 1)))
+    (%w! t %COL (%min (%w s %COL) cols))
+    (%w! t %ATTR (%w s %ATTR))
+    (%w! t %ALT (%w s %ALT)) (%w! t %ASAVED (%w s %ASAVED))
+    (%w! t %AROW (%min (%w s %AROW) (- rows 1))) (%w! t %ACOL (%min (%w s %ACOL) cols))
+    (%w! t %AATTR (%w s %AATTR))
+    (vt-origin! n (%w s %OROW) (%w s %OCOL))))
+(def %carry-cells!
+  (fn (_ s t cells attrs rows cols)
     (def keep-rows (%min rows (%w s %ROWS)))
     (def keep-cols (%min cols (%w s %COLS)))
     ((fn (self r)
        (when (< r keep-rows)
-         (do (%call %c-memcpy (%at t %CP r 0) (%at s %CP r 0) keep-cols)
-             (%call %c-memcpy (%at t %AP r 0) (%at s %AP r 0) keep-cols)
+         (do (%call %c-memcpy (%at t cells r 0) (%at s cells r 0) keep-cols)
+             (%call %c-memcpy (%at t attrs r 0) (%at s attrs r 0) keep-cols)
              (self (+ r 1)))))
-     0)
-    (%w! t %ROW (%min (%w s %ROW) (- rows 1)))
-    (%w! t %COL (%min (%w s %COL) cols))
-    (%w! t %ATTR (%w s %ATTR))
-    (vt-origin! n (%w s %OROW) (%w s %OCOL))))
+     0)))
 (def vt-row
   (fn (_ h r)
     (def s (rest h))
