@@ -83,3 +83,16 @@
              (self (+ i 1)))))
      0)
     s))
+
+; Lines A to B, each its number, between carriage returns and line feeds.
+(def spec-lines
+  (fn (_ a b)
+    (Str8 join "\r\n"
+      (List map (fn (_ n) ((prim-ref (lit convert) (lit to)) n (Type named STRING) 10)) (List range a (+ b 1))))))
+
+; A screen's history: its row count, then each row's text, oldest first,
+; the trailing blanks dropped.
+(def spec-history
+  (fn (_ h)
+    (pair (vt-history h)
+      (List map (fn (_ i) (Str8 trim-right (vt-history-row h i))) (List range 0 (vt-history h))))))

@@ -857,3 +857,102 @@ it, padding as nothing.
 ```
 ---
     "^[1;1H^[0m  本                                                                            "
+
+## the history
+
+What tmux 3.8 keeps in a pane's history for the same bytes: the row
+count, then each row, oldest first, as `capture-pane -p -S - -E -1`
+prints them.
+
+### a line feed on the bottom row keeps the top row
+
+```tmux
+(do (def h (spec-screen vt-feed-pure! (spec-lines 1 30)))
+    (write (list (spec-history h) (first (spec-rows h)))))
+```
+---
+    ((6 "1" "2" "3" "4" "5" "6") (0 "7"))
+
+### a region's line feed keeps the region's top row, wherever the region is
+
+```tmux
+(write (List map (fn (_ t) (spec-history (spec-screen vt-feed-pure! t)))
+         (list (Str8 append "^[3;10r" (spec-lines 1 6) "^[10;1H" (spec-lines 7 9))
+               (Str8 append "^[1;10r^[20;1Hlow^[1;1H" (spec-lines 1 12)))))
+```
+---
+    ((2 "3" "4") (2 "1" "2"))
+
+### ESC D and ESC E on the bottom row keep the top row; RI and DL keep none
+
+```tmux
+(write (List map (fn (_ t) (spec-history (spec-screen vt-feed-pure! t)))
+         (list "top^[24;1Hx^Dy" "top^[24;1Hx^Ey" "top^[1;1H^M" "top^[2;1Hb^[1;1H^[M")))
+```
+---
+    ((1 "top") (1 "top") (0) (0))
+
+### the alternate screen keeps none, and shows the main screen's
+
+```tmux
+(do (def h (spec-screen vt-feed-pure! (Str8 append (spec-lines 1 30) "^[?1049h" (spec-lines 1 30))))
+    (def up (spec-history h))
+    (spec-feed! vt-feed-pure! h "^[?1049l")
+    (write (list up (spec-history h))))
+```
+---
+    ((6 "1" "2" "3" "4" "5" "6") (6 "1" "2" "3" "4" "5" "6"))
+
+### ED 2 scrolls the rows to the last one used into the history first
+
+```tmux
+(write (List map (fn (_ t) (spec-history (spec-screen vt-feed-pure! t)))
+         (list "abc\r\n\r\nxy^[5;1H^[2J" "^[5;1H^[2J")))
+```
+---
+    ((3 "abc" "" "xy") (0))
+
+### ED 0 from the top-left cell does too, and from elsewhere does not
+
+```tmux
+(write (List map (fn (_ t) (first (spec-history (spec-screen vt-feed-pure! t))))
+         (list (Str8 append (spec-lines 1 30) "^[H^[J") "abc\r\ndef^[1;2H^[J")))
+```
+---
+    (30 0)
+
+### ED 3 empties the history and leaves the screen
+
+```tmux
+(do (def h (spec-screen vt-feed-pure! (Str8 append (spec-lines 1 30) "^[3J")))
+    (write (list (spec-history h) (first (spec-rows h)))))
+```
+---
+    ((0) (0 "7"))
+
+### a full history gives way, oldest first
+
+```tmux
+(do (Heap collect)
+    (write (spec-history (spec-feed! vt-feed-pure! (vt-make-history 24 80 3) (spec-lines 1 30)))))
+```
+---
+    (3 "4" "5" "6")
+
+### a screen carried to a new size keeps its history, cut to the new width
+
+```tmux
+(do (def h (spec-screen vt-feed-pure! (Str8 append (Str8 pad-right 60 #\a "") "\r\n" (spec-lines 1 25))))
+    (write (spec-history (vt-carry h 10 40))))
+```
+---
+    (2 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" "1")
+
+### a view OFF rows up shows the history's last OFF rows, then the screen's
+
+```tmux
+(do (def h (spec-screen vt-feed-pure! (spec-lines 1 30)))
+    (write (List take 3 (spec-rows (vt-view h 2)))))
+```
+---
+    ((0 "5") (1 "6") (2 "7"))

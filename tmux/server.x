@@ -19,7 +19,10 @@
 ;   %   split the active pane left and right      o   the next pane
 ;   "   split it top and bottom                   x   kill it
 ;   d   detach the client                         C-b a C-b to the pane
+;   [   copy mode (tmux/copy)                     PgUp  copy mode, a page up
 ;
+; In copy mode the active pane shows its history and keys move through
+; it; PgUp's ends at the bottom.
 ; A session ends with its last pane; the server ends with its last session.
 ;
 ; The session being worked on lives in the module's globals; the others
@@ -35,6 +38,8 @@
 (import x/sys/socket)
 (import tmux/vt vt-make vt-feed! vt-render! vt-out vt-cursor vt-size vt-origin! vt-touch! vt-carry)
 (import tmux/vt-jit vt-jit!)
+(import tmux/copy copy-enter copy-resize copy-view copy-origin! copy-touch! copy-cursor copy-position
+  copy-do copy-vi? copy-key)
 (import tmux/layout layout-rects layout-borders layout-split layout-remove layout-panes)
 (import tmux/proto proto-conn proto-fd proto-send! proto-send-text! proto-fill! proto-each! proto-text
   proto-fields)
@@ -52,6 +57,7 @@
 (def %to-int (fn (_ s) ((prim-ref (lit convert) (lit to)) s (Type named INTEGER) 10)))
 (def %int (fn (_ r) (if (> r 2147483647) (- r 4294967296) r)))
 (def %min (fn (_ a b) (if (< a b) a b)))
+(def %max (fn (_ a b) (if (< a b) b a)))
 (def %libc (fn (_ name) ((prim-ref (lit ffi) (lit dlsym)) ((prim-ref (lit ffi) (lit dlopen)) () 1) name)))
 
 ; libc's doors, looked up as the server starts: a handle is a fact of the
@@ -95,12 +101,16 @@
 
 ; --- the session being worked on -----------------------------------------
 
-; A pane: (ID PID FD SCREEN RECT), RECT (ROW COL ROWS COLS).
+; A pane: (ID PID FD SCREEN RECT COPY), RECT (ROW COL ROWS COLS), COPY its
+; copy mode or nil.
 (def %pane-id (fn (_ p) (first p)))
 (def %pane-pid (fn (_ p) (List ref 1 p)))
 (def %pane-fd (fn (_ p) (List ref 2 p)))
 (def %pane-screen (fn (_ p) (List ref 3 p)))
 (def %pane-rect (fn (_ p) (List ref 4 p)))
+(def %pane-copy (fn (_ p) (List ref 5 p)))
+(def %with-copy
+  (fn (_ p c) (list (%pane-id p) (%pane-pid p) (%pane-fd p) (%pane-screen p) (%pane-rect p) c)))
 
 (def %name "")       ; the session's name
 (def %created 0)     ; when it was made, in seconds since the epoch
@@ -183,12 +193,12 @@
     (def child (%shell cols rows cwd))
     (when (null? child) (Err raise 'io "x-tmux: no pseudo-terminal for a pane" ()))
     (def screen (vt-origin! (vt-make rows cols) (first rect) (List ref 1 rect)))
-    (set! %panes (List append %panes (list (list id (first child) (rest child) screen rect))))
+    (set! %panes (List append %panes (list (list id (first child) (rest child) screen rect ()))))
     id))
 
 ; Every pane placed where the layout puts it now: a pane whose size has
-; changed carried to a screen of the new size, its terminal told; every
-; screen marked to be drawn whole.
+; changed carried to a screen of the new size, its terminal told, and its
+; copy mode carried too; every screen and copy marked to be drawn whole.
 (def %place!
   (fn (_)
     (List for-each
@@ -198,13 +208,16 @@
         (def rows (List ref 2 rect))
         (def cols (List ref 3 rect))
         (def old (%pane-screen p))
+        (def same (if (= (first (vt-size old)) rows) (= (rest (vt-size old)) cols) #f))
         (def screen
-          (if (if (= (first (vt-size old)) rows) (= (rest (vt-size old)) cols) #f)
-            old
-            (do (Pty window! (%pane-fd p) cols rows) (vt-carry old rows cols))))
+          (if same old (do (Pty window! (%pane-fd p) cols rows) (vt-carry old rows cols))))
         (vt-origin! screen (first rect) (List ref 1 rect))
         (vt-touch! screen)
-        (%set-pane! (list (%pane-id p) (%pane-pid p) (%pane-fd p) screen rect)))
+        (def c
+          (if (null? (%pane-copy p)) ()
+            (copy-touch! (copy-origin! (if same (%pane-copy p) (copy-resize (%pane-copy p) rows cols))
+                           (first rect) (List ref 1 rect)))))
+        (%set-pane! (list (%pane-id p) (%pane-pid p) (%pane-fd p) screen rect c)))
       (layout-rects %tree 0 0 (- %rows 1) %cols))))
 
 ; A pane gone: its program hung up and reaped, its space given back.
@@ -286,53 +299,100 @@
     (%out (Str8 append (%goto (- %rows 1) 0) (%esc "[0;30;42m")
             (Str8 pad-right %cols #\space (Str8 append "[" %name "] 0:x-tmux*")) (%esc "[0m")))))
 
-; Each pane's changed rows, then the cursor where the active pane has it.
+; Each pane's changed rows, a pane in copy mode its copy's with the
+; position over its top right, then the cursor where the active pane has
+; it.
 (def %render!
   (fn (_)
     (%out (%esc "[?25l"))
     (List for-each
       (fn (_ p)
-        (def h (%pane-screen p))
-        (%out-bytes (vt-out h) (vt-render! h)))
+        (def c (%pane-copy p))
+        (def h (if (null? c) (%pane-screen p) (copy-view c)))
+        (def n (vt-render! h))
+        (%out-bytes (vt-out h) n)
+        (when (if (null? c) #f (< 0 n)) (%draw-position p c)))
       %panes)
     (def p (%pane %active))
-    (def c (vt-cursor (%pane-screen p)))
+    (def c (if (null? (%pane-copy p)) (vt-cursor (%pane-screen p)) (copy-cursor (%pane-copy p))))
     (def rect (%pane-rect p))
     (%out (Str8 append (%esc "[0m")
             (%goto (+ (first rect) (first c)) (+ (List ref 1 rect) (%min (rest c) (- (List ref 3 rect) 1))))
             (%esc "[?25h")))))
 
+; A copy mode's position, black on yellow at the right of its pane's top
+; row.
+(def %draw-position
+  (fn (_ p c)
+    (def rect (%pane-rect p))
+    (def text (copy-position c))
+    (%out (Str8 append (%goto (first rect) (+ (List ref 1 rect) (%max 0 (- (List ref 3 rect) (Str8 length text)))))
+            (%esc "[0;30;43m") text (%esc "[0m")))))
+
 ; --- keys ---------------------------------------------------------------
 
-; One key after the prefix.
-(def %command!
-  (fn (_ b fd)
-    (set! %touched #t)
-    (match
-      ((= b 37) (%split! (lit h)))
-      ((= b 34) (%split! (lit v)))
-      ((= b 111) (set! %active (%after (layout-panes %tree) %active)))
-      ((= b 120) (%remove! %active))
-      ((= b 100) (%detach! (Str8 append "[detached (from session " %name ")]")))
-      ((= b 2) (%call %c-write fd (%str->ptr (%byte 2)) 1))
-      (#t ()))))
+; Whether copy mode reads vi's keys, decided as the server starts.
+(def %vi #f)
 
-; N typed bytes at P: runs of keys to the active pane, a prefix and its
-; command handled where they fall.
+; The key at byte I of the N at P, after the prefix; answers the byte
+; after it.  PgUp starts copy mode a page up, one that ends at the bottom.
+(def %command!
+  (fn (_ p i n fd)
+    (set! %touched #t)
+    (def b (%pref p i 1))
+    (match
+      ((= b 27)
+        ((fn (_ k) (when (eq? (first k) (lit page-up)) (do (%copy! #t) (%copy-do! (lit page-up)))) (rest k))
+         (copy-key p i n #f)))
+      (#t
+        (do (match
+              ((= b 37) (%split! (lit h)))
+              ((= b 34) (%split! (lit v)))
+              ((= b 111) (set! %active (%after (layout-panes %tree) %active)))
+              ((= b 120) (%remove! %active))
+              ((= b 100) (%detach! (Str8 append "[detached (from session " %name ")]")))
+              ((= b 91) (%copy! #f))
+              ((= b 2) (%call %c-write fd (%str->ptr (%byte 2)) 1))
+              (#t ()))
+            (+ i 1))))))
+
+; The active pane into copy mode, EXIT as tmux/copy's copy-enter, unless
+; it is in it.
+(def %copy!
+  (fn (_ exit)
+    (def p (%pane %active))
+    (when (null? (%pane-copy p))
+      (%set-pane! (%with-copy p (copy-enter (%pane-screen p) exit))))))
+; The active pane's copy mode after CMD: out of it, its screen drawn
+; whole, when CMD ends it.
+(def %copy-do!
+  (fn (_ cmd)
+    (def p (%pane %active))
+    (set! %touched #t)
+    (def c (copy-do (%pane-copy p) cmd))
+    (when (null? c) (vt-touch! (%pane-screen p)))
+    (%set-pane! (%with-copy p c))))
+
+; N typed bytes at P: runs of keys to the active pane, or each a command
+; while it is in copy mode; a prefix and its command handled where they
+; fall.
 (def %keys!
   (fn (_ p n)
     ((fn (self i from)
        (unless (if %done #t (null? %client))
-         (do (def fd (%pane-fd (%pane %active)))
+         (do (def pane (%pane %active))
+             (def fd (%pane-fd pane))
              (if (= i n)
                (when (< from i) (%call %c-write fd (%int->ptr (+ (%ptr->int p) from)) (- i from)))
                (do (def b (%pref p i 1))
                    (match
-                     (%prefix (do (set! %prefix #f) (%command! b fd) (self (+ i 1) (+ i 1))))
+                     (%prefix (do (set! %prefix #f) ((fn (_ next) (self next next)) (%command! p i n fd))))
                      ((= b 2)
                        (do (when (< from i) (%call %c-write fd (%int->ptr (+ (%ptr->int p) from)) (- i from)))
                            (set! %prefix #t)
                            (self (+ i 1) (+ i 1))))
+                     ((not (null? (%pane-copy pane)))
+                       ((fn (_ k) (%copy-do! (first k)) (self (rest k) (rest k))) (copy-key p i n %vi)))
                      (#t (self (+ i 1) from))))))))
      0 0)))
 
@@ -570,6 +630,7 @@
     (Sys signal 1 (Sys sig-ign))
     (%resolve!)
     (vt-jit!)
+    (set! %vi (copy-vi?))
     (set! %buf (%make-str 4097))
     (set! %obuf (%make-str (+ %ocap 1)))
     (set! %listen fd)

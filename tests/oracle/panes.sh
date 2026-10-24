@@ -18,6 +18,8 @@
 #   kill      C-b x: the active pane gone, its sibling given its space
 #   exit      a pane's shell exiting removes the pane
 #   resize    the window grown to 100x30: the pane's terminal follows
+#   copy      C-b [ and C-b PgUp: the history paged through, the position
+#             at the top right, q and a page down to the bottom leaving
 #   detach    C-b d: the client leaves with status 0 and tmux's line, the
 #             session kept by the server
 #   ls        the session listed as tmux lists one
@@ -130,6 +132,30 @@ tmux send-keys -t "$s" 'stty size' Enter
 wait_for '29 100'
 check "resize -- the pane's terminal is the window less the status line" "$(screen | grep -c '^29 100$')" "1"
 
+# copy
+tmux send-keys -t "$s" 'clear; seq 1 200' Enter
+wait_for '200'
+tmux send-keys -t "$s" C-b '['
+wait_for '[0/'
+check "copy -- C-b [ shows the position at the top right" "$(row 1 | grep -cE ' \[0/[0-9]+\]$')" "1"
+tmux send-keys -t "$s" PageUp
+wait_for '[27/'
+check "copy -- PgUp is a page, two rows short" "$(row 1 | grep -cE ' \[27/[0-9]+\]$')" "1"
+tmux send-keys -t "$s" Up
+sleep 1
+check "copy -- Up moves the cursor, not the page" "$(row 1 | grep -cE ' \[27/[0-9]+\]$')" "1"
+tmux send-keys -t "$s" q
+sleep 1
+check "copy -- q leaves, the pane as it is" "$(screen | grep -c '\[[0-9]*/[0-9]*\]$') $(screen | grep -c '^200$')" "0 1"
+tmux send-keys -t "$s" C-b PageUp
+wait_for '[27/'
+tmux send-keys -t "$s" PageDown
+sleep 1
+check "copy -- after C-b PgUp, a page down to the bottom leaves" "$(screen | grep -c '\[[0-9]*/[0-9]*\]$')" "0"
+tmux send-keys -t "$s" 'echo still-here' Enter
+wait_for 'still-here'
+check "copy -- keys reach the shell again" "$(screen | grep -c '^still-here$')" "1"
+
 # detach
 tmux send-keys -t "$s" C-b d
 wait_for 'EXIT 0'
@@ -149,7 +175,7 @@ wait_for 'EXIT 1'
 check "attach -- a session that is not there refused as tmux refuses it" "$(screen | grep -cxF "can't find session: nosuch")" "1"
 tmux send-keys -t "$s" "$xt attach; echo EXIT \$?" Enter
 wait_for '[0] 0:x-tmux*'
-check "attach -- the session back as it was left" "$(screen | grep -c '^29 100$') $(row 30)" "1 [0] 0:x-tmux*"
+check "attach -- the session back as it was left" "$(screen | grep -c '^still-here$') $(row 30)" "1 [0] 0:x-tmux*"
 tmux send-keys -t "$s" "$xt ls" Enter
 wait_for '(attached)'
 check "attach -- ls marks the session attached" "$(screen | grep -c '^0: 1 windows (created .*) (attached)$')" "1"

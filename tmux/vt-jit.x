@@ -27,8 +27,8 @@
 
 (module tmux/vt-jit)
 
-(import tmux/vt vt-make vt-origin! vt-row vt-attrs vt-cursor vt-out vt-feed-pure! vt-render-pure!
-  vt-feed-compiled! vt-render-compiled! vt-adopt!)
+(import tmux/vt vt-make vt-make-history vt-origin! vt-row vt-attrs vt-history-same? vt-cursor vt-out
+  vt-feed-pure! vt-render-pure! vt-feed-compiled! vt-render-compiled! vt-adopt!)
 (import x/tool/jit-group jit-group)
 (import x/sys/gc)
 
@@ -45,7 +45,9 @@
         (pair 'SC 36) (pair 'SA 37) (pair 'ALT 38) (pair 'ASAVED 39)
         (pair 'AROW 58) (pair 'ACOL 59) (pair 'AATTR 60)
         (pair 'EXT 10) (pair 'SEXT 61) (pair 'UNEED 63) (pair 'RX 65) (pair 'RN 66)
-        (pair 'MAP 67) (pair 'SMAP 68) (pair 'RT 70) (pair 'RE 71) (pair 'RH 72) (pair 'RB 73)))
+        (pair 'MAP 67) (pair 'SMAP 68) (pair 'RT 70) (pair 'RE 71) (pair 'RH 72) (pair 'RB 73)
+        (pair 'HC 74) (pair 'HA 75) (pair 'HX 76) (pair 'HLIM 77) (pair 'HHEAD 78) (pair 'HCOUNT 79)
+        (pair 'HD 80)))
 (def %vj-params 20)
 
 ; A cell's extended slot copied with it when the cell holds a character
@@ -66,10 +68,11 @@
 ; (descending), 5 apply SGR parameter K, 6 save cells K..J-1 to the
 ; alternate screen's buffers, 7 restore them, 8 look from parameter K for
 ; one naming an alternate screen, 9 blank cells K..J-1 with the default
-; attribute, 10 blank the screen's rows RT..RE-1, 11 turn the map's rows
-; K..RE up one X times, 12 down, 13 save the map then the cells, 14
-; restore the map.  Modes 1, 2, 3, 7 and 10 chain to NMODE with NK and NJ
-; when they end.
+; attribute, 11 turn the map's rows K..RE up one X times, 12 down, 13 save
+; the map then the cells, 14 restore the map, 15 copy cells K..J-1 to the
+; history's from HD.  Modes 1, 2, 3, 7 and 15 chain to NMODE with NK and
+; NJ when they end.  An ED is tmux/vt's, handed over as a byte past ASCII
+; is.
 ;
 ; Cells are found through the row map, (CELL ROW COL), and the dirty
 ; marks go by the screen's rows: an edit within a row marks it as it
@@ -102,9 +105,6 @@
             ; the cursor's row's columns A..B-1 blanked, the row marked
             (self (list 'do (list 'set 'K (list 'CELL 'ROW (List ref 1 e))) (list 'set 'J (list 'CELL 'ROW (List ref 2 e)))
                     '(%mem-byte-set-at! DIRTY ROW 1) '(set NMODE 0) '(set MODE 1))))
-          ((eq? (first e) 'BLANK-ROWS)
-            (self (list 'do (list 'set 'RT (List ref 1 e)) (list 'set 'RE (List ref 2 e))
-                    '(set K 0) '(set J 0) '(set NMODE 0) '(set MODE 10))))
           ((eq? (first e) 'SCROLL-UP)
             ; rows TOP..BOT up N: the map turned, a freed row blanked a turn
             (self (list 'do (list 'set 'X (list 'MIN (List ref 3 e) (list '+ (list '- (List ref 2 e) (List ref 1 e)) 1)))
@@ -115,7 +115,20 @@
           ((eq? (first e) 'MIN)
             (self (list 'if (list '< (List ref 1 e) (List ref 2 e)) (List ref 1 e) (List ref 2 e))))
           ((eq? (first e) 'LF)
-            (self '(if (= ROW BOT) (SCROLL-UP TOP BOT 1) (if (< ROW (- ROWS 1)) (set ROW (+ ROW 1)) 0))))
+            (self '(if (= ROW BOT)
+                     (if (and (= ALT 0) (> HLIM 0)) (KEEP-AND-SCROLL) (SCROLL-UP TOP BOT 1))
+                     (if (< ROW (- ROWS 1)) (set ROW (+ ROW 1)) 0))))
+          ((eq? (first e) 'KEEP-AND-SCROLL)
+            ; the region up one, as tmux/vt's %scroll-up!: its top row copied
+            ; to the history's newest slot by mode 15, which chains to the
+            ; scroll's mode 11
+            (self '(do (SCROLL-UP TOP BOT 1) (set NMODE 11) (set NK K) (set NJ 0)
+                       (set HD (+ HHEAD HCOUNT))
+                       (if (< HD HLIM) 0 (set HD (- HD HLIM)))
+                       (set HD (* HD COLS))
+                       (if (< HCOUNT HLIM) (set HCOUNT (+ HCOUNT 1))
+                         (set HHEAD (if (< (+ HHEAD 1) HLIM) (+ HHEAD 1) 0)))
+                       (set K (CELL TOP 0)) (set J (+ K COLS)) (set MODE 15))))
           ((eq? (first e) 'ALT-SWITCH)
             ; the alternate screen up (h) or down (l) for mode P, as tmux/vt's
             ; %alt-on! and %alt-off!: a save then a clear, or a restore
@@ -176,17 +189,24 @@
 (def %vj-modes
   (list 'match
     (list '(= MODE 1) (list 'if '(< K J) %vj-blank-step %vj-chain))
-    (list '(= MODE 10)
-      (list 'if '(< K J) %vj-blank-step
-        '(if (< RT RE)
-           (do (set K (CELL RT 0)) (set J (+ K COLS)) (%mem-byte-set-at! DIRTY RT 1) (set RT (+ RT 1)))
-           (do (set MODE NMODE) (set K NK) (set J NJ) (set NMODE 0)))))
     (list '(= MODE 11) (%vj-turn #t))
     (list '(= MODE 12) (%vj-turn #f))
     (list '(= MODE 13)
       '(if (< K ROWS)
          (do (%mem-set-at! SMAP K (ROWAT K)) (set K (+ K 1)))
          (do (set K 0) (set J (* ROWS COLS)) (set NMODE 9) (set NK 0) (set NJ (* ROWS COLS)) (set MODE 6))))
+    (list '(= MODE 15)
+      (list 'if '(< K J)
+        (list 'if (list 'and '(and (< (+ K 7) J) (and (= (& K 7) 0) (= (& HD 7) 0)))
+                         (%vj-ascii-word '(%mem-ref-at CELLS (>> K 3))))
+          '(do (%mem-set-at! HC (>> HD 3) (%mem-ref-at CELLS (>> K 3)))
+               (%mem-set-at! HA (>> HD 3) (%mem-ref-at ATTRS (>> K 3)))
+               (set K (+ K 8)) (set HD (+ HD 8)))
+          (list 'do (%vj-slot-copy 'HX 'HD 'EXT 'CELLS 'K)
+                '(%mem-byte-set-at! HC HD (%mem-byte-ref-at CELLS K))
+                '(%mem-byte-set-at! HA HD (%mem-byte-ref-at ATTRS K))
+                '(set K (+ K 1)) '(set HD (+ HD 1))))
+        %vj-chain))
     (list '(= MODE 14)
       '(if (< K ROWS) (do (%mem-set-at! MAP K (%mem-ref-at SMAP K)) (set K (+ K 1))) (set MODE 0)))
     ; a word a turn where both ends are word-aligned and eight remain, else a byte
@@ -321,17 +341,6 @@
        (match ((= (ARG 0 0) 0) (BLANK-IN-ROW (MIN COL COLS) COLS))
               ((= (ARG 0 0) 1) (BLANK-IN-ROW 0 (MIN (+ COL 1) COLS)))
               (#t (BLANK-IN-ROW 0 COLS))))
-     ; below: the cursor's row from it, then the rows after; above: the
-     ; rows before, then the cursor's row to it
-     ((= B 74)
-       (match ((= (ARG 0 0) 0)
-                (do (BLANK-IN-ROW (MIN COL COLS) COLS)
-                    (set RT (+ ROW 1)) (set RE ROWS) (set NMODE 10) (set NK 0) (set NJ 0)))
-              ((= (ARG 0 0) 1)
-                (do (BLANK-ROWS 0 ROW)
-                    (%mem-byte-set-at! DIRTY ROW 1)
-                    (set NMODE 1) (set NK (CELL ROW 0)) (set NJ (CELL ROW (MIN (+ COL 1) COLS)))))
-              (#t (BLANK-ROWS 0 ROWS))))
      ((= B 114)
        (if (and (< (ARG 0 1) (ARG 1 ROWS)) (< (ARG 1 ROWS) (+ ROWS 1)))
          (do (set TOP (- (ARG 0 1) 1)) (set BOT (- (ARG 1 ROWS) 1)) (GOTO 0 0))
@@ -387,8 +396,10 @@
       (list 'if '(< POS END)
         (list 'do '(set B (%mem-byte-ref-at IN POS))
           ; a byte past ASCII, or one where a character is part read, is
-          ; tmux/vt's: answer 1, POS at it, for the driver to hand over
-          (list 'if '(or (> UNEED 0) (and (= STATE 0) (> B 127)))
+          ; tmux/vt's: answer 1, POS at it, for the driver to hand over.
+          ; So is an ED's final, as an erase of the screen may scroll it
+          ; into the history first.
+          (list 'if '(or (or (> UNEED 0) (and (= STATE 0) (> B 127))) (and (= STATE 2) (= B 74)))
             1
             (list 'do
               (list 'if '(> STATE 0)
@@ -546,19 +557,23 @@
 
 ; --- agreement -----------------------------------------------------------
 
-; Two screens the same: every row's cells and attributes, and the cursor.
+; Two screens the same: every row's cells and attributes, the history's,
+; and the cursor.
 (def vt-same?
   (fn (_ a b)
     (def rows-same
-      ((fn (self r)
-         (if (= r 24) #t
-           (if (if (str=? (vt-row a r) (vt-row b r)) (str=? (vt-attrs a r) (vt-attrs b r)) #f)
-             (self (+ r 1))
-             #f)))
-       0))
+      (if (vt-history-same? a b) (%rows-same? a b) #f))
     (if rows-same
       (if (= (first (vt-cursor a)) (first (vt-cursor b))) (= (rest (vt-cursor a)) (rest (vt-cursor b))) #f)
       #f)))
+(def %rows-same?
+  (fn (_ a b)
+    ((fn (self r)
+       (if (= r 24) #t
+         (if (if (str=? (vt-row a r) (vt-row b r)) (str=? (vt-attrs a r) (vt-attrs b r)) #f)
+           (self (+ r 1))
+           #f)))
+     0)))
 
 ; An exercise fed to two 24x80 screens in reads of CHUNK bytes, one by
 ; tmux/vt's engine and one by ENGINE, each read rendered by both at
@@ -569,8 +584,8 @@
 ; read of fewer: what is live is two screens.
 (def vt-agree
   (fn (_ engine ex chunk)
-    (def a (vt-origin! (vt-make 24 80) 2 41))
-    (def b (vt-origin! (vt-make 24 80) 2 41))
+    (def a (vt-origin! (vt-make-history 24 80 40) 2 41))
+    (def b (vt-origin! (vt-make-history 24 80 40) 2 41))
     (def base (%ptr->int (%str->ptr (first ex))))
     (def len (rest ex))
     ((fn (self at)
@@ -599,7 +614,7 @@
 ; change to them.
 (def vt-jit-make
   (fn (_)
-    (jit-group "x-tmux-vt-7" (fn (_) (list (vt-jit-form) (vt-render-form)))
+    (jit-group "x-tmux-vt-8" (fn (_) (list (vt-jit-form) (vt-render-form)))
       (fn (_ fns replayed?)
         (def engine (pair (first fns) (first (rest fns))))
         (unless replayed?
