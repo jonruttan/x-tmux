@@ -18,7 +18,16 @@
 #   kill      C-b x: the active pane gone, its sibling given its space
 #   exit      a pane's shell exiting removes the pane
 #   resize    the window grown to 100x30: the pane's terminal follows
-#   leave     C-b d: x-tmux ends with status 0, its shells hung up
+#   detach    C-b d: the client leaves with status 0 and tmux's line, the
+#             session kept by the server
+#   ls        the session listed as tmux lists one
+#   attach    the session back, as it was left; a session that is not
+#             there refused as tmux refuses it
+#   exited    the last pane's shell exiting ends the session, the client
+#             and the server
+#   kill      kill-server ends a session made with new -d, and the server
+#
+# x-tmux runs from a shell in the tmux pane, on a socket of its own.
 #
 # The real tmux is the oracle twice over: it runs the test, and the sizes
 # and layouts asserted are the ones it gives its own panes.
@@ -29,7 +38,7 @@ fx=$(mktemp -d "${TMPDIR:-/tmp}/x-tmux-oracle.XXXXXX")
 mkdir -p "$fx/langs"
 ln -s "$BUNDLE" "$fx/langs/x-tmux"
 s=xtmux-oracle-$$
-trap 'tmux kill-session -t $s 2>/dev/null; rm -rf "$fx"' EXIT
+trap 'tmux kill-session -t $s 2>/dev/null; X_LANG_DIR=$fx/langs/ TMUX_TMPDIR=$fx $X -l tmux -- -L oracle kill-server 2>/dev/null; rm -rf "$fx"' EXIT
 failed=0
 
 screen() { tmux capture-pane -p -t "$s" | sed 's/ *$//'; }
@@ -48,7 +57,9 @@ check() {
 }
 
 tmux new-session -d -s "$s" -x 80 -y 24 \
-	"SHELL=/bin/sh X_LANG_DIR=$fx/langs/ $X -l tmux -- new 2>$fx/err; echo EXIT \$? > $fx/status; sleep 600"
+	"env SHELL=/bin/sh PS1='$ ' X_LANG_DIR=$fx/langs/ TMUX_TMPDIR=$fx /bin/sh"
+xt="$X -l tmux -- -L oracle"
+tmux send-keys -t "$s" "$xt new 2>$fx/err; echo EXIT \$?" Enter
 wait_for '[0] 0:x-tmux*' || { echo "FAIL: no status line" >&2; cat "$fx/err" >&2; exit 1; }
 
 # type
@@ -119,10 +130,45 @@ tmux send-keys -t "$s" 'stty size' Enter
 wait_for '29 100'
 check "resize -- the pane's terminal is the window less the status line" "$(screen | grep -c '^29 100$')" "1"
 
-# leave
+# detach
 tmux send-keys -t "$s" C-b d
-i=0
-while [ ! -s "$fx/status" ] && [ $i -lt 60 ]; do i=$((i + 1)); sleep 0.5; done
-check "leave -- C-b d ends x-tmux with status 0" "$(cat "$fx/status" 2>/dev/null)" "EXIT 0"
+wait_for 'EXIT 0'
+check "detach -- the client leaves with tmux's line and status 0" \
+	"$(screen | grep -cxF '[detached (from session 0)]') $(screen | grep -cx 'EXIT 0')" "1 1"
+
+# ls
+tmux send-keys -t "$s" 'clear' Enter
+sleep 1
+tmux send-keys -t "$s" "$xt ls; echo LS \$?" Enter
+wait_for 'LS 0'
+check "ls -- the session kept, listed as tmux lists it" "$(screen | grep -cE '^0: 1 windows \(created [A-Z][a-z]{2} [A-Z][a-z]{2} [ 0-9][0-9] [0-9:]{8} [0-9]{4}\)$')" "1"
+
+# attach
+tmux send-keys -t "$s" "$xt attach -t nosuch; echo EXIT \$?" Enter
+wait_for 'EXIT 1'
+check "attach -- a session that is not there refused as tmux refuses it" "$(screen | grep -cxF "can't find session: nosuch")" "1"
+tmux send-keys -t "$s" "$xt attach; echo EXIT \$?" Enter
+wait_for '[0] 0:x-tmux*'
+check "attach -- the session back as it was left" "$(screen | grep -c '^29 100$') $(row 30)" "1 [0] 0:x-tmux*"
+tmux send-keys -t "$s" "$xt ls" Enter
+wait_for '(attached)'
+check "attach -- ls marks the session attached" "$(screen | grep -c '^0: 1 windows (created .*) (attached)$')" "1"
+
+# exited
+tmux send-keys -t "$s" 'exit' Enter
+wait_for '[exited]'
+check "exited -- the client leaves with tmux's line" "$(screen | grep -cxF '[exited]')" "1"
+tmux send-keys -t "$s" "clear; $xt ls; echo GONE \$?" Enter
+wait_for 'GONE 1'
+check "exited -- the session and the server gone with the last pane" "$(screen | grep -c '^no server running on ')" "1"
+
+# kill
+tmux send-keys -t "$s" "clear; $xt new -d -s work; $xt ls | sed 's/ (created.*//'; echo MADE \$?" Enter
+wait_for 'MADE 0'
+check "kill -- new -d makes the session named" "$(screen | grep -cx 'work: 1 windows')" "1"
+tmux send-keys -t "$s" "clear; $xt kill-server; echo KILLED \$?; $xt ls; echo LISTED \$?" Enter
+wait_for 'LISTED 1'
+check "kill -- kill-server ends it and the server" \
+	"$(screen | grep -cx 'KILLED 0') $(screen | grep -c '^no server running on ') $(ls "$fx/x-tmux-$(id -u)" | wc -l | tr -d ' ')" "1 1 0"
 
 exit $failed
