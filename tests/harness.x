@@ -9,6 +9,7 @@
 ; The lang kit's generator writes tests/lib/harness.gen.x: the dialect
 ; lang.xon declares, the bundle's root on the import path, then this file.
 (import tmux/base)
+(import x/sys/gc)
 
 ; What a spec reads of a screen.  TEXT's ^ stands for ESC, so a sequence
 ; is spelled as it prints: "^[2;3H".
@@ -41,8 +42,10 @@
     (feed h (%spec-ptr->int (%spec-str->ptr (first b))) (rest b))
     h))
 
-; TEXT fed to a new 24x80 screen by FEED; the screen.
-(def spec-screen (fn (_ feed text) (spec-feed! feed (vt-make 24 80) text)))
+; TEXT fed to a new 24x80 screen by FEED; the screen.  The heap is
+; collected first: x collects only when asked, and a spec file's cases
+; run in one process.
+(def spec-screen (fn (_ feed text) (Heap collect) (spec-feed! feed (vt-make 24 80) text)))
 
 ; A screen's rows that are not blank, as (ROW "TEXT") with the trailing
 ; blanks dropped, then (cursor ROW COL).
