@@ -8,6 +8,8 @@
 # back with capture-pane.  Each pane's shell is /bin/sh.
 #
 #   type      a command typed in the first pane, and its output
+#   alt       a program on the alternate screen, its screen gone when it
+#             leaves, the shell's lines back
 #   split -h  C-b %: a second pane right of the first, the border between,
 #             each pane's terminal its own size (stty size)
 #   split -v  C-b ": a third pane below the second
@@ -53,6 +55,15 @@ tmux send-keys -t "$s" 'echo one; echo two' Enter
 wait_for 'two'
 check "type -- the command's output in the pane" "$(screen | grep -c '^one$') $(screen | grep -c '^two$')" "1 1"
 check "type -- the status line on the bottom row" "$(row 24)" "[0] 0:x-tmux*"
+
+# alt
+tmux send-keys -t "$s" "printf '\\033[?1049h\\033[HFULL-SCREEN'; sleep 2; printf '\\033[?1049l'; echo after-alt" Enter
+wait_for 'FULL-SCREEN'
+check "alt -- the program's screen shows alone" "$(screen | grep -c '^one$') $(row 1)" "0 FULL-SCREEN"
+wait_for 'after-alt'
+check "alt -- its screen gone when it leaves, the shell's lines back" "$(screen | grep -c '^FULL-SCREEN') $(screen | grep -c '^one$') $(screen | grep -c '^after-alt$')" "0 1 1"
+tmux send-keys -t "$s" 'clear' Enter
+sleep 1
 
 # split -h
 tmux send-keys -t "$s" C-b %

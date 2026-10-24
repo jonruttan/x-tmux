@@ -390,3 +390,151 @@ what every sequence does from there.
 ```
 ---
     (((0 "one") (1 "two") ('cursor 1 3)) (2 . 3))
+
+## the alternate screen
+
+### ?1049l brings the main screen back
+
+```tmux
+(write (spec-vt "main^[?1049halt^[?1049l"))
+```
+---
+    ((0 "main") ('cursor 0 4))
+
+### ?1049h shows a cleared screen, the cursor where it was
+
+```tmux
+(write (spec-vt "main^[?1049h"))
+```
+---
+    (('cursor 0 4))
+
+### ?1049l puts the cursor back where ?1049h found it
+
+```tmux
+(write (spec-vt "main^[5;5H^[?1049h^[1;1Hx^[?1049ly"))
+```
+---
+    ((0 "main") (4 "    y") ('cursor 4 5))
+
+### ?47h shows a cleared screen
+
+```tmux
+(write (spec-vt "main^[?47halt"))
+```
+---
+    ((0 "    alt") ('cursor 0 7))
+
+### ?47l brings the main screen back, the cursor left where it is
+
+```tmux
+(write (spec-vt "main^[?47halt^[?47l"))
+```
+---
+    ((0 "main") ('cursor 0 7))
+
+### ?47l restores no cursor
+
+```tmux
+(write (spec-vt "main^[5;5H^[?47h^[1;1Hx^[?47ly"))
+```
+---
+    ((0 "myin") ('cursor 0 2))
+
+### ?1047h shows a cleared screen
+
+```tmux
+(write (spec-vt "main^[?1047halt"))
+```
+---
+    ((0 "    alt") ('cursor 0 7))
+
+### ?1047l brings the main screen back
+
+```tmux
+(write (spec-vt "main^[?1047halt^[?1047l"))
+```
+---
+    ((0 "main") ('cursor 0 7))
+
+### ?1047l restores no cursor
+
+```tmux
+(write (spec-vt "main^[5;5H^[?1047h^[1;1Hx^[?1047ly"))
+```
+---
+    ((0 "myin") ('cursor 0 2))
+
+### an h with the alternate screen up does nothing
+
+```tmux
+(write (spec-vt "main^[?1049ha^[?1049hb^[?1049l"))
+```
+---
+    ((0 "main") ('cursor 0 4))
+
+### an l with it down does nothing
+
+```tmux
+(write (spec-vt "main^[?1049lz"))
+```
+---
+    ((0 "mainz") ('cursor 0 5))
+
+### the alternate screen shown again is cleared again
+
+```tmux
+(write (spec-vt "main^[?1049ha^[?1049l^[?1049hb"))
+```
+---
+    ((0 "    b") ('cursor 0 5))
+
+### ?1049l after ?47h restores the screen, but no cursor was saved
+
+```tmux
+(write (spec-vt "main^[?47ha^[?1049l"))
+```
+---
+    ((0 "main") ('cursor 0 5))
+
+### the scroll region holds across the switch
+
+```tmux
+(write (spec-vt "^[2;5r^[?1049h^[5;1Hr5\nnext^[?1049l^[5;1H\nafter"))
+```
+---
+    ((4 "after") ('cursor 4 5))
+
+### DECRC in the alternate screen, then ?1049l's own restore
+
+```tmux
+(write (spec-vt "^[3;3H^7^[?1049h^[1;1H^8m^[?1049l"))
+```
+---
+    (('cursor 2 2))
+
+### DECSC's save is its own, not ?1049's
+
+```tmux
+(write (spec-vt "^[?1049h^[3;3H^7^[?1049l^[1;1H^8n"))
+```
+---
+    ((2 "  n") ('cursor 2 3))
+
+### ?1049 saves the attribute with the cursor and restores both
+
+```tmux
+(do (def h (spec-screen vt-feed-pure! "^[31mred^[?1049h^[0mA^[?1049lX"))
+    (write (spec-attrs h 0 4)))
+```
+---
+    (9 9 9 9)
+
+### the alternate screen is cleared with the default attribute, not the current one
+
+```tmux
+(do (def h (spec-screen vt-feed-pure! "^[42m^[?1049hA"))
+    (write (spec-attrs h 0 3)))
+```
+---
+    (65 1 1)

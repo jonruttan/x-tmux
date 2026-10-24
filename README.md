@@ -24,9 +24,7 @@ The prefix is C-b, and after it:
 
 A pane whose shell exits is removed and its space given to its sibling;
 the window follows the terminal's size.  There is no server yet, so
-leaving ends the panes rather than detaching from them; and no
-alternate-screen save, so a full-screen program's last screen stays when
-it exits.
+leaving ends the panes rather than detaching from them.
 
 ## The screen
 
@@ -41,7 +39,8 @@ Read: printable bytes (wrapping at the margin, tmux's cursor running to
 column 80 before a wrap), CR, LF, VT, FF, BS, TAB; CUP, HVP, CUU, CUD,
 CUF, CUB, CHA, VPA; EL, ED, ECH; ICH, DCH; IL, DL; DECSTBM, IND, RI,
 NEL; DECSC, DECRC; SGR bold, reverse, foreground and background; the
-alternate screen's clear; OSC strings and charset designations,
+alternate screen, ?1049 (with the cursor saved and restored), ?47 and
+?1047, as tmux keeps it; OSC strings and charset designations,
 swallowed.  Not yet: UTF-8 widths (a byte is a cell), scrollback, mouse
 and bracketed-paste modes.
 

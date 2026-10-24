@@ -11,8 +11,9 @@ after the first read they disagree on.
 An exercise is N random operations from a seed: printable runs, carriage
 returns and line feeds, backspace and tab, CSI sequences with up to two
 parameters (some empty) for every final the screen reads, ESC 7 8 M D E,
-an OSC title, a charset designation, the alternate screen, a two-byte
-UTF-8 character.  Reads of a few bytes end inside sequences.
+an OSC title, a charset designation, the alternate screen (?1049, ?47,
+?1047), a two-byte UTF-8 character.  Reads of a few bytes end inside
+sequences.
 
 ## building
 
@@ -65,3 +66,13 @@ UTF-8 character.  Reads of a few bytes end inside sequences.
 ```
 ---
     (((0 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaX") ('cursor 0 80)) ((0 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaX") ('cursor 0 80)) ((0 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") ('cursor 0 80)) ((0 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") ('cursor 0 80)) ((0 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") ('cursor 0 80)) ((0 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") ('cursor 0 80)) ((0 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") (2 "X") ('cursor 2 1)) ((0 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") (1 "X") ('cursor 1 1)) ((0 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaX") ('cursor 0 80)))
+
+### the alternate-screen cases, by the compiled engine
+
+```tmux
+(do (vt-jit!)
+    (write (List map (fn (_ t) (spec-rows (spec-screen vt-feed! t)))
+             (list "main^[?1049halt^[?1049l" "main^[5;5H^[?1049h^[1;1Hx^[?1049ly" "main^[5;5H^[?47h^[1;1Hx^[?47ly" "main^[?1047halt^[?1047l" "main^[?1049ha^[?1049hb^[?1049l" "main^[?47ha^[?1049l"))))
+```
+---
+    (((0 "main") ('cursor 0 4)) ((0 "main") (4 "    y") ('cursor 4 5)) ((0 "myin") ('cursor 0 2)) ((0 "main") ('cursor 0 7)) ((0 "main") ('cursor 0 4)) ((0 "main") ('cursor 0 5)))
