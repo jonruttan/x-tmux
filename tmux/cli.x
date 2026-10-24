@@ -30,6 +30,7 @@
 (module tmux/cli)
 
 (import x/sys/posix)
+(import x/sys/gc)
 (import tmux/vt vt-make vt-feed! vt-render! vt-row vt-cursor vt-feed-pure! vt-render-pure!
   vt-feed-compiled! vt-render-compiled! vt-adopt!)
 (import tmux/vt-jit vt-jit-make vt-exercise vt-same?)
@@ -48,17 +49,21 @@
 (def %write (fn (_ fd s) (%call (%libc "write") fd (%str->ptr s) (%byte-len s))))
 (def %say (fn (_ s) (%write 1 s)))
 
-; FILE's reads, each (EACH ADDRESS LENGTH), NUL-terminated.
+; FILE's reads, each (EACH ADDRESS LENGTH), NUL-terminated.  x collects
+; only when asked, and tmux/vt's engine allocates as it goes, so the heap
+; is collected every sixteenth read.
 (def %reads
   (fn (_ path each)
     (def fd (%call (%libc "open") (%str->ptr path) 0))
     (def buf (%make-str 4097))
     (def p (%str->ptr buf))
     (def rd (%libc "read"))
-    ((fn (self)
+    ((fn (self i)
        (def got (%call rd fd p 4096))
        (when (< 0 got)
-         (do (%pset p got 0 1) (each (%ptr->int p) got) (self)))))
+         (do (when (= (& i 15) 15) (Heap collect))
+             (%pset p got 0 1) (each (%ptr->int p) got) (self (+ i 1)))))
+     0)
     (%call (%libc "close") fd)))
 
 (def %check

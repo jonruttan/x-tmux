@@ -11,6 +11,11 @@
 ; A row written since the last render is marked in the dirty buffer, and a
 ; render writes those rows alone, as a terminal redraws them.
 ;
+; The rows are kept in no fixed order: the row map, a word a row, gives
+; the buffers' row that holds each of the screen's.  A scroll turns the
+; region's part of the map and blanks the rows it frees, rather than
+; moving the cells.  The dirty buffer goes by the screen's rows.
+;
 ; A cell's byte is its character when that is ASCII.  A character past
 ; ASCII is kept in the cell's 16-byte slot of the extended buffer -- its
 ; UTF-8 bytes (up to 14, combining characters appended), their count, and
@@ -69,7 +74,9 @@
 ; is up, whether ?1049 saved the cursor, and the row, column and attribute
 ; it saved.  UTF-8's: the extended buffer's address and the saved one's,
 ; a character read in part (its bits so far and the bytes it still
-; needs), and the two bytes a render's runs of ASCII stop at.
+; needs), and the two bytes a render's runs of ASCII stop at.  Then the
+; row map's address, the saved screen's map's, and a map's worth of
+; scratch; words 70 to 73 are the compiled engine's again.
 (def %ROWS 0) (def %COLS 8) (def %CP 16) (def %AP 24) (def %DP 32) (def %SP 40)
 (def %OP 48) (def %ONE 56) (def %ROW 64) (def %COL 72) (def %EP 80) (def %ATTR 88)
 (def %STATE 96) (def %NUM 104) (def %NP 112) (def %PRIVATE 120) (def %TOP 128)
@@ -79,7 +86,8 @@
 (def %RR 408) (def %RC 416) (def %RS 424) (def %RO 432)
 (def %OROW 448) (def %OCOL 456) (def %AROW 464) (def %ACOL 472) (def %AATTR 480)
 (def %SEP 488) (def %UACC 496) (def %UNEED 504) (def %MARKS 512)
-(def %WORDS 72)
+(def %MAP 536) (def %SMAP 544) (def %TMAP 552)
+(def %WORDS 74)
 
 ; A cell's byte for a character in the extended buffer, and for padding.
 (def %WIDE 128) (def %PAD 129)
@@ -127,6 +135,11 @@
     (def saved-ext (%buffer (* 16 (* rows cols)) 0))
     (def marks (%buffer 2 %WIDE))
     (%pset (%str->ptr marks) 1 %PAD 1)
+    (def map (%identity rows))
+    (def saved-map (%identity rows))
+    (def scratch (%buffer (* 8 rows) 0))
+    (%w! s %MAP (%ptr->int (%str->ptr map))) (%w! s %SMAP (%ptr->int (%str->ptr saved-map)))
+    (%w! s %TMAP (%ptr->int (%str->ptr scratch)))
     (%w! s %ROWS rows) (%w! s %COLS cols)
     (%w! s %CP (%ptr->int (%str->ptr cells))) (%w! s %AP (%ptr->int (%str->ptr attrs)))
     (%w! s %DP (%ptr->int (%str->ptr dirty))) (%w! s %SP (%ptr->int (%str->ptr stop)))
@@ -135,15 +148,33 @@
     (%w! s %EP (%ptr->int (%str->ptr ext))) (%w! s %SEP (%ptr->int (%str->ptr saved-ext)))
     (%w! s %MARKS (%ptr->int (%str->ptr marks)))
     (%w! s %ATTR 1) (%w! s %NUM -1) (%w! s %BOTTOM (- rows 1))
-    (pair (list words cells attrs dirty stop out one saved-cells saved-attrs ext saved-ext marks) s)))
+    (pair (list words cells attrs dirty stop out one saved-cells saved-attrs ext saved-ext marks
+            map saved-map scratch)
+          s)))
 
-(def %at (fn (_ s base row col) (%int->ptr (+ (%w s base) (+ (* row (%w s %COLS)) col)))))
-; A cell's slot in an extended buffer, BASE %EP or %SEP.
-(def %slot (fn (_ s base row col) (%int->ptr (+ (%w s base) (* 16 (+ (* row (%w s %COLS)) col))))))
+; A row map in order: row I in buffer row I.
+(def %identity
+  (fn (_ rows)
+    (def m (%buffer (* 8 rows) 0))
+    ((fn (self i) (if (< i rows) (self (%word-at! (%str->ptr m) i)) ())) 0)
+    m))
+(def %word-at! (fn (_ p i) (%pset p (* 8 i) i 8) (+ i 1)))
+
+; Cell (ROW, COL) of the buffer at BASE, %CP or %AP, through the row map.
+; The lookup is written out in each, as these run for nearly every cell.
+(def %at
+  (fn (_ s base row col)
+    (%int->ptr (+ (%pref s base 8) (+ (* (%pref (%int->ptr (+ (%pref s %MAP 8) (* 8 row))) 0 8) (%pref s %COLS 8)) col)))))
+(def %row (fn (_ s row) (%pref (%int->ptr (+ (%w s %MAP) (* 8 row))) 0 8)))
+; A cell's slot in an extended buffer, BASE %EP.
+(def %slot
+  (fn (_ s base row col)
+    (%int->ptr (+ (%pref s base 8)
+                  (* 16 (+ (* (%pref (%int->ptr (+ (%pref s %MAP 8) (* 8 row))) 0 8) (%pref s %COLS 8)) col))))))
 (def %cell (fn (_ s row col) (%pref (%at s %CP row col) 0 1)))
 (def %cell! (fn (_ s row col b) (%pset (%at s %CP row col) 0 b 1)))
 (def %dirty! (fn (_ s row) (%pset (%addr s %DP) row 1 1)))
-(def %dirty-rows! (fn (_ s a b) (%call %c-memset (%at s %DP 0 a) 1 (+ (- b a) 1))))
+(def %dirty-rows! (fn (_ s a b) (%call %c-memset (%int->ptr (+ (%w s %DP) a)) 1 (+ (- b a) 1))))
 
 ; Cells from (ROW, A) to (ROW, B) inclusive blanked.
 (def %blank!
@@ -158,22 +189,26 @@
   (fn (self s r e) (if (< r e) (self s (%blank-row! s r) e) ())))
 (def %blank-row! (fn (_ s r) (%blank-run! s r 0 (%w s %COLS)) (+ r 1)))
 
-; Rows TOP..BOTTOM moved up N (down when N is negative), the freed rows blanked.
+; Rows TOP..BOTTOM moved up N (down when N is negative), the freed rows
+; blanked: the region's part of the map turned by N, the buffer rows that
+; leave one end coming back at the other.
 (def %scroll!
   (fn (_ s top bottom n)
-    (def cols (%w s %COLS))
     (def k (%min (if (< n 0) (- 0 n) n) (+ (- bottom top) 1)))
-    (def keep (* (- (+ (- bottom top) 1) k) cols))
-    (def from (if (< n 0) top (+ top k)))
-    (def to (if (< n 0) (+ top k) top))
-    (if (< 0 keep) (%move-rows! s to from keep) ())
+    (def keep (- (+ (- bottom top) 1) k))
+    (if (< n 0)
+      (%turn! s (+ top keep) top (+ top k) top k keep)
+      (%turn! s top (+ top k) top (+ top keep) k keep))
     (if (< n 0) (%blank-rows! s top (+ top k)) (%blank-rows! s (+ (- bottom k) 1) (+ bottom 1)))
     (%dirty-rows! s top bottom)))
-(def %move-rows!
-  (fn (_ s to from n)
-    (%call %c-memmove (%at s %CP to 0) (%at s %CP from 0) n)
-    (%call %c-memmove (%at s %AP to 0) (%at s %AP from 0) n)
-    (%call %c-memmove (%slot s %EP to 0) (%slot s %EP from 0) (* 16 n))))
+; The map's K entries at OUT set aside, its KEEP entries at FROM moved to
+; TO, and the K put back at IN.
+(def %turn!
+  (fn (_ s out from to in k keep)
+    (%call %c-memcpy (%addr s %TMAP) (%map-at s out) (* 8 k))
+    (%call %c-memmove (%map-at s to) (%map-at s from) (* 8 keep))
+    (%call %c-memcpy (%map-at s in) (%addr s %TMAP) (* 8 k))))
+(def %map-at (fn (_ s row) (%int->ptr (+ (%w s %MAP) (* 8 row)))))
 
 (def %linefeed!
   (fn (_ s)
@@ -391,6 +426,7 @@
     (%call %c-memcpy (%addr s %SCP) (%addr s %CP) n)
     (%call %c-memcpy (%addr s %SAP) (%addr s %AP) n)
     (%call %c-memcpy (%addr s %SEP) (%addr s %EP) (* 16 n))
+    (%call %c-memcpy (%addr s %SMAP) (%addr s %MAP) (* 8 (%w s %ROWS)))
     (%call %c-memset (%addr s %CP) 32 n)
     (%call %c-memset (%addr s %AP) 1 n)
     (%dirty-rows! s 0 (- (%w s %ROWS) 1))
@@ -406,6 +442,7 @@
     (%call %c-memcpy (%addr s %CP) (%addr s %SCP) n)
     (%call %c-memcpy (%addr s %AP) (%addr s %SAP) n)
     (%call %c-memcpy (%addr s %EP) (%addr s %SEP) (* 16 n))
+    (%call %c-memcpy (%addr s %MAP) (%addr s %SMAP) (* 8 (%w s %ROWS)))
     (%dirty-rows! s 0 (- (%w s %ROWS) 1))
     (if (if cursor (= (%w s %ASAVED) 1) #f) (%alt-cursor! s) ())
     (%w! s %ASAVED 0)
@@ -666,8 +703,8 @@
     (def n (vt-make rows cols))
     (def s (rest h))
     (def t (rest n))
-    (%carry-cells! s t %CP %AP %EP rows cols)
-    (%carry-cells! s t %SCP %SAP %SEP rows cols)
+    (%carry-cells! s t %MAP %CP %AP %EP rows cols)
+    (%carry-cells! s t %SMAP %SCP %SAP %SEP rows cols)
     (%w! t %ROW (%min (%w s %ROW) (- rows 1)))
     (%w! t %COL (%min (%w s %COL) cols))
     (%w! t %ATTR (%w s %ATTR))
@@ -675,15 +712,20 @@
     (%w! t %AROW (%min (%w s %AROW) (- rows 1))) (%w! t %ACOL (%min (%w s %ACOL) cols))
     (%w! t %AATTR (%w s %AATTR))
     (vt-origin! n (%w s %OROW) (%w s %OCOL))))
+; One screen's rows of S, by its map at MAP, copied to T's in order: T is
+; new, and its maps are in order.
 (def %carry-cells!
-  (fn (_ s t cells attrs ext rows cols)
+  (fn (_ s t map cells attrs ext rows cols)
     (def keep-rows (%min rows (%w s %ROWS)))
     (def keep-cols (%min cols (%w s %COLS)))
     ((fn (self r)
        (when (< r keep-rows)
-         (do (%call %c-memcpy (%at t cells r 0) (%at s cells r 0) keep-cols)
-             (%call %c-memcpy (%at t attrs r 0) (%at s attrs r 0) keep-cols)
-             (%call %c-memcpy (%slot t ext r 0) (%slot s ext r 0) (* 16 keep-cols))
+         (do (def from (* (%pref (%int->ptr (+ (%w s map) (* 8 r))) 0 8) (%w s %COLS)))
+             (def to (* r cols))
+             (%call %c-memcpy (%int->ptr (+ (%w t cells) to)) (%int->ptr (+ (%w s cells) from)) keep-cols)
+             (%call %c-memcpy (%int->ptr (+ (%w t attrs) to)) (%int->ptr (+ (%w s attrs) from)) keep-cols)
+             (%call %c-memcpy (%int->ptr (+ (%w t ext) (* 16 to))) (%int->ptr (+ (%w s ext) (* 16 from)))
+               (* 16 keep-cols))
              (self (+ r 1)))))
      0)))
 ; Row R's text: its characters in UTF-8, padding as nothing, as tmux's
@@ -707,7 +749,7 @@
 (def vt-attrs
   (fn (_ h r)
     (def s (rest h))
-    ((prim-ref (lit str) (lit byte-sub)) (List ref 2 (first h)) (* r (%w s %COLS)) (%w s %COLS))))
+    ((prim-ref (lit str) (lit byte-sub)) (List ref 2 (first h)) (* (%row s r) (%w s %COLS)) (%w s %COLS))))
 
 ; The compiled engine's two functions, each (fn (self a)) over a screen's
 ; words: the feed reads IN from POS to END, the render writes from RO.
