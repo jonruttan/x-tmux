@@ -5,30 +5,42 @@ A terminal multiplexer on x-lang, after tmux, as a lang bundle.
     x -l tmux -- [COMMAND [ARGS]]
 
 `new-session` (or `new`) makes a session and shows it on the terminal it
-runs in: a window of panes, each a shell on a pseudo-terminal, laid out
-and bordered as tmux lays out its panes, with tmux's status line.  A
+runs in: numbered windows of panes, each a shell on a pseudo-terminal,
+laid out and bordered as tmux lays out its panes, with tmux's status
+line listing the windows.  A
 server keeps the sessions, as tmux's does; a client shows one, and
 detaching leaves it running.  Each pane keeps a screen: the
 bytes its program writes, read as a terminal reads them, into a grid of
 cells and attributes, and the rows that changed rendered back out at the
 pane's place.  tmux is what it is tested against.
 
-## Panes
+## Panes and windows
 
 The prefix is C-b, and after it:
 
     %     split the active pane left and right
     "     split it top and bottom
     o     the next pane
-    x     kill the active pane
+    x     kill the active pane, asked first
+    c     a new window
+    n     the next window
+    p     the previous window
+    l     the window last shown
+    0-9   the window of that number
+    &     kill the window, asked first
     d     detach
     [     copy mode
     PgUp  copy mode, a page up; a page down to the bottom leaves it
     C-b   a C-b to the pane
 
+A new window takes the lowest free number and starts its shell where the
+session was made.  The status line marks the shown window `*`, underlined,
+and the one shown before it `-`; closing the shown window shows that one.
+A question on the status line takes `y` for yes and any other key for no.
 A pane whose shell exits is removed and its space given to its sibling;
-the window follows the terminal's size.  A session ends with its last
-pane, and the server with its last session.
+every window follows the terminal's size.  A window ends with its last
+pane, a session with its last window, and the server with its last
+session.
 
 ## Copy mode
 
@@ -115,7 +127,8 @@ positions and cursors tmux 3.8 reports for the same keys.
 runs x-tmux inside a real tmux pane, drives it with send-keys and reads
 it with capture-pane: typing, both splits, the next pane, a kill, a shell
 exiting, a resize, each pane's size checked by `stty size`; copy mode;
-then detaching, `ls`, attaching again, the last pane exiting and
+windows made, shown, refused, asked about, killed and closed; then
+detaching, `ls`, attaching again, the last pane exiting and
 `kill-server`, with tmux's messages.
 
 ## Install
