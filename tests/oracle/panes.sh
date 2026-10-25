@@ -15,11 +15,16 @@
 #             each pane's terminal its own size (stty size)
 #   split -v  C-b ": a third pane below the second
 #   next      C-b o from the last pane comes back to the first
-#   kill      C-b x: the active pane gone, its sibling given its space
+#   kill      C-b x, asked and answered y: the active pane gone, its
+#             sibling given its space
 #   exit      a pane's shell exiting removes the pane
 #   resize    the window grown to 100x30: the pane's terminal follows
 #   copy      C-b [ and C-b PgUp: the history paged through, the position
 #             at the top right, q and a page down to the bottom leaving
+#   windows   C-b c, 1, l, n, p: windows made and shown, the status line
+#             listing them with tmux's flags; a missing number refused for
+#             a moment; C-b & asked, a no keeping the window and a yes
+#             killing it; a window's last pane exiting closing it
 #   detach    C-b d: the client leaves with status 0 and tmux's line, the
 #             session kept by the server
 #   ls        the session listed as tmux lists one
@@ -113,6 +118,9 @@ check "next -- C-b o from the last pane is the first" "$(screen | grep -c '^firs
 
 # kill
 tmux send-keys -t "$s" C-b x
+wait_for 'kill-pane 0? (y/n)'
+check "kill -- C-b x asks first, the pane by its number" "$(row 24)" "kill-pane 0? (y/n)"
+tmux send-keys -t "$s" y
 sleep 2
 tmux send-keys -t "$s" 'stty size' Enter
 wait_for '11 80'
@@ -155,6 +163,51 @@ check "copy -- after C-b PgUp, a page down to the bottom leaves" "$(screen | gre
 tmux send-keys -t "$s" 'echo still-here' Enter
 wait_for 'still-here'
 check "copy -- keys reach the shell again" "$(screen | grep -c '^still-here$')" "1"
+
+# windows
+st() { row 30; }
+tmux send-keys -t "$s" C-b c
+wait_for '1:x-tmux*'
+check "windows -- C-b c a new window, listed after the first, the first the last shown" "$(st)" "[0] 0:x-tmux- 1:x-tmux*"
+tmux send-keys -t "$s" 'stty size; echo in-one' Enter
+wait_for 'in-one'
+check "windows -- the new window's pane is the window less the status line" "$(screen | grep -c '^29 100$')" "1"
+tmux send-keys -t "$s" C-b c
+wait_for '2:x-tmux*'
+check "windows -- a third, the last shown the second" "$(st)" "[0] 0:x-tmux 1:x-tmux- 2:x-tmux*"
+tmux send-keys -t "$s" C-b 1
+wait_for 'in-one'
+check "windows -- C-b 1 shows the second, as it was left" "$(st) $(screen | grep -c '^in-one$')" "[0] 0:x-tmux 1:x-tmux* 2:x-tmux- 1"
+tmux send-keys -t "$s" C-b l
+sleep 1
+check "windows -- C-b l the last shown" "$(st)" "[0] 0:x-tmux 1:x-tmux- 2:x-tmux*"
+tmux send-keys -t "$s" C-b n
+wait_for 'still-here'
+check "windows -- C-b n wraps to the first" "$(st)" "[0] 0:x-tmux* 1:x-tmux 2:x-tmux-"
+tmux send-keys -t "$s" C-b p
+sleep 1
+check "windows -- C-b p wraps back to the third" "$(st)" "[0] 0:x-tmux- 1:x-tmux 2:x-tmux*"
+tmux send-keys -t "$s" C-b 7
+wait_for "Can't find window"
+check "windows -- C-b 7 refused on the status line" "$(st)" "Can't find window: 7"
+sleep 2
+check "windows -- the message gone after a moment" "$(st)" "[0] 0:x-tmux- 1:x-tmux 2:x-tmux*"
+tmux send-keys -t "$s" C-b '&'
+wait_for 'kill-window'
+check "windows -- C-b & asks first" "$(st)" "kill-window x-tmux? (y/n)"
+tmux send-keys -t "$s" n
+sleep 1
+check "windows -- a no keeps the window" "$(st)" "[0] 0:x-tmux- 1:x-tmux 2:x-tmux*"
+tmux send-keys -t "$s" C-b '&'
+wait_for 'kill-window'
+tmux send-keys -t "$s" y
+wait_for '0:x-tmux*'
+check "windows -- a yes kills it, the last shown shown" "$(st)" "[0] 0:x-tmux* 1:x-tmux-"
+tmux send-keys -t "$s" C-b 1
+wait_for '1:x-tmux*'
+tmux send-keys -t "$s" 'exit' Enter
+wait_for '[0] 0:x-tmux*'
+check "windows -- a window's last pane exiting closes it" "$(st) $(screen | grep -c '^still-here$')" "[0] 0:x-tmux* 1"
 
 # detach
 tmux send-keys -t "$s" C-b d
