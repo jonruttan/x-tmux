@@ -22,12 +22,16 @@
 ;   c   a new window                              &   kill the window, asked first
 ;   n   the next window                           p   the previous window
 ;   l   the window last shown                     0-9 the window numbered so
-;   d   detach the client                         C-b a C-b to the pane
+;   ,   rename the window                         d   detach the client
 ;   [   copy mode (tmux/copy)                     PgUp  copy mode, a page up
+;   C-b a C-b to the pane
 ;
 ; In copy mode the active pane shows its history and keys move through
 ; it; PgUp's ends at the bottom.  A question on the status line takes y
-; for yes and any other key for no.
+; for yes and any other key for no; a name asked for is typed and edited
+; there, Enter taking it and Escape leaving it.  A window is named after
+; its active pane's program until it is renamed, as tmux's
+; automatic-rename names it.
 ; A window ends with its last pane, a session with its last window, and
 ; the server with its last session.
 ;
@@ -42,6 +46,7 @@
 (import x/sys/file)
 (import x/sys/pty)
 (import x/sys/socket)
+(import x/sys/host)
 (import tmux/vt vt-make vt-feed! vt-render! vt-out vt-cursor vt-size vt-origin! vt-touch! vt-carry)
 (import tmux/vt-jit vt-jit!)
 (import tmux/copy copy-enter copy-resize copy-view copy-origin! copy-touch! copy-cursor copy-position
@@ -69,10 +74,11 @@
 ; libc's doors, looked up as the server starts: a handle is a fact of the
 ; process, and a state image is written by another
 (def %c-read ()) (def %c-write ()) (def %c-waitpid ()) (def %c-kill ()) (def %c-memcpy ())
-(def %c-gettimeofday ())
+(def %c-gettimeofday ()) (def %c-tcgetpgrp ())
 (def %resolve!
   (fn (_)
     (set! %c-gettimeofday (%libc "gettimeofday"))
+    (set! %c-tcgetpgrp (%libc "tcgetpgrp"))
     (set! %c-read (%libc "read"))
     (set! %c-write (%libc "write"))
     (set! %c-waitpid (%libc "waitpid"))
@@ -120,8 +126,11 @@
 (def %with-copy
   (fn (_ p c) (list (%pane-id p) (%pane-pid p) (%pane-fd p) (%pane-screen p) (%pane-rect p) c)))
 
-; A window: (INDEX TREE ACTIVE), its layout and its active pane's id; the
-; shown window's are %tree and %active, written back as it is left.
+; A window: (INDEX TREE ACTIVE NAME AUTO CHECKED DUE), its layout, its
+; active pane's id, its name, whether the name follows the active pane's
+; program, when that was last looked at, in microseconds since the epoch,
+; and whether it is to be looked at again; the shown window's TREE and
+; ACTIVE are %tree and %active, written back as it is left.
 (def %name "")       ; the session's name
 (def %created 0)     ; when it was made, in seconds since the epoch
 (def %tree ())       ; the shown window's layout
@@ -136,7 +145,7 @@
 (def %window 0)      ; the shown window's index
 (def %last ())       ; the indexes of the windows shown before, the latest first
 (def %cwd "")        ; where the session was made, where a new window starts
-(def %prompt ())     ; the question on the status line, (TEXT . YES), or nil
+(def %prompt ())     ; the question on the status line, (LABEL TEXT AT YES TYPED), or nil
 (def %message ())    ; the message on the status line, or nil
 (def %until 0)       ; when the message goes, in microseconds since the epoch
 (def %touched #f)    ; whether there is something to render
@@ -260,7 +269,7 @@
       ((null? tree) (%close-window! (first w)))
       (#t
         (do (def active (if (= (List ref 2 w) id) (%after order id (layout-panes tree)) (List ref 2 w)))
-            (set! %windows (List map (fn (_ x) (if (eq? x w) (list (first w) tree active) x)) %windows))
+            (set! %windows (List map (fn (_ x) (if (eq? x w) (%laid w tree active) x)) %windows))
             (if (= (first w) %window)
               (do (set! %tree tree) (set! %active active) (%redraw!))
               (%place! tree)))))))
@@ -300,10 +309,25 @@
 
 (def %window-at (fn (_ i) (List find (fn (_ w) (= (first w) i)) %windows)))
 
+; Window W with TREE and ACTIVE.
+(def %laid (fn (_ w tree active) (pair (first w) (pair tree (pair active (rest (rest (rest w))))))))
+
 ; The shown window's layout and active pane written back to its record.
 (def %save-window!
   (fn (_)
-    (set! %windows (List map (fn (_ w) (if (= (first w) %window) (list %window %tree %active) w)) %windows))))
+    (set! %windows (List map (fn (_ w) (if (= (first w) %window) (%laid w %tree %active) w)) %windows))))
+
+; Field K of window I's record set to V.
+(def %window-set!
+  (fn (_ i k v)
+    (def put (fn (self xs j) (if (= j k) (pair v (rest xs)) (pair (first xs) (self (rest xs) (+ j 1))))))
+    (set! %windows (List map (fn (_ w) (if (= (first w) i) (put w 0) w)) %windows))))
+
+; The window holding pane ID.
+(def %window-of
+  (fn (_ id)
+    (%save-window!)
+    (List find (fn (_ w) (%holds? (List ref 1 w) id)) %windows)))
 
 ; Window W shown.
 (def %show-window!
@@ -327,7 +351,7 @@
   (fn (_)
     (def i ((fn (self i) (if (null? (%window-at i)) i (self (+ i 1)))) 0))
     (def id (%spawn! (list 0 0 (- %rows 1) %cols) %cwd))
-    (def w (list i (list (lit pane) id) id))
+    (def w (list i (list (lit pane) id) id "x-tmux" #t 0 #f))
     (unless (null? %windows) (do (%save-window!) (set! %last (pair %window %last))))
     (set! %windows
       ((fn (self ws) (match ((null? ws) (list w)) ((< i (first (first ws))) (pair w ws)) (#t (pair (first ws) (self (rest ws))))))
@@ -365,6 +389,45 @@
   (fn (_ back none)
     ((fn (_ w) (if (null? w) (%say! none) (%select! (first w)))) (%beside back))))
 
+; --- window names -----------------------------------------------------------
+
+; Window I's name looked at now, as tmux's automatic-rename looks: its
+; active pane's foreground program, or [tmux] while the pane is in copy
+; mode; the status line drawn again when it changes.
+(def %check-name!
+  (fn (_ i)
+    (%save-window!)
+    (def w (%window-at i))
+    (%window-set! i 5 (%micros))
+    (%window-set! i 6 #f)
+    (when (List ref 4 w)
+      (do (def p (%pane (List ref 2 w)))
+          (def name (if (null? (%pane-copy p)) (%program (%pane-fd p)) "[tmux]"))
+          (unless (if (null? name) #t (str=? name (List ref 3 w)))
+            (do (%window-set! i 3 name) (%draw-status) (set! %touched #t)))))))
+
+; Window I's name to be looked at: now, or once 500 ms have passed since
+; it last was, tmux's NAME_INTERVAL.
+(def %name-due!
+  (fn (_ i)
+    (if (< (+ (List ref 5 (%window-at i)) 500000) (%micros)) (%check-name! i) (%window-set! i 6 #t))))
+
+; The name of the foreground program on the terminal whose master is FD,
+; the kernel's name for its process group's leader, or nil.
+(def %program
+  (fn (_ fd)
+    (def pgrp (%int (%call %c-tcgetpgrp fd)))
+    (if (< pgrp 1) ()
+      ((fn (_ e) (if (null? e) () (rest e)))
+       (List find (fn (_ e) (eq? (first e) (lit comm))) (Host process pgrp))))))
+
+; The shown window renamed NAME, its name no longer following its program.
+(def %rename!
+  (fn (_ name)
+    (%window-set! %window 3 name)
+    (%window-set! %window 4 #f)
+    (%draw-status)))
+
 ; --- the status line's messages and questions -----------------------------
 
 (def %tv ())
@@ -384,8 +447,54 @@
 (def %ask!
   (fn (_ text yes)
     (set! %message ())
-    (set! %prompt (pair text yes))
+    (set! %prompt (list text "" 0 yes #f))
     (%draw-status)))
+
+; LABEL on the status line and TEXT after it to be edited, the cursor at
+; its end; YES called with the text Enter takes.
+(def %ask-for!
+  (fn (_ label text yes)
+    (set! %message ())
+    (set! %prompt (list label text (%byte-len text) yes #t))
+    (%draw-status)))
+
+; The key at byte I of the N at P put to the text being typed, as tmux's
+; prompt takes emacs's keys: answers the byte after it.
+(def %edit!
+  (fn (_ p i n)
+    (def b (%pref p i 1))
+    (def label (first %prompt))
+    (def text (List ref 1 %prompt))
+    (def at (List ref 2 %prompt))
+    (def yes (List ref 3 %prompt))
+    (def len (%byte-len text))
+    (def put! (fn (_ t a) (set! %prompt (list label t a yes #t)) (%draw-status) (set! %touched #t)))
+    (def stop! (fn (_) (set! %prompt ()) (%draw-status) (set! %touched #t)))
+    (def move!
+      (fn (_ k)
+        (match
+          ((eq? k (lit cancel)) (stop!))
+          ((eq? k (lit left)) (put! text (%max 0 (- at 1))))
+          ((eq? k (lit right)) (put! text (%min len (+ at 1))))
+          ((eq? k (lit start-of-line)) (put! text 0))
+          ((eq? k (lit end-of-line)) (put! text len))
+          (#t ()))))
+    (if (= b 27)
+      ((fn (_ k) (move! (first k)) (rest k)) (copy-key p i n #f))
+      (do (match
+            ((= b 13) (do (stop!) (yes text)))
+            ((if (= b 3) #t (= b 7)) (stop!))
+            ((= b 1) (move! (lit start-of-line)))
+            ((= b 5) (move! (lit end-of-line)))
+            ((= b 2) (move! (lit left)))
+            ((= b 6) (move! (lit right)))
+            ((= b 21) (put! "" 0))
+            ((= b 11) (put! (Str8 sub 0 at text) at))
+            ((if (= b 127) #t (= b 8))
+              (when (< 0 at) (put! (Str8 append (Str8 sub 0 (- at 1) text) (Str8 sub at (- len at) text)) (- at 1))))
+            ((< 31 b) (put! (Str8 append (Str8 sub 0 at text) (%byte b) (Str8 sub at (- len at) text)) (+ at 1)))
+            (#t ()))
+          (+ i 1)))))
 
 ; --- drawing ------------------------------------------------------------
 
@@ -424,7 +533,7 @@
   (fn (_)
     (%out (%goto (- %rows 1) 0))
     (match
-      ((not (null? %prompt)) (%out (Str8 append (%esc "[0;30;43m") (%fit (first %prompt)) (%esc "[0m"))))
+      ((not (null? %prompt)) (%out (Str8 append (%esc "[0;30;43m") (%fit (Str8 append (first %prompt) (List ref 1 %prompt))) (%esc "[0m"))))
       ((not (null? %message)) (%out (Str8 append (%esc "[0;30;43m") (%fit %message) (%esc "[0m"))))
       (#t (%out (Str8 append (%esc "[0;30;42m") (%window-list) (%esc "[0m")))))))
 
@@ -437,7 +546,7 @@
   (fn (_)
     (def entry
       (fn (_ w)
-        (Str8 append (%num (first w)) ":x-tmux"
+        (Str8 append (%num (first w)) ":" (List ref 3 w)
           (match
             ((= (first w) %window) "*")
             ((if (null? %last) #f (= (first w) (first %last))) "-")
@@ -474,7 +583,7 @@
     (%out (Str8 append (%esc "[0m")
             (if (null? %prompt)
               (%goto (+ (first rect) (first c)) (+ (List ref 1 rect) (%min (rest c) (- (List ref 3 rect) 1))))
-              (%goto (- %rows 1) (%min (Str8 length (first %prompt)) (- %cols 1))))
+              (%goto (- %rows 1) (%min (+ (%byte-len (first %prompt)) (List ref 2 %prompt)) (- %cols 1))))
             (%esc "[?25h")))))
 
 ; A copy mode's position, black on yellow at the right of its pane's top
@@ -505,7 +614,9 @@
         (do (match
               ((= b 37) (%split! (lit h)))
               ((= b 34) (%split! (lit v)))
-              ((= b 111) (set! %active (%after (layout-panes %tree) %active (layout-panes %tree))))
+              ((= b 111)
+                (do (set! %active (%after (layout-panes %tree) %active (layout-panes %tree)))
+                    (%name-due! %window)))
               ((= b 120)
                 (%ask! (Str8 append "kill-pane " (%num (%number %active)) "? (y/n) ")
                   (fn (_) (%remove! %active))))
@@ -517,7 +628,8 @@
                 (if (null? (%window-at (- b 48)))
                   (%say! (Str8 append "Can't find window: " (%num (- b 48))))
                   (%select! (- b 48))))
-              ((= b 38) (%ask! "kill-window x-tmux? (y/n) " %kill-window!))
+              ((= b 38) (%ask! (Str8 append "kill-window " (List ref 3 (%window-at %window)) "? (y/n) ") %kill-window!))
+              ((= b 44) (%ask-for! "(rename-window) " (List ref 3 (%window-at %window)) %rename!))
               ((= b 100) (%detach! (Str8 append "[detached (from session " %name ")]")))
               ((= b 91) (%copy! #f))
               ((= b 2) (%call %c-write fd (%str->ptr (%byte 2)) 1))
@@ -536,7 +648,8 @@
   (fn (_ exit)
     (def p (%pane %active))
     (when (null? (%pane-copy p))
-      (%set-pane! (%with-copy p (copy-enter (%pane-screen p) exit))))))
+      (do (%set-pane! (%with-copy p (copy-enter (%pane-screen p) exit)))
+          (%name-due! %window)))))
 ; The active pane's copy mode after CMD: out of it, its screen drawn
 ; whole, when CMD ends it.
 (def %copy-do!
@@ -544,8 +657,8 @@
     (def p (%pane %active))
     (set! %touched #t)
     (def c (copy-do (%pane-copy p) cmd))
-    (when (null? c) (vt-touch! (%pane-screen p)))
-    (%set-pane! (%with-copy p c))))
+    (%set-pane! (%with-copy p c))
+    (when (null? c) (do (vt-touch! (%pane-screen p)) (%name-due! %window)))))
 
 ; N typed bytes at P: runs of keys to the active pane, or each a command
 ; while it is in copy mode; a prefix and its command handled where they
@@ -562,8 +675,10 @@
                (when (< from i) (%call %c-write fd (%int->ptr (+ (%ptr->int p) from)) (- i from)))
                (do (def b (%pref p i 1))
                    (match
+                     ((if (null? %prompt) #f (List ref 4 %prompt))
+                       ((fn (_ next) (self next next)) (%edit! p i n)))
                      ((not (null? %prompt))
-                       (do (def yes (rest %prompt))
+                       (do (def yes (List ref 3 %prompt))
                            (set! %prompt ())
                            (%draw-status)
                            (set! %touched #t)
@@ -589,7 +704,8 @@
     (def got (%int (%call %c-read (%pane-fd p) at 4096)))
     (if (< 0 got)
       (do (%pset at got 0 1) (vt-feed! (%pane-screen p) (%ptr->int at) got) (%moved! got)
-          (when (%holds? %tree (%pane-id p)) (set! %touched #t)))
+          (when (%holds? %tree (%pane-id p)) (set! %touched #t))
+          (%name-due! (first (%window-of (%pane-id p)))))
       (when (if (= got 0) #t (%gone? (%pane-pid p))) (%remove! (%pane-id p))))))
 
 ; Bytes fed since the heap was last collected, a round of the loop
@@ -794,7 +910,12 @@
               (List map (fn (_ c) (pair (proto-fd c) (list (lit in)))) %conns)
               (List map (fn (_ fd) (pair fd (list (lit in))))
                 (List fold (fn (_ acc s) (List append acc (List map %pane-fd (List ref 3 (first s))))) () %sessions))))
-          (def saying (List find (fn (_ s) (not (null? (List ref 16 (first s))))) %sessions))
+          ; a message to take down or a name to look at keeps the poll short
+          (def saying
+            (List find
+              (fn (_ s)
+                (if (null? (List ref 16 (first s))) (not (null? (List find (fn (_ w) (List ref 6 w)) (List ref 11 (first s))))) #t))
+              %sessions))
           (def ready (Sys poll fds (if (null? saying) 1000 100)))
           (when (%ready? ready %listen)
             (set! %conns (List append %conns (list (proto-conn (Socket accept %listen))))))
@@ -806,6 +927,7 @@
                     (List for-each (fn (_ p) (unless %done (when (%ready? ready (%pane-fd p)) (%output! p)))) %panes)
                     (when (if (null? %message) #f (< %until (%micros)))
                       (do (set! %message ()) (%draw-status) (set! %touched #t)))
+                    (unless %done (List for-each (fn (_ w) (when (List ref 6 w) (%name-due! (first w)))) %windows))
                     (%settle!))))
             %sessions)
           (when (if %started (null? %sessions) #f) (set! %quit #t))
