@@ -30,6 +30,9 @@
 #   ls        the session listed as tmux lists one
 #   attach    the session back, as it was left; a session that is not
 #             there refused as tmux refuses it
+#   names     a window named after its foreground program, [tmux] in copy
+#             mode, the shell's name back; C-b , edited and Escaped, then
+#             taken, the name kept
 #   exited    the last pane's shell exiting ends the session, the client
 #             and the server
 #   kill      kill-server ends a session made with new -d, and the server
@@ -66,14 +69,20 @@ check() {
 tmux new-session -d -s "$s" -x 80 -y 24 \
 	"env SHELL=/bin/sh PS1='$ ' X_LANG_DIR=$fx/langs/ TMUX_TMPDIR=$fx /bin/sh"
 xt="$X -l tmux -- -L oracle"
+# The name tmux gives a window whose program is /bin/sh, which x-tmux's
+# panes run: x-tmux names its windows as tmux does.
+tmux new-window -d -t "$s" -n probe /bin/sh
+sleep 1
+W=$(tmux display -p -t "$s:probe" '#{pane_current_command}')
+tmux kill-window -t "$s:probe"
 tmux send-keys -t "$s" "$xt new 2>$fx/err; echo EXIT \$?" Enter
-wait_for '[0] 0:x-tmux*' || { echo "FAIL: no status line" >&2; cat "$fx/err" >&2; exit 1; }
+wait_for "[0] 0:$W*" || { echo "FAIL: no status line" >&2; cat "$fx/err" >&2; exit 1; }
 
 # type
 tmux send-keys -t "$s" 'echo one; echo two' Enter
 wait_for 'two'
 check "type -- the command's output in the pane" "$(screen | grep -c '^one$') $(screen | grep -c '^two$')" "1 1"
-check "type -- the status line on the bottom row" "$(row 24)" "[0] 0:x-tmux*"
+check "type -- the status line on the bottom row" "$(row 24)" "[0] 0:$W*"
 
 # alt
 tmux send-keys -t "$s" "printf '\\033[?1049h\\033[HFULL-SCREEN'; sleep 2; printf '\\033[?1049l'; echo after-alt" Enter
@@ -167,47 +176,47 @@ check "copy -- keys reach the shell again" "$(screen | grep -c '^still-here$')" 
 # windows
 st() { row 30; }
 tmux send-keys -t "$s" C-b c
-wait_for '1:x-tmux*'
-check "windows -- C-b c a new window, listed after the first, the first the last shown" "$(st)" "[0] 0:x-tmux- 1:x-tmux*"
+wait_for "1:$W*"
+check "windows -- C-b c a new window, listed after the first, the first the last shown" "$(st)" "[0] 0:$W- 1:$W*"
 tmux send-keys -t "$s" 'stty size; echo in-one' Enter
 wait_for 'in-one'
 check "windows -- the new window's pane is the window less the status line" "$(screen | grep -c '^29 100$')" "1"
 tmux send-keys -t "$s" C-b c
-wait_for '2:x-tmux*'
-check "windows -- a third, the last shown the second" "$(st)" "[0] 0:x-tmux 1:x-tmux- 2:x-tmux*"
+wait_for "2:$W*"
+check "windows -- a third, the last shown the second" "$(st)" "[0] 0:$W 1:$W- 2:$W*"
 tmux send-keys -t "$s" C-b 1
 wait_for 'in-one'
-check "windows -- C-b 1 shows the second, as it was left" "$(st) $(screen | grep -c '^in-one$')" "[0] 0:x-tmux 1:x-tmux* 2:x-tmux- 1"
+check "windows -- C-b 1 shows the second, as it was left" "$(st) $(screen | grep -c '^in-one$')" "[0] 0:$W 1:$W* 2:$W- 1"
 tmux send-keys -t "$s" C-b l
 sleep 1
-check "windows -- C-b l the last shown" "$(st)" "[0] 0:x-tmux 1:x-tmux- 2:x-tmux*"
+check "windows -- C-b l the last shown" "$(st)" "[0] 0:$W 1:$W- 2:$W*"
 tmux send-keys -t "$s" C-b n
 wait_for 'still-here'
-check "windows -- C-b n wraps to the first" "$(st)" "[0] 0:x-tmux* 1:x-tmux 2:x-tmux-"
+check "windows -- C-b n wraps to the first" "$(st)" "[0] 0:$W* 1:$W 2:$W-"
 tmux send-keys -t "$s" C-b p
 sleep 1
-check "windows -- C-b p wraps back to the third" "$(st)" "[0] 0:x-tmux- 1:x-tmux 2:x-tmux*"
+check "windows -- C-b p wraps back to the third" "$(st)" "[0] 0:$W- 1:$W 2:$W*"
 tmux send-keys -t "$s" C-b 7
 wait_for "Can't find window"
 check "windows -- C-b 7 refused on the status line" "$(st)" "Can't find window: 7"
 sleep 2
-check "windows -- the message gone after a moment" "$(st)" "[0] 0:x-tmux- 1:x-tmux 2:x-tmux*"
+check "windows -- the message gone after a moment" "$(st)" "[0] 0:$W- 1:$W 2:$W*"
 tmux send-keys -t "$s" C-b '&'
 wait_for 'kill-window'
-check "windows -- C-b & asks first" "$(st)" "kill-window x-tmux? (y/n)"
+check "windows -- C-b & asks first" "$(st)" "kill-window $W? (y/n)"
 tmux send-keys -t "$s" n
 sleep 1
-check "windows -- a no keeps the window" "$(st)" "[0] 0:x-tmux- 1:x-tmux 2:x-tmux*"
+check "windows -- a no keeps the window" "$(st)" "[0] 0:$W- 1:$W 2:$W*"
 tmux send-keys -t "$s" C-b '&'
 wait_for 'kill-window'
 tmux send-keys -t "$s" y
-wait_for '0:x-tmux*'
-check "windows -- a yes kills it, the last shown shown" "$(st)" "[0] 0:x-tmux* 1:x-tmux-"
+wait_for "0:$W*"
+check "windows -- a yes kills it, the last shown shown" "$(st)" "[0] 0:$W* 1:$W-"
 tmux send-keys -t "$s" C-b 1
-wait_for '1:x-tmux*'
+wait_for "1:$W*"
 tmux send-keys -t "$s" 'exit' Enter
-wait_for '[0] 0:x-tmux*'
-check "windows -- a window's last pane exiting closes it" "$(st) $(screen | grep -c '^still-here$')" "[0] 0:x-tmux* 1"
+wait_for "[0] 0:$W*"
+check "windows -- a window's last pane exiting closes it" "$(st) $(screen | grep -c '^still-here$')" "[0] 0:$W* 1"
 
 # detach
 tmux send-keys -t "$s" C-b d
@@ -227,11 +236,43 @@ tmux send-keys -t "$s" "$xt attach -t nosuch; echo EXIT \$?" Enter
 wait_for 'EXIT 1'
 check "attach -- a session that is not there refused as tmux refuses it" "$(screen | grep -cxF "can't find session: nosuch")" "1"
 tmux send-keys -t "$s" "$xt attach; echo EXIT \$?" Enter
-wait_for '[0] 0:x-tmux*'
-check "attach -- the session back as it was left" "$(screen | grep -c '^still-here$') $(row 30)" "1 [0] 0:x-tmux*"
+wait_for "[0] 0:$W*"
+check "attach -- the session back as it was left" "$(screen | grep -c '^still-here$') $(row 30)" "1 [0] 0:$W*"
 tmux send-keys -t "$s" "$xt ls" Enter
 wait_for '(attached)'
 check "attach -- ls marks the session attached" "$(screen | grep -c '^0: 1 windows (created .*) (attached)$')" "1"
+
+# names
+tmux send-keys -t "$s" 'clear; cat' Enter
+sleep 1
+tmux send-keys -t "$s" 'hello' Enter
+wait_for '0:cat*'
+check "names -- a window named after its foreground program" "$(row 30)" "[0] 0:cat*"
+tmux send-keys -t "$s" C-b '['
+wait_for '0:[tmux]*'
+check "names -- [tmux] while the pane is in copy mode" "$(row 30)" "[0] 0:[tmux]*"
+tmux send-keys -t "$s" q
+wait_for '0:cat*'
+tmux send-keys -t "$s" C-d
+wait_for "0:$W*"
+check "names -- the shell's name back when the program ends" "$(row 30)" "[0] 0:$W*"
+tmux send-keys -t "$s" C-b ,
+wait_for '(rename-window)'
+check "names -- C-b , asks for the name, the old one to edit" "$(row 30)" "(rename-window) $W"
+tmux send-keys -t "$s" C-u wurk Left Left BSpace o
+sleep 1
+check "names -- the name edited as tmux's prompt edits" "$(row 30)" "(rename-window) work"
+tmux send-keys -t "$s" Escape
+sleep 1
+check "names -- Escape leaves the name as it was" "$(row 30)" "[0] 0:$W*"
+tmux send-keys -t "$s" C-b ,
+wait_for '(rename-window)'
+tmux send-keys -t "$s" C-u work Enter
+wait_for '0:work*'
+tmux send-keys -t "$s" 'echo after-rename' Enter
+wait_for 'after-rename'
+sleep 1
+check "names -- a renamed window keeps its name" "$(row 30)" "[0] 0:work*"
 
 # exited
 tmux send-keys -t "$s" 'exit' Enter

@@ -28,6 +28,7 @@ The prefix is C-b, and after it:
     l     the window last shown
     0-9   the window of that number
     &     kill the window, asked first
+    ,     rename the window
     d     detach
     [     copy mode
     PgUp  copy mode, a page up; a page down to the bottom leaves it
@@ -37,6 +38,12 @@ A new window takes the lowest free number and starts its shell where the
 session was made.  The status line marks the shown window `*`, underlined,
 and the one shown before it `-`; closing the shown window shows that one.
 A question on the status line takes `y` for yes and any other key for no.
+A window is named after its active pane's foreground program, `[tmux]`
+while that pane is in copy mode, looked at as its panes write and at most
+every half second, as tmux's automatic-rename names it; the name is the
+kernel's for the process.  C-b `,` asks for a name on the status line,
+the old one there to edit with emacs's keys, Enter taking it and Escape
+leaving it; a renamed window keeps its name.
 A pane whose shell exits is removed and its space given to its sibling;
 every window follows the terminal's size.  A window ends with its last
 pane, a session with its last window, and the server with its last
@@ -128,7 +135,8 @@ runs x-tmux inside a real tmux pane, drives it with send-keys and reads
 it with capture-pane: typing, both splits, the next pane, a kill, a shell
 exiting, a resize, each pane's size checked by `stty size`; copy mode;
 windows made, shown, refused, asked about, killed and closed; then
-detaching, `ls`, attaching again, the last pane exiting and
+detaching, `ls`, attaching again, window names and renaming, the last
+pane exiting and
 `kill-server`, with tmux's messages.
 
 ## Install
