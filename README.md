@@ -32,6 +32,7 @@ The prefix is C-b, and after it:
     d     detach
     [     copy mode
     PgUp  copy mode, a page up; a page down to the bottom leaves it
+    ]     paste the newest buffer
     C-b   a C-b to the pane
 
 A new window takes the lowest free number and starts its shell where the
@@ -67,8 +68,29 @@ names vi.
     emacs M-< M->    the top of the history and the bottom (vi g G)
     q                leave (emacs Escape and C-c too)
 
-Not yet: selecting and copying, searching, and the time a row entered the
-history, which tmux shows beside the position.
+With vi's keys the cursor stays on a row's characters, its end the last of
+them.  A selection runs from where it began to the cursor, drawn black on
+yellow, and copying it leaves the mode:
+
+    emacs C-Space, vi Space    begin a selection
+    emacs C-g, vi Escape       clear it
+    vi V                       select whole rows
+    vi o                       the cursor to the selection's other end
+    emacs M-w C-w, vi Enter    copy it
+    vi A                       copy it to the end of the newest buffer
+    emacs C-k, vi D            copy from the cursor to the row's end
+
+As tmux copies: with emacs's keys a selection stops short of the cell its
+later end is on, and with vi's takes it; a row's trailing blanks are left
+out, and a row's end, a newline, is taken where the selection runs past
+its last character.  What is copied is kept as the newest of the server's
+paste buffers, 50 at most, and C-b `]` types the newest to the active
+pane, each newline a carriage return.  Keys and pastes a pane's program
+does not take at once wait for it, in order.
+
+Not yet: rectangles, a row the terminal wrapped copied as one line,
+bracketed paste, the buffer commands (`#`, `=`, `-`), searching, and the
+time a row entered the history, which tmux shows beside the position.
 
 ## The screen
 

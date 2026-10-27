@@ -21,6 +21,8 @@
 #   resize    the window grown to 100x30: the pane's terminal follows
 #   copy      C-b [ and C-b PgUp: the history paged through, the position
 #             at the top right, q and a page down to the bottom leaving
+#   paste     two rows selected with emacs's keys and drawn black on
+#             yellow, M-w copying them, C-b ] typing them to a cat
 #   windows   C-b c, 1, l, n, p: windows made and shown, the status line
 #             listing them with tmux's flags; a missing number refused for
 #             a moment; C-b & asked, a no keeping the window and a yes
@@ -67,7 +69,7 @@ check() {
 }
 
 tmux new-session -d -s "$s" -x 80 -y 24 \
-	"env SHELL=/bin/sh PS1='$ ' X_LANG_DIR=$fx/langs/ TMUX_TMPDIR=$fx /bin/sh"
+	"env SHELL=/bin/sh PS1='$ ' VISUAL= EDITOR= X_LANG_DIR=$fx/langs/ TMUX_TMPDIR=$fx /bin/sh"
 xt="$X -l tmux -- -L oracle"
 # The name tmux gives a window whose program is /bin/sh, which x-tmux's
 # panes run: x-tmux names its windows as tmux does.
@@ -172,6 +174,31 @@ check "copy -- after C-b PgUp, a page down to the bottom leaves" "$(screen | gre
 tmux send-keys -t "$s" 'echo still-here' Enter
 wait_for 'still-here'
 check "copy -- keys reach the shell again" "$(screen | grep -c '^still-here$')" "1"
+
+# paste
+tmux send-keys -t "$s" 'clear; echo one-two; echo three' Enter
+wait_for 'three'
+tmux send-keys -t "$s" C-b '['
+wait_for '[0/'
+tmux send-keys -t "$s" Up Up C-a C-Space C-e Down
+sleep 1
+# a row captured alone starts from no attribute, so its own colours show
+yellow() { tmux capture-pane -e -p -t "$s" -S "$1" -E "$1" | grep -c '43m'; }
+check "paste -- the selection drawn black on yellow" "$(yellow 0) $(yellow 1) $(yellow 2)" "1 1 0"
+tmux send-keys -t "$s" M-w
+sleep 1
+check "paste -- M-w copies and leaves copy mode" "$(screen | grep -c '\[[0-9]*/[0-9]*\]$')" "0"
+tmux send-keys -t "$s" "cat >$fx/pasted" Enter
+sleep 1
+tmux send-keys -t "$s" C-b ']'
+sleep 1
+tmux send-keys -t "$s" Enter C-d
+sleep 1
+check "paste -- C-b ] types the newest buffer, a newline a carriage return" "$(cat "$fx/pasted")" "one-two
+three"
+# the screen as the copy checks left it, for attach's
+tmux send-keys -t "$s" 'clear; echo still-here' Enter
+wait_for 'still-here'
 
 # windows
 st() { row 30; }

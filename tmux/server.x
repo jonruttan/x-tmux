@@ -24,10 +24,14 @@
 ;   l   the window last shown                     0-9 the window numbered so
 ;   ,   rename the window                         d   detach the client
 ;   [   copy mode (tmux/copy)                     PgUp  copy mode, a page up
-;   C-b a C-b to the pane
+;   ]   paste the newest buffer                   C-b a C-b to the pane
 ;
 ; In copy mode the active pane shows its history and keys move through
-; it; PgUp's ends at the bottom.  A question on the status line takes y
+; it; PgUp's ends at the bottom.  What copy mode copies is kept as the
+; newest of the server's paste buffers, 50 at most, as tmux keeps them,
+; and a paste types it to the active pane, each newline a carriage
+; return.  Keys and pastes the pane's program does not take at once wait
+; for it, in order.  A question on the status line takes y
 ; for yes and any other key for no; a name asked for is typed and edited
 ; there, Enter taking it and Escape leaving it.  A window is named after
 ; its active pane's program until it is renamed, as tmux's
@@ -50,7 +54,7 @@
 (import tmux/vt vt-make vt-feed! vt-render! vt-out vt-cursor vt-size vt-origin! vt-touch! vt-carry)
 (import tmux/vt-jit vt-jit!)
 (import tmux/copy copy-enter copy-resize copy-view copy-origin! copy-touch! copy-cursor copy-position
-  copy-do copy-vi? copy-key)
+  copy-do copy-selecting? copy-text copy-marks copy-vi? copy-key)
 (import tmux/layout layout-rects layout-borders layout-split layout-remove layout-panes)
 (import tmux/proto proto-conn proto-fd proto-send! proto-send-text! proto-fill! proto-each! proto-text
   proto-fields)
@@ -260,6 +264,7 @@
     (%call %c-kill (%pane-pid p) 1)
     (File close (%pane-fd p))
     (%call %c-waitpid (%pane-pid p) 0 0)
+    (set! %pending (List filter (fn (_ w) (not (= (first w) (%pane-fd p)))) %pending))
     (set! %panes (List filter (fn (_ q) (not (= (%pane-id q) id))) %panes))
     (%save-window!)
     (def w (List find (fn (_ w) (%holds? (List ref 1 w) id)) %windows))
@@ -301,7 +306,9 @@
 (def %hang-up!
   (fn (_)
     (List for-each
-      (fn (_ p) (%call %c-kill (%pane-pid p) 1) (File close (%pane-fd p)) (%call %c-waitpid (%pane-pid p) 0 0))
+      (fn (_ p)
+        (%call %c-kill (%pane-pid p) 1) (File close (%pane-fd p)) (%call %c-waitpid (%pane-pid p) 0 0)
+        (set! %pending (List filter (fn (_ w) (not (= (first w) (%pane-fd p)))) %pending)))
       %panes)
     (set! %panes ())))
 
@@ -575,7 +582,7 @@
         (def h (if (null? c) (%pane-screen p) (copy-view c)))
         (def n (vt-render! h))
         (%out-bytes (vt-out h) n)
-        (when (if (null? c) #f (< 0 n)) (%draw-position p c)))
+        (when (if (null? c) #f (< 0 n)) (do (%draw-selection p c) (%draw-position p c))))
       (layout-panes %tree))
     (def p (%pane %active))
     (def c (if (null? (%pane-copy p)) (vt-cursor (%pane-screen p)) (copy-cursor (%pane-copy p))))
@@ -594,6 +601,15 @@
     (def text (copy-position c))
     (%out (Str8 append (%goto (first rect) (+ (List ref 1 rect) (%max 0 (- (List ref 3 rect) (Str8 length text)))))
             (%esc "[0;30;43m") text (%esc "[0m")))))
+; A copy mode's selection, black on yellow, tmux's mode-style.
+(def %draw-selection
+  (fn (_ p c)
+    (def rect (%pane-rect p))
+    (List for-each
+      (fn (_ m)
+        (%out (Str8 append (%goto (+ (first rect) (first m)) (+ (List ref 1 rect) (List ref 1 m)))
+                (%esc "[0;30;43m") (List ref 2 m) (%esc "[0m"))))
+      (copy-marks c))))
 
 ; --- keys ---------------------------------------------------------------
 
@@ -632,7 +648,8 @@
               ((= b 44) (%ask-for! "(rename-window) " (List ref 3 (%window-at %window)) %rename!))
               ((= b 100) (%detach! (Str8 append "[detached (from session " %name ")]")))
               ((= b 91) (%copy! #f))
-              ((= b 2) (%call %c-write fd (%str->ptr (%byte 2)) 1))
+              ((= b 93) (unless (null? %buffers) ((fn (_ t) (%send! fd (%str->ptr t) (%byte-len t))) (%typed (first %buffers)))))
+              ((= b 2) (%send! fd (%str->ptr (%byte 2)) 1))
               (#t ()))
             (+ i 1))))))
 
@@ -648,17 +665,92 @@
   (fn (_ exit)
     (def p (%pane %active))
     (when (null? (%pane-copy p))
-      (do (%set-pane! (%with-copy p (copy-enter (%pane-screen p) exit)))
+      (do (%set-pane! (%with-copy p (copy-enter (%pane-screen p) exit %vi)))
           (%name-due! %window)))))
-; The active pane's copy mode after CMD: out of it, its screen drawn
-; whole, when CMD ends it.
+; The active pane's copy mode after CMD: what CMD copies kept, out of the
+; mode, its screen drawn whole, when CMD ends it, and the view drawn whole
+; while there is a selection to draw over it or there was one.
 (def %copy-do!
   (fn (_ cmd)
     (def p (%pane %active))
     (set! %touched #t)
-    (def c (copy-do (%pane-copy p) cmd))
+    (def was (%pane-copy p))
+    (def text (copy-text was cmd))
+    (unless (if (null? text) #t (= (%byte-len text) 0)) (%keep! text (eq? cmd (lit append))))
+    (def c (copy-do was cmd))
     (%set-pane! (%with-copy p c))
-    (when (null? c) (do (vt-touch! (%pane-screen p)) (%name-due! %window)))))
+    (if (null? c)
+      (do (vt-touch! (%pane-screen p)) (%name-due! %window))
+      (when (if (copy-selecting? was) #t (copy-selecting? c)) (copy-touch! c)))))
+
+; --- paste buffers ------------------------------------------------------
+
+(def %buffers ())    ; the paste buffers, the newest first
+(def %buffer-limit 50)
+
+; TEXT kept as the newest buffer, or, APPEND, added to its end; the oldest
+; let go past the limit.
+(def %keep!
+  (fn (_ text append)
+    (set! %buffers
+      (if (if append (not (null? %buffers)) #f)
+        (pair (Str8 append (first %buffers) text) (rest %buffers))
+        ((fn (self xs n) (if (if (null? xs) #t (= n 0)) () (pair (first xs) (self (rest xs) (- n 1)))))
+         (pair text %buffers) %buffer-limit)))))
+
+; TEXT as a paste types it: each newline a carriage return.
+(def %typed
+  (fn (_ text)
+    (def n (%byte-len text))
+    (def s (%make-str (+ n 1)))
+    (def p (%str->ptr s))
+    (%call %c-memcpy p (%str->ptr text) n)
+    (%pset p n 0 1)
+    ((fn (self i) (when (< i n) (do (when (= (%pref p i 1) 10) (%pset p i 13 1)) (self (+ i 1))))) 0)
+    s))
+
+; --- input for the panes ------------------------------------------------
+
+; Bytes for a pane's program that it has not taken: (FD BUF AT N) each,
+; BUF's bytes AT to N-1 still to go, in the order they came.
+(def %pending ())
+
+; N bytes at P for the program on FD, after what it has not yet taken: as
+; much as it takes now goes at once, and the rest waits for a poll to say
+; it can take more.
+(def %send!
+  (fn (_ fd p n)
+    (if (null? (List find (fn (_ w) (= (first w) fd)) %pending))
+      ((fn (_ k) (when (< k n) (%wait! fd p k n))) (%put fd p n))
+      (%wait! fd p 0 n))))
+(def %wait!
+  (fn (_ fd p from n)
+    (def s (%make-str (+ (- n from) 1)))
+    (%call %c-memcpy (%str->ptr s) (%int->ptr (+ (%ptr->int p) from)) (- n from))
+    (set! %pending (List append %pending (list (list fd s 0 (- n from)))))))
+; How many of N bytes at P the program on FD takes without waiting.
+(def %put
+  (fn (_ fd p n)
+    (Sys nonblock! fd)
+    (def k (%int (%call %c-write fd p n)))
+    (Sys nonblock! fd #f)
+    (%max k 0)))
+
+; What waits written to each program READY says can take more, the oldest
+; first.
+(def %drain!
+  (fn (_ ready)
+    (set! %pending
+      (List fold
+        (fn (_ acc w)
+          (def fd (first w))
+          (if (if (null? (List find (fn (_ x) (= (first x) fd)) acc)) (%ready-for? ready fd (lit out)) #f)
+            ((fn (_ at)
+               (if (= at (List ref 3 w)) acc (List append acc (list (list fd (List ref 1 w) at (List ref 3 w))))))
+             (+ (List ref 2 w)
+                (%put fd (%int->ptr (+ (%ptr->int (%str->ptr (List ref 1 w))) (List ref 2 w))) (- (List ref 3 w) (List ref 2 w)))))
+            (List append acc (list w))))
+        () %pending))))
 
 ; N typed bytes at P: runs of keys to the active pane, or each a command
 ; while it is in copy mode; a prefix and its command handled where they
@@ -672,7 +764,7 @@
          (do (def pane (%pane %active))
              (def fd (%pane-fd pane))
              (if (= i n)
-               (when (< from i) (%call %c-write fd (%int->ptr (+ (%ptr->int p) from)) (- i from)))
+               (when (< from i) (%send! fd (%int->ptr (+ (%ptr->int p) from)) (- i from)))
                (do (def b (%pref p i 1))
                    (match
                      ((if (null? %prompt) #f (List ref 4 %prompt))
@@ -686,7 +778,7 @@
                            ((fn (_ next) (self next next)) (rest (copy-key p i n #f)))))
                      (%prefix (do (set! %prefix #f) ((fn (_ next) (self next next)) (%command! p i n fd))))
                      ((= b 2)
-                       (do (when (< from i) (%call %c-write fd (%int->ptr (+ (%ptr->int p) from)) (- i from)))
+                       (do (when (< from i) (%send! fd (%int->ptr (+ (%ptr->int p) from)) (- i from)))
                            (set! %prefix #t)
                            (self (+ i 1) (+ i 1))))
                      ((not (null? (%pane-copy pane)))
@@ -900,6 +992,18 @@
 ; --- the loop -----------------------------------------------------------
 
 (def %ready? (fn (_ ready fd) (not (null? (List find (fn (_ r) (= (first r) fd)) ready)))))
+; Whether READY has FD ready for EVENT, or, for in, for anything but out:
+; a hang-up or an error is read as an end.
+(def %ready-for?
+  (fn (_ ready fd event)
+    ((fn (_ r)
+       (if (null? r) #f
+         (not (null? (List find (fn (_ e) (if (eq? event (lit out)) (eq? e event) (not (eq? e (lit out))))) (rest r))))))
+     (List find (fn (_ r) (= (first r) fd)) ready))))
+; What a pane's descriptor is polled for: out too while bytes wait for it.
+(def %wants
+  (fn (_ fd)
+    (pair fd (if (null? (List find (fn (_ w) (= (first w) fd)) %pending)) (list (lit in)) (list (lit in) (lit out))))))
 
 (def %serve
   (fn (self)
@@ -908,7 +1012,7 @@
           (def fds
             (List append (list (pair %listen (list (lit in))))
               (List map (fn (_ c) (pair (proto-fd c) (list (lit in)))) %conns)
-              (List map (fn (_ fd) (pair fd (list (lit in))))
+              (List map %wants
                 (List fold (fn (_ acc s) (List append acc (List map %pane-fd (List ref 3 (first s))))) () %sessions))))
           ; a message to take down or a name to look at keeps the poll short
           (def saying
@@ -920,11 +1024,12 @@
           (when (%ready? ready %listen)
             (set! %conns (List append %conns (list (proto-conn (Socket accept %listen))))))
           (List for-each (fn (_ c) (when (if (%live? c) (%ready? ready (proto-fd c)) #f) (%hear! c))) %conns)
+          (%drain! ready)
           (List for-each
             (fn (_ s)
               (when (not (null? (List find (fn (_ x) (eq? x s)) %sessions)))
                 (do (%enter! s)
-                    (List for-each (fn (_ p) (unless %done (when (%ready? ready (%pane-fd p)) (%output! p)))) %panes)
+                    (List for-each (fn (_ p) (unless %done (when (%ready-for? ready (%pane-fd p) (lit in)) (%output! p)))) %panes)
                     (when (if (null? %message) #f (< %until (%micros)))
                       (do (set! %message ()) (%draw-status) (set! %touched #t)))
                     (unless %done (List for-each (fn (_ w) (when (List ref 6 w) (%name-due! (first w)))) %windows))

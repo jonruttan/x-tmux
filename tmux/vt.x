@@ -826,12 +826,13 @@
     (def at (* (%row s r) (%w s %COLS)))
     (%text s (+ (%w s %CP) at) (+ (%w s %EP) (* 16 at)))))
 ; The text of the row whose cells start at address CELLS, their slots at EXT.
-(def %text
-  (fn (_ s cells ext)
-    (def cols (%w s %COLS))
-    (def buf (%make-str (+ 1 (* 14 cols))))
+(def %text (fn (_ s cells ext) (%text-span cells ext 0 (%w s %COLS))))
+; Its cells FROM to TO-1.
+(def %text-span
+  (fn (_ cells ext from to)
+    (def buf (%make-str (+ 1 (* 14 (- to from)))))
     (def p (%ptr->int (%str->ptr buf)))
-    (def n ((fn (self c at) (if (= c cols) at (self (+ c 1) (%text-cell! cells ext c at)))) 0 p))
+    (def n ((fn (self c at) (if (= c to) at (self (+ c 1) (%text-cell! cells ext c at)))) from p))
     ((prim-ref (lit str) (lit byte-sub)) buf 0 (- n p))))
 (def %text-cell!
   (fn (_ cells ext c at)
@@ -891,6 +892,27 @@
           (str=? (vt-history-row a i) (vt-history-row b i)))
         #f)
       #f)))
+
+; A line of H counted from its oldest history row, 0, through its screen's
+; rows: the address of its first cell and of its first cell's slot.
+(def %line
+  (fn (_ s line)
+    (def count (%w s %HCOUNT))
+    (def cols (%w s %COLS))
+    (def at (* cols (if (< line count) (%history-slot s line) (%row s (- line count)))))
+    (if (< line count)
+      (pair (+ (%w s %HC) at) (+ (%w s %HX) (* 16 at)))
+      (pair (+ (%w s %CP) at) (+ (%w s %EP) (* 16 at))))))
+; Line LINE's cells FROM to TO-1 as text, as vt-row writes a row.
+(def vt-line
+  (fn (_ h line from to)
+    ((fn (_ l) (%text-span (first l) (rest l) from to)) (%line (rest h) line))))
+; Its length: its cells to the last one not blank.
+(def vt-line-length
+  (fn (_ h line)
+    (def cells (first (%line (rest h) line)))
+    ((fn (loop c) (if (if (< 0 c) (= (%pref (%int->ptr cells) (- c 1) 1) 32) #f) (loop (- c 1)) c))
+     (%w (rest h) %COLS))))
 
 ; A screen the size of H showing its rows OFF up from the bottom: history
 ; row COUNT - OFF on, then the screen's rows, COUNT the history's rows it
@@ -952,6 +974,6 @@
 
 (provide tmux/vt vt-make vt-make-history vt-feed! vt-render! vt-out vt-cursor vt-size vt-origin!
   vt-touch! vt-carry vt-row vt-row-length vt-attrs vt-history vt-history-row vt-history-attrs
-  vt-history-same? vt-view
+  vt-history-same? vt-view vt-line vt-line-length
   vt-feed-pure! vt-render-pure! vt-feed-compiled! vt-render-compiled! vt-adopt!
   vt-compiled?)
