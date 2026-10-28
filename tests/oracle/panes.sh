@@ -18,6 +18,12 @@
 #   kill      C-b x, asked and answered y: the active pane gone, its
 #             sibling given its space
 #   exit      a pane's shell exiting removes the pane
+#   zoom      C-b z: the active pane over the whole window, Z on the
+#             status line, and back
+#   arrows    C-b Left and Right: the pane that way, a zoomed pane put
+#             back first
+#   borders   C-b C-arrows and M-arrows: the border moved 1 and 5 cells,
+#             an arrow repeating without the prefix
 #   resize    the window grown to 100x30: the pane's terminal follows
 #   copy      C-b [ and C-b PgUp: the history paged through, the position
 #             at the top right, q and a page down to the bottom leaving
@@ -143,6 +149,37 @@ sleep 2
 tmux send-keys -t "$s" 'stty size' Enter
 wait_for '23 80'
 check "exit -- the last pane takes the window" "$(screen | grep -c '^23 80$')" "1"
+
+# zoom, arrows, resize: each pane's size as its shell's stty reads it
+size() { tmux send-keys -t "$s" "clear; echo $1:\$(stty size)" Enter; wait_for "$1:" && sleep 0.5; screen | grep -o "$1:[0-9]* [0-9]*" | sed "s/^$1://"; }
+tmux send-keys -t "$s" C-b %
+sleep 2
+tmux send-keys -t "$s" C-b z
+sleep 1
+check "zoom -- C-b z gives the active pane the window, marked Z" "$(size z1) $(row 24)" "23 80 [0] 0:$W*Z"
+tmux send-keys -t "$s" C-b z
+sleep 1
+check "zoom -- again puts it back" "$(size z2) $(row 24)" "23 39 [0] 0:$W*"
+tmux send-keys -t "$s" C-b Left
+sleep 1
+check "arrows -- C-b Left the pane on the left" "$(size a1)" "23 40"
+tmux send-keys -t "$s" C-b C-Right
+sleep 1
+check "borders -- C-b C-Right moves its border a cell right" "$(size r1)" "23 41"
+tmux send-keys -t "$s" C-b M-Left
+sleep 1
+check "borders -- C-b M-Left 5 cells left" "$(size r2)" "23 36"
+tmux send-keys -t "$s" C-b C-Right C-Right C-Right
+sleep 1
+check "borders -- an arrow repeats without the prefix for a moment" "$(size r3)" "23 39"
+tmux send-keys -t "$s" C-b z
+sleep 1
+tmux send-keys -t "$s" C-b Right
+sleep 1
+check "arrows -- an arrow from a zoomed pane puts it back first" "$(size a2) $(row 24)" "23 40 [0] 0:$W*"
+tmux send-keys -t "$s" 'exit' Enter
+sleep 2
+check "arrows -- the left pane takes the window again" "$(size a3)" "23 80"
 
 # resize
 tmux resize-window -t "$s" -x 100 -y 30

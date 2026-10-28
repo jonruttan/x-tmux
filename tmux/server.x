@@ -25,7 +25,12 @@
 ;   ,   rename the window                         d   detach the client
 ;   [   copy mode (tmux/copy)                     PgUp  copy mode, a page up
 ;   ]   paste the newest buffer                   C-b a C-b to the pane
+;   z   zoom the active pane, or back             arrows  the pane that way
+;   C-arrows  move its border a cell              M-arrows  5 cells
 ;
+; An arrow command repeats for half a second: another arrow then needs no
+; prefix, as tmux's repeat-time has it.  Splitting, killing, resizing or
+; picking a pane puts a zoomed pane back first.
 ; In copy mode the active pane shows its history and keys move through
 ; it; PgUp's ends at the bottom.  What copy mode copies is kept as the
 ; newest of the server's paste buffers, 50 at most, as tmux keeps them,
@@ -55,7 +60,8 @@
 (import tmux/vt-jit vt-jit!)
 (import tmux/copy copy-enter copy-resize copy-view copy-origin! copy-touch! copy-cursor copy-position
   copy-do copy-selecting? copy-text copy-marks copy-vi? copy-key)
-(import tmux/layout layout-rects layout-borders layout-split layout-remove layout-panes)
+(import tmux/layout layout-new layout-rects layout-borders layout-split layout-remove layout-panes
+  layout-resize layout-fit layout-beside)
 (import tmux/proto proto-conn proto-fd proto-send! proto-send-text! proto-fill! proto-each! proto-text
   proto-fields)
 
@@ -130,11 +136,12 @@
 (def %with-copy
   (fn (_ p c) (list (%pane-id p) (%pane-pid p) (%pane-fd p) (%pane-screen p) (%pane-rect p) c)))
 
-; A window: (INDEX TREE ACTIVE NAME AUTO CHECKED DUE), its layout, its
-; active pane's id, its name, whether the name follows the active pane's
-; program, when that was last looked at, in microseconds since the epoch,
-; and whether it is to be looked at again; the shown window's TREE and
-; ACTIVE are %tree and %active, written back as it is left.
+; A window: (INDEX TREE ACTIVE NAME AUTO CHECKED DUE ZOOMED), its layout,
+; its active pane's id, its name, whether the name follows the active
+; pane's program, when that was last looked at, in microseconds since the
+; epoch, whether it is to be looked at again, and whether its active pane
+; is zoomed to fill it; the shown window's TREE and ACTIVE are %tree and
+; %active, written back as it is left.
 (def %name "")       ; the session's name
 (def %created 0)     ; when it was made, in seconds since the epoch
 (def %tree ())       ; the shown window's layout
@@ -152,6 +159,8 @@
 (def %prompt ())     ; the question on the status line, (LABEL TEXT AT YES TYPED), or nil
 (def %message ())    ; the message on the status line, or nil
 (def %until 0)       ; when the message goes, in microseconds since the epoch
+(def %recent ())     ; the panes' ids, the most recently active first
+(def %repeat 0)      ; until when an arrow repeats its command, in microseconds since the epoch
 (def %touched #f)    ; whether there is something to render
 
 ; A session: a one-slot list holding its record, the globals above in order.
@@ -162,7 +171,7 @@
       (do (%save-window!)
           (%set-first! %current
             (list %name %created %tree %panes %active %next %rows %cols %prefix %client %done
-              %windows %window %last %cwd %prompt %message %until))))))
+              %windows %window %last %cwd %prompt %message %until %recent %repeat))))))
 (def %enter!
   (fn (_ s)
     (unless (eq? s %current)
@@ -174,7 +183,7 @@
           (set! %client (List ref 9 r)) (set! %done (List ref 10 r))
           (set! %windows (List ref 11 r)) (set! %window (List ref 12 r)) (set! %last (List ref 13 r))
           (set! %cwd (List ref 14 r)) (set! %prompt (List ref 15 r)) (set! %message (List ref 16 r))
-          (set! %until (List ref 17 r))
+          (set! %until (List ref 17 r)) (set! %recent (List ref 18 r)) (set! %repeat (List ref 19 r))
           (set! %current s)))))
 (def %record-name (fn (_ s) (first (first s))))
 (def %record-client (fn (_ s) (if (eq? s %current) %client (List ref 9 (first s)))))
@@ -230,13 +239,22 @@
     (when (null? child) (Err raise 'io "x-tmux: no pseudo-terminal for a pane" ()))
     (def screen (vt-origin! (vt-make rows cols) (first rect) (List ref 1 rect)))
     (set! %panes (List append %panes (list (list id (first child) (rest child) screen rect ()))))
+    (set! %recent (pair id %recent))
     id))
 
-; Every pane of TREE placed where it puts it now: a pane whose size has
-; changed carried to a screen of the new size, its terminal told, and its
-; copy mode carried too; every screen and copy marked to be drawn whole.
+; Pane ID made the active one.
+(def %activate!
+  (fn (_ id)
+    (set! %active id)
+    (set! %recent (pair id (List filter (fn (_ x) (not (= x id))) %recent)))))
+
+; Every pane of window W placed where its layout puts it now, its zoomed
+; pane over the whole window: a pane whose size has changed carried to a
+; screen of the new size, its terminal told, and its copy mode carried
+; too; every screen and copy marked to be drawn whole.
 (def %place!
-  (fn (_ tree)
+  (fn (_ w)
+    (def whole (list 0 0 (- %rows 1) %cols))
     (List for-each
       (fn (_ r)
         (def p (%pane (first r)))
@@ -254,7 +272,8 @@
             (copy-touch! (copy-origin! (if same (%pane-copy p) (copy-resize (%pane-copy p) rows cols))
                            (first rect) (List ref 1 rect)))))
         (%set-pane! (list (%pane-id p) (%pane-pid p) (%pane-fd p) screen rect c)))
-      (layout-rects tree 0 0 (- %rows 1) %cols))))
+      (List map (fn (_ r) (if (if (List ref 7 w) (= (first r) (List ref 2 w)) #f) (pair (first r) whole) r))
+        (layout-rects (List ref 1 w) 0 0)))))
 
 ; A pane gone: its program hung up and reaped, its space in its window
 ; given back, the window closed with its last pane.
@@ -266,6 +285,7 @@
     (%call %c-waitpid (%pane-pid p) 0 0)
     (set! %pending (List filter (fn (_ w) (not (= (first w) (%pane-fd p)))) %pending))
     (set! %panes (List filter (fn (_ q) (not (= (%pane-id q) id))) %panes))
+    (set! %recent (List filter (fn (_ x) (not (= x id))) %recent))
     (%save-window!)
     (def w (List find (fn (_ w) (%holds? (List ref 1 w) id)) %windows))
     (def order (layout-panes (List ref 1 w)))
@@ -273,11 +293,12 @@
     (match
       ((null? tree) (%close-window! (first w)))
       (#t
-        (do (def active (if (= (List ref 2 w) id) (%after order id (layout-panes tree)) (List ref 2 w)))
+        (do (def active (if (= (List ref 2 w) id) (%successor order id (layout-panes tree)) (List ref 2 w)))
             (set! %windows (List map (fn (_ x) (if (eq? x w) (%laid w tree active) x)) %windows))
+            (%window-set! (first w) 7 #f)
             (if (= (first w) %window)
               (do (set! %tree tree) (set! %active active) (%redraw!))
-              (%place! tree)))))))
+              (%place! (%window-at (first w)))))))))
 
 ; Whether pane ID is in TREE.
 (def %holds? (fn (_ tree id) (not (null? (List find (fn (_ x) (= x id)) (layout-panes tree))))))
@@ -289,18 +310,62 @@
     (def next (List find (fn (_ x) (not (null? (List find (fn (_ y) (= x y)) here)))) (List append rest-of order)))
     (if (null? next) (first here) next)))
 
+; The pane to be active after ID has gone, of the panes in HERE: the most
+; recently active, tmux's last pane, else the one after it in ORDER.
+(def %successor
+  (fn (_ order id here)
+    ((fn (_ x) (if (null? x) (%after order id here) x))
+     (List find (fn (_ x) (not (null? (List find (fn (_ y) (= x y)) here)))) %recent))))
+
 ; The new pane is laid out before it is spawned, so its program starts
 ; at its own size: the child sets its terminal's window as it attaches,
 ; and on Darwin a window set on the master before then does not hold.
-; It starts where the active pane's program was started.
+; It starts where the active pane's program was started.  A pane under 3
+; cells the way it is split is refused, as tmux refuses it.
 (def %split!
   (fn (_ direction)
+    (%unzoom!)
     (def tree (layout-split %tree %active direction %next))
-    (def rect (rest (List find (fn (_ r) (= (first r) %next)) (layout-rects tree 0 0 (- %rows 1) %cols))))
-    (def id (%spawn! rect (Sys getcwd)))
-    (set! %tree tree)
-    (set! %active id)
+    (if (null? tree) (%say! "no space for new pane")
+      (do (def rect (rest (List find (fn (_ r) (= (first r) %next)) (layout-rects tree 0 0))))
+          (def id (%spawn! rect (Sys getcwd)))
+          (set! %tree tree)
+          (%activate! id)
+          (%redraw!)))))
+
+; --- zoom, the pane beside, resizing ------------------------------------
+
+(def %zoomed? (fn (_) (List ref 7 (%window-at %window))))
+
+; The shown window's active pane zoomed to fill it, or back in its place
+; when it is; a window of one pane is left as it is.
+(def %zoom!
+  (fn (_)
+    (match
+      ((%zoomed?) (%unzoom!))
+      ((null? (rest (layout-panes %tree))) ())
+      (#t (do (%window-set! %window 7 #t) (%name-due! %window) (%redraw!))))))
+(def %unzoom!
+  (fn (_) (when (%zoomed?) (do (%window-set! %window 7 #f) (%redraw!)))))
+
+; The pane beside the active one in DIRECTION, L R U or D, made active,
+; the window unzoomed first.
+(def %beside!
+  (fn (_ direction)
+    (%unzoom!)
+    ((fn (_ id) (unless (null? id) (do (%activate! id) (%name-due! %window))))
+     (layout-beside %tree %active direction %recent))))
+
+; The active pane resized N cells in DIRECTION, its border moved, the
+; window unzoomed first.
+(def %resize!
+  (fn (_ direction n)
+    (%unzoom!)
+    (set! %tree (layout-resize %tree %active direction n))
     (%redraw!)))
+
+; The shown window's panes that are drawn: the zoomed one alone.
+(def %shown (fn (_) (if (%zoomed?) (list %active) (layout-panes %tree))))
 
 ; Every pane's program hung up and reaped.
 (def %hang-up!
@@ -358,7 +423,7 @@
   (fn (_)
     (def i ((fn (self i) (if (null? (%window-at i)) i (self (+ i 1)))) 0))
     (def id (%spawn! (list 0 0 (- %rows 1) %cols) %cwd))
-    (def w (list i (list (lit pane) id) id "x-tmux" #t 0 #f))
+    (def w (list i (layout-new id %cols (- %rows 1)) id "x-tmux" #t 0 #f #f))
     (unless (null? %windows) (do (%save-window!) (set! %last (pair %window %last))))
     (set! %windows
       ((fn (self ws) (match ((null? ws) (list w)) ((< i (first (first ws))) (pair w ws)) (#t (pair (first ws) (self (rest ws))))))
@@ -507,15 +572,19 @@
 
 (def %goto (fn (_ row col) (%esc (Str8 append "[" (%num (+ row 1)) ";" (%num (+ col 1)) "H"))))
 
-; The whole terminal drawn again: every window placed, the terminal
-; cleared, the shown window's screens and borders, the status line.
+; The whole terminal drawn again: every window's layout fitted to the
+; terminal and its panes placed, the terminal cleared, the shown window's
+; screens and borders, the status line.
 (def %redraw!
   (fn (_)
     (%save-window!)
-    (List for-each (fn (_ w) (%place! (List ref 1 w))) %windows)
+    (set! %windows
+      (List map (fn (_ w) (%laid w (layout-fit (List ref 1 w) %cols (- %rows 1)) (List ref 2 w))) %windows))
+    (set! %tree (List ref 1 (%window-at %window)))
+    (List for-each %place! %windows)
     (%out (%esc "[0m"))
     (%out (%esc "[2J"))
-    (List for-each %draw-border (layout-borders %tree 0 0 (- %rows 1) %cols))
+    (unless (%zoomed?) (List for-each %draw-border (layout-borders %tree 0 0)))
     (%draw-status)
     (set! %touched #t)))
 
@@ -535,7 +604,7 @@
 
 ; The status line, tmux's: a question or a message black on yellow, or
 ; black on green the session and its windows, the shown one underlined,
-; marked * and the last one shown -.
+; marked * and the last one shown -, and a zoomed one Z.
 (def %draw-status
   (fn (_)
     (%out (%goto (- %rows 1) 0))
@@ -557,7 +626,8 @@
           (match
             ((= (first w) %window) "*")
             ((if (null? %last) #f (= (first w) (first %last))) "-")
-            (#t "")))))
+            (#t ""))
+          (if (List ref 7 w) "Z" ""))))
     (def left
       (Str8 append "[" %name "] "
         (Str8 join "" (List map (fn (_ w) (Str8 append (entry w) " ")) (List filter (fn (_ w) (< (first w) %window)) %windows)))))
@@ -583,7 +653,7 @@
         (def n (vt-render! h))
         (%out-bytes (vt-out h) n)
         (when (if (null? c) #f (< 0 n)) (do (%draw-selection p c) (%draw-position p c))))
-      (layout-panes %tree))
+      (%shown))
     (def p (%pane %active))
     (def c (if (null? (%pane-copy p)) (vt-cursor (%pane-screen p)) (copy-cursor (%pane-copy p))))
     (def rect (%pane-rect p))
@@ -616,13 +686,47 @@
 ; Whether copy mode reads vi's keys, decided as the server starts.
 (def %vi #f)
 
-; The key at byte I of the N at P, after the prefix; answers the byte
-; after it.  PgUp starts copy mode a page up, one that ends at the bottom.
+; The arrow key at byte I of the N at P, an ESC there: (DIRECTION
+; MODIFIER NEXT), DIRECTION L R U or D, MODIFIER xterm's, 1 for none, 3
+; Meta, 5 Ctrl, and NEXT the byte after it; nil for another key.  Meta is
+; also an ESC before the arrow.
+(def %arrow
+  (fn (_ p i n)
+    (def at (fn (_ k) (if (< (+ i k) n) (%pref p (+ i k) 1) -1)))
+    (def direction
+      (fn (_ b) (match ((= b 65) (lit U)) ((= b 66) (lit D)) ((= b 67) (lit R)) ((= b 68) (lit L)) (#t ()))))
+    (match
+      ((if (= (at 1) 27) (if (= (at 2) 91) (not (null? (direction (at 3)))) #f) #f)
+        (list (direction (at 3)) 3 (+ i 4)))
+      ((if (if (= (at 1) 91) #t (= (at 1) 79)) (not (null? (direction (at 2)))) #f)
+        (list (direction (at 2)) 1 (+ i 3)))
+      ((if (= (at 1) 91) (if (= (at 2) 49) (if (= (at 3) 59) (not (null? (direction (at 5)))) #f) #f) #f)
+        (list (direction (at 5)) (- (at 4) 48) (+ i 6)))
+      (#t ()))))
+
+; How long after an arrow command another arrow repeats it without the
+; prefix: tmux's repeat-time, 500 ms.
+(def %repeat-time 500000)
+
+; The key at byte I of the N at P, after the prefix or while an arrow
+; repeats; answers the byte after it.  An arrow picks the pane beside, a
+; Ctrl one moves its border a cell, a Meta one 5.  PgUp starts copy mode
+; a page up, one that ends at the bottom.
 (def %command!
   (fn (_ p i n fd)
     (set! %touched #t)
+    (set! %repeat 0)
     (def b (%pref p i 1))
+    (def arrow (if (= b 27) (%arrow p i n) ()))
     (match
+      ((not (null? arrow))
+        (do (match
+              ((= (List ref 1 arrow) 1) (%beside! (first arrow)))
+              ((= (List ref 1 arrow) 5) (%resize! (first arrow) 1))
+              ((= (List ref 1 arrow) 3) (%resize! (first arrow) 5))
+              (#t ()))
+            (set! %repeat (+ (%micros) %repeat-time))
+            (List ref 2 arrow)))
       ((= b 27)
         ((fn (_ k) (when (eq? (first k) (lit page-up)) (do (%copy! #t) (%copy-do! (lit page-up)))) (rest k))
          (copy-key p i n #f)))
@@ -631,8 +735,10 @@
               ((= b 37) (%split! (lit h)))
               ((= b 34) (%split! (lit v)))
               ((= b 111)
-                (do (set! %active (%after (layout-panes %tree) %active (layout-panes %tree)))
+                (do (%unzoom!)
+                    (%activate! (%after (layout-panes %tree) %active (layout-panes %tree)))
                     (%name-due! %window)))
+              ((= b 122) (%zoom!))
               ((= b 120)
                 (%ask! (Str8 append "kill-pane " (%num (%number %active)) "? (y/n) ")
                   (fn (_) (%remove! %active))))
@@ -766,6 +872,10 @@
              (if (= i n)
                (when (< from i) (%send! fd (%int->ptr (+ (%ptr->int p) from)) (- i from)))
                (do (def b (%pref p i 1))
+                   (def repeats
+                     (if (= %repeat 0) #f
+                       (if (if (= b 27) (< (%micros) %repeat) #f) (not (null? (%arrow p i n))) #f)))
+                   (unless repeats (set! %repeat 0))
                    (match
                      ((if (null? %prompt) #f (List ref 4 %prompt))
                        ((fn (_ next) (self next next)) (%edit! p i n)))
@@ -777,6 +887,9 @@
                            (when (= b 121) (yes))
                            ((fn (_ next) (self next next)) (rest (copy-key p i n #f)))))
                      (%prefix (do (set! %prefix #f) ((fn (_ next) (self next next)) (%command! p i n fd))))
+                     (repeats
+                       (do (when (< from i) (%send! fd (%int->ptr (+ (%ptr->int p) from)) (- i from)))
+                           ((fn (_ next) (self next next)) (%command! p i n fd))))
                      ((= b 2)
                        (do (when (< from i) (%send! fd (%int->ptr (+ (%ptr->int p) from)) (- i from)))
                            (set! %prefix #t)
@@ -885,7 +998,7 @@
           (set! %next 0) (set! %cols (%to-int (first f))) (set! %rows (%to-int (List ref 1 f)))
           (set! %prefix #f) (set! %client ()) (set! %done #f)
           (set! %windows ()) (set! %window 0) (set! %last ()) (set! %cwd (List ref 4 f))
-          (set! %prompt ()) (set! %message ()) (set! %until 0)
+          (set! %prompt ()) (set! %message ()) (set! %until 0) (set! %recent ()) (set! %repeat 0)
           (set! %sessions (List append %sessions (list s)))
           (set! %started #t)
           (%new-window!)

@@ -21,6 +21,10 @@ The prefix is C-b, and after it:
     %     split the active pane left and right
     "     split it top and bottom
     o     the next pane
+    arrows    the pane that way
+    C-arrows  move the active pane's border a cell that way
+    M-arrows  5 cells
+    z     zoom the active pane to fill the window, or put it back
     x     kill the active pane, asked first
     c     a new window
     n     the next window
@@ -45,10 +49,19 @@ every half second, as tmux's automatic-rename names it; the name is the
 kernel's for the process.  C-b `,` asks for a name on the status line,
 the old one there to edit with emacs's keys, Enter taking it and Escape
 leaving it; a renamed window keeps its name.
-A pane whose shell exits is removed and its space given to its sibling;
-every window follows the terminal's size.  A window ends with its last
-pane, a session with its last window, and the server with its last
-session.
+An arrow picks, of the panes across the border that way, the one most
+recently active, wrapping at the window's edges.  A resize moves the
+border beside the pane, taking cells from the panes beyond it, each
+keeping one, as tmux's resize-pane does; for half a second after an
+arrow command another arrow repeats it without the prefix, tmux's
+repeat-time.  A zoomed window is marked `Z` on the status line;
+splitting, killing, resizing or picking a pane puts its pane back first.
+A pane whose shell exits is removed and its space given to the pane
+after it, or before it when it was the last, and the pane active before
+it is active again; every window's layout follows the terminal's size,
+the change spread over its panes as tmux spreads it.  A window ends with
+its last pane, a session with its last window, and the server with its
+last session.
 
 ## Copy mode
 
@@ -147,15 +160,17 @@ Each may be led by `-L NAME` or `-S PATH` for the server's socket,
 `tests/specs/01-screen` pins the reference against what tmux 3.8 shows
 for the same bytes; `02-compiled` holds the compiled engine to the
 reference, read by read, on exercises fed in reads that end inside
-sequences; `03-layout` holds the split tree to the pane sizes tmux 3.8
-reports for the same splits; `04-copy` holds copy mode's moves to the
+sequences; `03-layout` holds the layout to the pane sizes tmux 3.8
+reports for the same splits, kills, resizes and window sizes, and the
+pane an arrow picks to tmux's; `04-copy` holds copy mode's moves to the
 positions and cursors tmux 3.8 reports for the same keys.
 
     X=/path/to/x sh tests/oracle/panes.sh
 
 runs x-tmux inside a real tmux pane, drives it with send-keys and reads
 it with capture-pane: typing, both splits, the next pane, a kill, a shell
-exiting, a resize, each pane's size checked by `stty size`; copy mode;
+exiting, zoom, arrows, moved borders, a resize, each pane's size checked
+by `stty size`; copy mode;
 windows made, shown, refused, asked about, killed and closed; then
 detaching, `ls`, attaching again, window names and renaming, the last
 pane exiting and
