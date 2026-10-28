@@ -24,6 +24,16 @@
 #             back first
 #   borders   C-b C-arrows and M-arrows: the border moved 1 and 5 cells,
 #             an arrow repeating without the prefix
+#   last      C-b ;: the pane active before, and back
+#   swap      C-b { and }: the pane swapped with the one before and after,
+#             taking its cell's size
+#   rotate    C-b C-o and M-o: the panes moved on and back through the
+#             cells, the pane moved into the active cell active
+#   layouts   C-b M-2, M-1, Space: even-vertical, even-horizontal, and
+#             the one after the last given
+#   numbers   C-b q: each pane's size at its top right, its number red or
+#             blue; a digit picking that pane, another key not typed, and
+#             gone after a second
 #   resize    the window grown to 100x30: the pane's terminal follows
 #   copy      C-b [ and C-b PgUp: the history paged through, the position
 #             at the top right, q and a page down to the bottom leaving
@@ -177,6 +187,58 @@ sleep 1
 tmux send-keys -t "$s" C-b Right
 sleep 1
 check "arrows -- an arrow from a zoomed pane puts it back first" "$(size a2) $(row 24)" "23 40 [0] 0:$W*"
+
+# last pane, swapping, rotating, layouts, numbers: the active pane's
+# name, A the left pane and B the right, and its size
+who() { tmux send-keys -t "$s" "clear; echo $1:\$P:\$(stty size)" Enter; wait_for "$1:" && sleep 0.5; screen | grep -o "$1:[AB]:[0-9]* [0-9]*" | sed "s/^$1://"; }
+# C-b and a key sent as it is; a lone ; ends a command on tmux's command
+# line, even after -l, so it goes as \;
+prefixed() { tmux send-keys -t "$s" C-b; tmux send-keys -t "$s" -l "$1"; }
+tmux send-keys -t "$s" 'P=B' Enter
+prefixed '\;'
+sleep 1
+tmux send-keys -t "$s" 'P=A' Enter
+check "last -- C-b ; the pane active before" "$(who l1)" "A:23 39"
+prefixed '\;'
+sleep 1
+check "last -- again the other" "$(who l2)" "B:23 40"
+prefixed '{'
+sleep 1
+check "swap -- C-b { swaps the pane with the one before, its cell's size" "$(who m1)" "B:23 39"
+prefixed '}'
+sleep 1
+check "swap -- C-b } with the one after" "$(who m2)" "B:23 40"
+tmux send-keys -t "$s" C-b C-o
+sleep 1
+check "rotate -- C-b C-o moves the panes on, the active cell's new pane active" "$(who m3)" "A:23 40"
+tmux send-keys -t "$s" C-b M-o
+sleep 1
+check "rotate -- C-b M-o moves them back" "$(who m4)" "B:23 40"
+tmux send-keys -t "$s" C-b M-2
+sleep 1
+check "layouts -- C-b M-2 even-vertical" "$(who y1)" "B:11 80"
+tmux send-keys -t "$s" C-b M-1
+sleep 1
+check "layouts -- C-b M-1 even-horizontal" "$(who y2)" "B:23 39"
+tmux send-keys -t "$s" C-b Space
+sleep 1
+check "layouts -- C-b Space the one after the last given" "$(who y3)" "B:11 80"
+tmux send-keys -t "$s" C-b q
+sleep 0.3
+check "numbers -- C-b q puts each pane's size at its top right" "$(row 1 | grep -c '80x11$') $(row 13 | grep -c '80x11$')" "1 1"
+check "numbers -- the active pane's red, the other's blue" \
+	"$(tmux capture-pane -e -p -t "$s" | grep -c '41m') $(tmux capture-pane -e -p -t "$s" | grep -c '44m')" "5 5"
+tmux send-keys -t "$s" 0
+sleep 1
+check "numbers -- a digit picks that pane and puts them away" "$(who n1) $(row 1 | grep -c '80x11$')" "A:11 80 0"
+tmux send-keys -t "$s" C-b q
+sleep 0.3
+tmux send-keys -t "$s" x
+sleep 1
+check "numbers -- another key puts them away, not typed" "$(screen | grep -c '^\$ x') $(row 1 | grep -c '80x11$')" "0 0"
+tmux send-keys -t "$s" C-b q
+sleep 1.5
+check "numbers -- gone after a second" "$(row 13 | grep -c '80x11$')" "0"
 tmux send-keys -t "$s" 'exit' Enter
 sleep 2
 check "arrows -- the left pane takes the window again" "$(size a3)" "23 80"

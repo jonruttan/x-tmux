@@ -12,7 +12,7 @@
   vt-compiled? vt-feed-pure! vt-render-pure! vt-jit! vt-jit-make vt-exercise vt-agree vt-same?
   copy-enter copy-do copy-key copy-view copy-cursor copy-position copy-text copy-marks copy-selecting?
   layout-new layout-rects layout-borders layout-split layout-remove layout-panes layout-resize layout-fit
-  layout-size layout-beside)
+  layout-size layout-beside layout-relabel layout-names layout-arrange)
 
 (def tmux-version "0.1.0")
 
@@ -23,5 +23,5 @@
 (import tmux/copy copy-enter copy-do copy-key copy-view copy-cursor copy-position copy-text copy-marks
   copy-selecting?)
 (import tmux/layout layout-new layout-rects layout-borders layout-split layout-remove layout-panes
-  layout-resize layout-fit layout-size layout-beside)
+  layout-resize layout-fit layout-size layout-beside layout-relabel layout-names layout-arrange)
 (import tmux/cli tmux-main)

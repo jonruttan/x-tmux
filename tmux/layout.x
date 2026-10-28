@@ -289,5 +289,127 @@
       (#t ((fn (_ x) (if (null? x) (first found) x))
            (List find (fn (_ x) (not (null? (List find (fn (_ y) (= x y)) found)))) recent))))))
 
+; --- moving panes --------------------------------------------------------
+
+; T with each pane's id the one at its place in NEW of the ids in OLD,
+; the cells keeping their sizes, as swap-pane and rotate-window move
+; panes.
+(def layout-relabel
+  (fn (self t old new)
+    (if (%leaf? t)
+      (list (lit pane) (List ref 1 t) (List ref 2 t) (List ref (%index old (fn (_ x) (= x (%id t)))) new))
+      (%with-cells t (List map (fn (_ c) (self c old new)) (%cells t))))))
+
+; --- the preset layouts ---------------------------------------------------
+
+; The preset layouts in tmux's next-layout order.
+(def layout-names
+  (lit (even-horizontal even-vertical main-horizontal main-horizontal-mirrored main-vertical
+        main-vertical-mirrored tiled)))
+
+(def %max (fn (_ a b) (if (< a b) b a)))
+
+; The sizes of N cells sharing SIZE, a border between each two, as tmux's
+; layout_spread_cell: each the same, the first ones a cell more for what
+; is left over.
+(def %spread
+  (fn (_ size n)
+    (def each (Num quotient (- size (- n 1)) n))
+    (def over (Num remainder (- size (- n 1)) n))
+    ((fn (self k) (if (= k n) () (pair (if (< k over) (+ each 1) each) (self (+ k 1))))) 0)))
+
+; Panes IDS for a TYPE row of COLS x ROWS, sized the way it runs by SIZES.
+(def %leaves
+  (fn (self type cols rows ids sizes)
+    (if (null? ids) ()
+      (pair (if (eq? type (lit h)) (list (lit pane) (first sizes) rows (first ids)) (list (lit pane) cols (first sizes) (first ids)))
+            (self type cols rows (rest ids) (rest sizes))))))
+
+; IDS side by side, TYPE h, or one above another, v, the same size each,
+; as tmux's even-horizontal and even-vertical.
+(def %even
+  (fn (_ type ids cols rows)
+    (def h (eq? type (lit h)))
+    (def least (- (* 2 (List length ids)) 1))
+    (def c (if h (%max cols least) cols))
+    (def r (if h rows (%max rows least)))
+    (list type c r (%leaves type c r ids (%spread (if h c r) (List length ids))))))
+
+; The first of IDS the main pane, 80 cells wide beside the others, TYPE
+; h, or 24 rows above them, v, tmux's main-pane-width and
+; main-pane-height, the others in a row the other way: main-vertical and
+; main-horizontal, the main pane last when MIRRORED.  A window too small
+; for it leaves the others one cell.
+(def %main
+  (fn (_ type ids cols rows mirrored)
+    (def h (eq? type (lit h)))
+    (def s (- (if h cols rows) 1))
+    (def want (if h 80 24))
+    (def small (<= s (+ want 1)))
+    (def main (match ((not small) want) ((<= s 2) 1) (#t (- s 1))))
+    (def other (if small 1 (- s main)))
+    (def others (rest ids))
+    (def n (List length others))
+    (def across (%max (if h rows cols) (- (* 2 n) 1)))
+    (def leaf (fn (_ along id) (if h (list (lit pane) along across id) (list (lit pane) across along id))))
+    (def main-cell (leaf main (first ids)))
+    (def other-cell
+      (if (= n 1) (leaf other (first others))
+        ((fn (_ type c r) (list type c r (%leaves type c r others (%spread across n))))
+         (if h (lit v) (lit h)) (if h other across) (if h across other))))
+    (def total (+ (+ main other) 1))
+    (list type (if h total across) (if h across total) (if mirrored (list other-cell main-cell) (list main-cell other-cell)))))
+
+; IDS in rows of as many columns, as tmux's tiled: a cell each, the same
+; size, the last of a row and the last row taking what is left over, and
+; a pane alone in a row the whole of it.
+(def %tiled
+  (fn (_ ids cols rows)
+    (def n (List length ids))
+    (def grid
+      ((fn (self r c)
+         (match ((not (< (* r c) n)) (pair r c)) ((< (* (+ r 1) c) n) (self (+ r 1) (+ c 1))) (#t (self (+ r 1) c))))
+       1 1))
+    (def down (first grid))
+    (def across (rest grid))
+    (def width (%max 1 (Num quotient (- cols (- across 1)) across)))
+    (def height (%max 1 (Num quotient (- rows (- down 1)) down)))
+    (def row
+      (fn (_ j ids)
+        (if (if (= (- n (* j across)) 1) #t (= across 1)) (list (lit pane) cols height (first ids))
+          ((fn (_ cells)
+             (def used (- (* (List length cells) (+ width 1)) 1))
+             (list (lit h) cols height
+               (if (< used cols)
+                 (%put cells (- (List length cells) 1) (%adjust (List ref (- (List length cells) 1) cells) (lit h) (- cols used)))
+                 cells)))
+           (%leaves (lit h) cols height
+             ((fn (self xs k) (if (if (null? xs) #t (= k 0)) () (pair (first xs) (self (rest xs) (- k 1))))) ids across)
+             ((fn (self k) (if (= k 0) () (pair width (self (- k 1))))) across))))))
+    (def rows-of
+      ((fn (self j ids)
+         (if (null? ids) ()
+           ((fn (_ r) (pair r (self (+ j 1) (List drop (List length (layout-panes r)) ids)))) (row j ids))))
+       0 ids))
+    (def used (- (* down (+ height 1)) 1))
+    (def last (- (List length rows-of) 1))
+    (list (lit v) (%max cols (- (* across (+ width 1)) 1)) (%max rows used)
+      (if (< used rows) (%put rows-of last (%adjust (List ref last rows-of) (lit v) (- rows used))) rows-of))))
+
+; IDS, in tmux's pane order, laid out by the preset layout NAME, one of
+; layout-names, in a window of COLS x ROWS, as tmux's select-layout lays
+; them; nil for one pane.
+(def layout-arrange
+  (fn (_ name ids cols rows)
+    (unless (null? (rest ids))
+      (match
+        ((eq? name (lit even-horizontal)) (%even (lit h) ids cols rows))
+        ((eq? name (lit even-vertical)) (%even (lit v) ids cols rows))
+        ((eq? name (lit main-horizontal)) (%main (lit v) ids cols rows #f))
+        ((eq? name (lit main-horizontal-mirrored)) (%main (lit v) ids cols rows #t))
+        ((eq? name (lit main-vertical)) (%main (lit h) ids cols rows #f))
+        ((eq? name (lit main-vertical-mirrored)) (%main (lit h) ids cols rows #t))
+        (#t (%tiled ids cols rows))))))
+
 (provide tmux/layout layout-new layout-rects layout-borders layout-split layout-remove layout-panes
-  layout-resize layout-fit layout-size layout-beside)
+  layout-resize layout-fit layout-size layout-beside layout-relabel layout-names layout-arrange)
