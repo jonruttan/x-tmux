@@ -27,10 +27,19 @@
 ;   ]   paste the newest buffer                   C-b a C-b to the pane
 ;   z   zoom the active pane, or back             arrows  the pane that way
 ;   C-arrows  move its border a cell              M-arrows  5 cells
+;   ;   the pane active before                    q   the panes' numbers
+;   {   swap the pane with the one before         }   with the one after
+;   C-o rotate the panes forward                  M-o backward
+;   M-1 to M-7  a preset layout                   Space  the next one
 ;
 ; An arrow command repeats for half a second: another arrow then needs no
-; prefix, as tmux's repeat-time has it.  Splitting, killing, resizing or
-; picking a pane puts a zoomed pane back first.
+; prefix, as tmux's repeat-time has it.  Splitting, killing, resizing,
+; picking, moving or laying out panes puts a zoomed pane back first.  The
+; panes' numbers show for a second, a digit then picking that pane and
+; any other key putting them away, the prefix going on as the prefix.
+; The preset layouts are tmux's: M-1 even-horizontal, M-2 even-vertical,
+; M-3 main-horizontal, M-4 main-vertical, M-5 tiled, M-6 and M-7 the
+; main ones mirrored.
 ; In copy mode the active pane shows its history and keys move through
 ; it; PgUp's ends at the bottom.  What copy mode copies is kept as the
 ; newest of the server's paste buffers, 50 at most, as tmux keeps them,
@@ -61,7 +70,7 @@
 (import tmux/copy copy-enter copy-resize copy-view copy-origin! copy-touch! copy-cursor copy-position
   copy-do copy-selecting? copy-text copy-marks copy-vi? copy-key)
 (import tmux/layout layout-new layout-rects layout-borders layout-split layout-remove layout-panes
-  layout-resize layout-fit layout-beside)
+  layout-resize layout-fit layout-size layout-beside layout-relabel layout-names layout-arrange)
 (import tmux/proto proto-conn proto-fd proto-send! proto-send-text! proto-fill! proto-each! proto-text
   proto-fields)
 
@@ -136,12 +145,14 @@
 (def %with-copy
   (fn (_ p c) (list (%pane-id p) (%pane-pid p) (%pane-fd p) (%pane-screen p) (%pane-rect p) c)))
 
-; A window: (INDEX TREE ACTIVE NAME AUTO CHECKED DUE ZOOMED), its layout,
-; its active pane's id, its name, whether the name follows the active
-; pane's program, when that was last looked at, in microseconds since the
-; epoch, whether it is to be looked at again, and whether its active pane
-; is zoomed to fill it; the shown window's TREE and ACTIVE are %tree and
-; %active, written back as it is left.
+; A window: (INDEX TREE ACTIVE NAME AUTO CHECKED DUE ZOOMED ORDER LAYOUT),
+; its layout, its active pane's id, its name, whether the name follows
+; the active pane's program, when that was last looked at, in
+; microseconds since the epoch, whether it is to be looked at again,
+; whether its active pane is zoomed to fill it, its panes' ids in tmux's
+; pane order, which numbers them, and the place in layout-names of the
+; preset layout last given it, -1 for none; the shown window's TREE and
+; ACTIVE are %tree and %active, written back as it is left.
 (def %name "")       ; the session's name
 (def %created 0)     ; when it was made, in seconds since the epoch
 (def %tree ())       ; the shown window's layout
@@ -161,6 +172,7 @@
 (def %until 0)       ; when the message goes, in microseconds since the epoch
 (def %recent ())     ; the panes' ids, the most recently active first
 (def %repeat 0)      ; until when an arrow repeats its command, in microseconds since the epoch
+(def %numbers 0)     ; until when the panes' numbers show, in microseconds since the epoch, or 0
 (def %touched #f)    ; whether there is something to render
 
 ; A session: a one-slot list holding its record, the globals above in order.
@@ -171,7 +183,7 @@
       (do (%save-window!)
           (%set-first! %current
             (list %name %created %tree %panes %active %next %rows %cols %prefix %client %done
-              %windows %window %last %cwd %prompt %message %until %recent %repeat))))))
+              %windows %window %last %cwd %prompt %message %until %recent %repeat %numbers))))))
 (def %enter!
   (fn (_ s)
     (unless (eq? s %current)
@@ -184,6 +196,7 @@
           (set! %windows (List ref 11 r)) (set! %window (List ref 12 r)) (set! %last (List ref 13 r))
           (set! %cwd (List ref 14 r)) (set! %prompt (List ref 15 r)) (set! %message (List ref 16 r))
           (set! %until (List ref 17 r)) (set! %recent (List ref 18 r)) (set! %repeat (List ref 19 r))
+          (set! %numbers (List ref 20 r))
           (set! %current s)))))
 (def %record-name (fn (_ s) (first (first s))))
 (def %record-client (fn (_ s) (if (eq? s %current) %client (List ref 9 (first s)))))
@@ -288,7 +301,7 @@
     (set! %recent (List filter (fn (_ x) (not (= x id))) %recent))
     (%save-window!)
     (def w (List find (fn (_ w) (%holds? (List ref 1 w) id)) %windows))
-    (def order (layout-panes (List ref 1 w)))
+    (def order (List ref 8 w))
     (def tree (layout-remove (List ref 1 w) id))
     (match
       ((null? tree) (%close-window! (first w)))
@@ -296,6 +309,7 @@
         (do (def active (if (= (List ref 2 w) id) (%successor order id (layout-panes tree)) (List ref 2 w)))
             (set! %windows (List map (fn (_ x) (if (eq? x w) (%laid w tree active) x)) %windows))
             (%window-set! (first w) 7 #f)
+            (%window-set! (first w) 8 (List filter (fn (_ x) (not (= x id))) order))
             (if (= (first w) %window)
               (do (set! %tree tree) (set! %active active) (%redraw!))
               (%place! (%window-at (first w)))))))))
@@ -330,6 +344,9 @@
       (do (def rect (rest (List find (fn (_ r) (= (first r) %next)) (layout-rects tree 0 0))))
           (def id (%spawn! rect (Sys getcwd)))
           (set! %tree tree)
+          (%window-set! %window 8
+            ((fn (self xs) (if (= (first xs) %active) (pair %active (pair id (rest xs))) (pair (first xs) (self (rest xs)))))
+             (%order)))
           (%activate! id)
           (%redraw!)))))
 
@@ -366,6 +383,147 @@
 
 ; The shown window's panes that are drawn: the zoomed one alone.
 (def %shown (fn (_) (if (%zoomed?) (list %active) (layout-panes %tree))))
+
+; --- the last pane, moving panes, the preset layouts ----------------------
+
+; The shown window's panes in tmux's pane order.
+(def %order (fn (_) (List ref 8 (%window-at %window))))
+
+; The pane active before the active one in its window made active again,
+; tmux's last-pane, the window unzoomed first.
+(def %last-pane!
+  (fn (_)
+    ((fn (_ id)
+       (if (null? id) (%say! "no last pane")
+         (do (%unzoom!) (%activate! id) (%name-due! %window))))
+     (List find (fn (_ x) (if (= x %active) #f (%holds? %tree x))) %recent))))
+
+; The shown window's panes put in the order NEW, each taking the cell of
+; the pane at its place in the order now, the window unzoomed first.
+(def %reorder!
+  (fn (_ new)
+    (%unzoom!)
+    (set! %tree (layout-relabel %tree (%order) new))
+    (%window-set! %window 8 new)
+    (%redraw!)))
+
+; The active pane swapped with the one before it in order, or after it
+; when FORWARD, wrapping, as swap-pane -U and -D; it stays active.
+(def %swap!
+  (fn (_ forward)
+    (def order (%order))
+    (def other (%after (if forward order (List reverse order)) %active order))
+    (unless (= other %active)
+      (%reorder! (List map (fn (_ x) (match ((= x %active) other) ((= x other) %active) (#t x))) order)))))
+
+; The panes moved a cell back in order, the first to the last, or, BACK,
+; a cell on, the last to the first, as rotate-window and its -D: the
+; pane moved into the active one's cell made active.
+(def %rotate!
+  (fn (_ back)
+    (def order (%order))
+    (unless (null? (rest order))
+      (do (def k (%number %active))
+          (def new
+            (if back
+              ((fn (_ r) (pair (first r) (List reverse (rest r)))) (List reverse order))
+              (List append (rest order) (list (first order)))))
+          (%reorder! new)
+          (%activate! (List ref k new))
+          (%name-due! %window)))))
+
+; The shown window laid out by the preset layout at K in layout-names, as
+; select-layout, the window unzoomed first, and K kept for the next.  A
+; layout bigger than the window is not taken.
+(def %arrange!
+  (fn (_ k)
+    (%unzoom!)
+    (%window-set! %window 9 k)
+    (def t (layout-arrange (List ref k layout-names) (%order) %cols (- %rows 1)))
+    (unless (null? t)
+      ((fn (_ size)
+         (when (if (<= (first size) %cols) (<= (rest size) (- %rows 1)) #f) (do (set! %tree t) (%redraw!))))
+       (layout-size (layout-fit t %cols (- %rows 1)))))))
+
+; The preset layout after the one last given the shown window, as
+; next-layout, the first when none was.
+(def %next-layout!
+  (fn (_)
+    (%arrange! (Num remainder (+ (List ref 9 (%window-at %window)) 1) (List length layout-names)))))
+
+; Where M-1 to M-7 find their layouts in layout-names, tmux's bindings.
+(def %meta-layouts (lit (0 1 2 4 6 3 5)))
+
+; --- the panes' numbers ---------------------------------------------------
+
+; The panes' numbers shown for a second, tmux's display-panes-time.
+(def %show-numbers! (fn (_) (set! %numbers (+ (%micros) 1000000)) (set! %touched #t)))
+
+; The panes' numbers put away, the panes under them drawn again.
+(def %hide-numbers! (fn (_) (set! %numbers 0) (%redraw!)))
+
+; The pane numbered K made active, as a digit does while the numbers
+; show, the window unzoomed first; nothing when there is none.
+(def %pick!
+  (fn (_ k)
+    (def order (%order))
+    (when (< k (List length order))
+      (do (%unzoom!) (%activate! (List ref k order)) (%name-due! %window)))))
+
+; Each digit as tmux's clock draws it, a letter a row: F all 5 cells, S
+; the first and the last, L the first, R the last.
+(def %digits (lit ("FSSSF" "RRRRR" "FRFLF" "FRFRF" "SSFRR" "FLFRF" "FLFSF" "FRRRR" "FSFSF" "FSFRF")))
+(def %runs
+  (fn (_ letter)
+    (match
+      ((str=? letter "F") (lit ((0 5))))
+      ((str=? letter "S") (lit ((0 1) (4 1))))
+      ((str=? letter "L") (lit ((0 1))))
+      (#t (lit ((4 1)))))))
+
+; Each shown pane's number over it, as tmux's display-panes draws it, red
+; for the active pane and blue for the others: in tmux's clock digits in
+; a pane 5 cells a digit wide and 7 rows high, else as text in its
+; middle; and its size at its top right.
+(def %draw-numbers
+  (fn (_)
+    (def rects (layout-rects %tree 0 0))
+    (List for-each
+      (fn (_ id)
+        (def rect (%pane-rect (%pane id)))
+        (def row (first rect))
+        (def col (List ref 1 rect))
+        (def rows (List ref 2 rect))
+        (def cols (List ref 3 rect))
+        (def colour (if (= id %active) "1" "4"))
+        (def text (%num (%number id)))
+        (def len (Str8 length text))
+        (def own (rest (List find (fn (_ r) (= (first r) id)) rects)))
+        (def size (Str8 append (%num (List ref 3 own)) "x" (%num (List ref 2 own))))
+        (%out (Str8 append (%goto row (+ col (%max 0 (- cols (Str8 length size))))) (%esc (Str8 append "[0;3" colour "m"))
+                (if (< cols (Str8 length size)) (Str8 sub 0 cols size) size) (%esc "[0m")))
+        (if (if (< cols (- (* len 6) 1)) #t (< rows 7))
+          (unless (< cols len)
+            (%out (Str8 append (%goto (+ row (Num quotient rows 2)) (+ col (Num quotient (- cols len) 2)))
+                    (%esc (Str8 append "[0;3" colour "m")) text (%esc "[0m"))))
+          (do (def top (+ row (Num quotient (- rows 5) 2)))
+              (def left (+ col (Num quotient (- cols (- (* len 6) 1)) 2)))
+              ((fn (self d)
+                 (when (< d len)
+                   (do (def shape (List ref (%to-int (Str8 sub d 1 text)) %digits))
+                       ((fn (self j)
+                          (when (< j 5)
+                            (do (List for-each
+                                  (fn (_ run)
+                                    (%out (Str8 append (%goto (+ top j) (+ (+ left (* d 6)) (first run)))
+                                            (%esc (Str8 append "[0;4" colour "m")) (Str8 pad-right (List ref 1 run) #\space "")
+                                            (%esc "[0m"))))
+                                  (%runs (Str8 sub j 1 shape)))
+                                (self (+ j 1)))))
+                        0)
+                       (self (+ d 1)))))
+               0))))
+      (%shown))))
 
 ; Every pane's program hung up and reaped.
 (def %hang-up!
@@ -423,7 +581,7 @@
   (fn (_)
     (def i ((fn (self i) (if (null? (%window-at i)) i (self (+ i 1)))) 0))
     (def id (%spawn! (list 0 0 (- %rows 1) %cols) %cwd))
-    (def w (list i (layout-new id %cols (- %rows 1)) id "x-tmux" #t 0 #f #f))
+    (def w (list i (layout-new id %cols (- %rows 1)) id "x-tmux" #t 0 #f #f (list id) -1))
     (unless (null? %windows) (do (%save-window!) (set! %last (pair %window %last))))
     (set! %windows
       ((fn (self ws) (match ((null? ws) (list w)) ((< i (first (first ws))) (pair w ws)) (#t (pair (first ws) (self (rest ws))))))
@@ -640,8 +798,9 @@
       (Str8 append left (%esc "[4m") shown (%esc "[24m") (Str8 pad-right (- %cols used) #\space right)))))
 
 ; Each changed row of the shown window's panes, a pane in copy mode its
-; copy's with the position over its top right, then the cursor where the
-; active pane has it, or after the question on the status line.
+; copy's with the position over its top right, the panes' numbers over
+; them while they show, then the cursor where the active pane has it, or
+; after the question on the status line.
 (def %render!
   (fn (_)
     (%out (%esc "[?25l"))
@@ -654,6 +813,7 @@
         (%out-bytes (vt-out h) n)
         (when (if (null? c) #f (< 0 n)) (do (%draw-selection p c) (%draw-position p c))))
       (%shown))
+    (when (< 0 %numbers) (%draw-numbers))
     (def p (%pane %active))
     (def c (if (null? (%pane-copy p)) (vt-cursor (%pane-screen p)) (copy-cursor (%pane-copy p))))
     (def rect (%pane-rect p))
@@ -710,15 +870,19 @@
 
 ; The key at byte I of the N at P, after the prefix or while an arrow
 ; repeats; answers the byte after it.  An arrow picks the pane beside, a
-; Ctrl one moves its border a cell, a Meta one 5.  PgUp starts copy mode
-; a page up, one that ends at the bottom.
+; Ctrl one moves its border a cell, a Meta one 5.  M-1 to M-7 are ESC
+; and the digit, M-o ESC o.  PgUp starts copy mode a page up, one that
+; ends at the bottom.
 (def %command!
   (fn (_ p i n fd)
     (set! %touched #t)
     (set! %repeat 0)
     (def b (%pref p i 1))
     (def arrow (if (= b 27) (%arrow p i n) ()))
+    (def meta (if (if (= b 27) (< (+ i 1) n) #f) (%pref p (+ i 1) 1) -1))
     (match
+      ((if (< 48 meta) (< meta 56) #f) (do (%arrange! (List ref (- meta 49) %meta-layouts)) (+ i 2)))
+      ((= meta 111) (do (%rotate! #t) (+ i 2)))
       ((not (null? arrow))
         (do (match
               ((= (List ref 1 arrow) 1) (%beside! (first arrow)))
@@ -736,9 +900,15 @@
               ((= b 34) (%split! (lit v)))
               ((= b 111)
                 (do (%unzoom!)
-                    (%activate! (%after (layout-panes %tree) %active (layout-panes %tree)))
+                    (%activate! (%after (%order) %active (%order)))
                     (%name-due! %window)))
               ((= b 122) (%zoom!))
+              ((= b 59) (%last-pane!))
+              ((= b 113) (%show-numbers!))
+              ((= b 123) (%swap! #f))
+              ((= b 125) (%swap! #t))
+              ((= b 15) (%rotate! #f))
+              ((= b 32) (%next-layout!))
               ((= b 120)
                 (%ask! (Str8 append "kill-pane " (%num (%number %active)) "? (y/n) ")
                   (fn (_) (%remove! %active))))
@@ -759,11 +929,11 @@
               (#t ()))
             (+ i 1))))))
 
-; Pane ID's number in its window, tmux's pane index: its place in the
-; layout's order, from 0.
+; Pane ID's number in the shown window, tmux's pane index: its place in
+; the window's pane order, from 0.
 (def %number
   (fn (_ id)
-    ((fn (self xs i) (if (= (first xs) id) i (self (rest xs) (+ i 1)))) (layout-panes %tree) 0)))
+    ((fn (self xs i) (if (= (first xs) id) i (self (rest xs) (+ i 1)))) (%order) 0)))
 
 ; The active pane into copy mode, EXIT as tmux/copy's copy-enter, unless
 ; it is in it.
@@ -858,10 +1028,17 @@
             (List append acc (list w))))
         () %pending))))
 
+; The byte after the key at byte I of the N at P: an escape sequence, or
+; a character's UTF-8 bytes, read as one key.
+(def %past
+  (fn (_ p i n)
+    (if (= (%pref p i 1) 27) (rest (copy-key p i n #f))
+      ((fn (self j) (if (if (< j n) (= (& (%pref p j 1) 192) 128) #f) (self (+ j 1)) j)) (+ i 1)))))
+
 ; N typed bytes at P: runs of keys to the active pane, or each a command
 ; while it is in copy mode; a prefix and its command handled where they
-; fall, and a key while a question is asked its answer.  Keys clear a
-; message.
+; fall, a key while a question is asked its answer, and a key while the
+; panes' numbers show taken by them.  Keys clear a message.
 (def %keys!
   (fn (_ p n)
     (unless (null? %message) (do (set! %message ()) (%draw-status) (set! %touched #t)))
@@ -886,6 +1063,12 @@
                            (set! %touched #t)
                            (when (= b 121) (yes))
                            ((fn (_ next) (self next next)) (rest (copy-key p i n #f)))))
+                     ((< 0 %numbers)
+                       (do (%hide-numbers!)
+                           (match
+                             ((= b 2) (self i i))
+                             ((if (< 47 b) (< b 58) #f) (do (%pick! (- b 48)) (self (+ i 1) (+ i 1))))
+                             (#t ((fn (_ next) (self next next)) (%past p i n))))))
                      (%prefix (do (set! %prefix #f) ((fn (_ next) (self next next)) (%command! p i n fd))))
                      (repeats
                        (do (when (< from i) (%send! fd (%int->ptr (+ (%ptr->int p) from)) (- i from)))
@@ -999,6 +1182,7 @@
           (set! %prefix #f) (set! %client ()) (set! %done #f)
           (set! %windows ()) (set! %window 0) (set! %last ()) (set! %cwd (List ref 4 f))
           (set! %prompt ()) (set! %message ()) (set! %until 0) (set! %recent ()) (set! %repeat 0)
+          (set! %numbers 0)
           (set! %sessions (List append %sessions (list s)))
           (set! %started #t)
           (%new-window!)
@@ -1127,11 +1311,16 @@
               (List map (fn (_ c) (pair (proto-fd c) (list (lit in)))) %conns)
               (List map %wants
                 (List fold (fn (_ acc s) (List append acc (List map %pane-fd (List ref 3 (first s))))) () %sessions))))
-          ; a message to take down or a name to look at keeps the poll short
+          ; a message or the panes' numbers to take down or a name to look at
+          ; keeps the poll short
           (def saying
             (List find
               (fn (_ s)
-                (if (null? (List ref 16 (first s))) (not (null? (List find (fn (_ w) (List ref 6 w)) (List ref 11 (first s))))) #t))
+                (def r (first s))
+                (match
+                  ((not (null? (List ref 16 r))) #t)
+                  ((< 0 (List ref 20 r)) #t)
+                  (#t (not (null? (List find (fn (_ w) (List ref 6 w)) (List ref 11 r)))))))
               %sessions))
           (def ready (Sys poll fds (if (null? saying) 1000 100)))
           (when (%ready? ready %listen)
@@ -1145,6 +1334,7 @@
                     (List for-each (fn (_ p) (unless %done (when (%ready-for? ready (%pane-fd p) (lit in)) (%output! p)))) %panes)
                     (when (if (null? %message) #f (< %until (%micros)))
                       (do (set! %message ()) (%draw-status) (set! %touched #t)))
+                    (when (if (< 0 %numbers) (< %numbers (%micros)) #f) (%hide-numbers!))
                     (unless %done (List for-each (fn (_ w) (when (List ref 6 w) (%name-due! (first w)))) %windows))
                     (%settle!))))
             %sessions)

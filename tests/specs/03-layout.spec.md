@@ -211,3 +211,66 @@ pane_height, written here as (ID ROW COL ROWS COLS).
 ```
 ---
     (3 1 2 2 3 3)
+
+## moving panes
+
+### a swap or a rotation moves the panes through the cells, which keep their sizes
+
+```tmux
+(def t (layout-resize (layout-split (layout-split (layout-new 0 80 24) 0 'h 1) 1 'v 2) 0 'R 5))
+(write
+  (list (layout-rects (layout-relabel t '(0 1 2) '(2 1 0)) 0 0)
+        (layout-rects (layout-relabel t '(0 1 2) '(1 2 0)) 0 0)))
+```
+---
+    (((2 0 0 24 45) (1 0 46 12 34) (0 13 46 11 34)) ((1 0 0 24 45) (2 0 46 12 34) (0 13 46 11 34)))
+
+## the preset layouts
+
+### three panes in each layout, in next-layout's order
+
+```tmux
+(write layout-names)
+(List for-each (fn (_ name) (write (layout-rects (layout-arrange name '(0 1 2) 80 24) 0 0))) layout-names)
+```
+---
+    ('even-horizontal 'even-vertical 'main-horizontal 'main-horizontal-mirrored 'main-vertical 'main-vertical-mirrored 'tiled)((0 0 0 24 26) (1 0 27 24 26) (2 0 54 24 26))((0 0 0 8 80) (1 9 0 7 80) (2 17 0 7 80))((0 0 0 22 80) (1 23 0 1 40) (2 23 41 1 39))((1 0 0 1 40) (2 0 41 1 39) (0 2 0 22 80))((0 0 0 24 78) (1 0 79 12 1) (2 13 79 11 1))((1 0 0 12 1) (2 13 0 11 1) (0 0 2 24 78))((0 0 0 11 39) (1 0 40 11 40) (2 12 0 12 80))
+
+### the cells shared evenly, the first ones a cell more for what is left over
+
+```tmux
+(def lay (fn (_ name n) (layout-rects (layout-arrange name (List take n '(0 1 2 3 4 5 6)) 80 24) 0 0)))
+(List for-each write
+  (list (lay 'even-vertical 4) (lay 'even-horizontal 4) (lay 'main-vertical 5) (lay 'main-horizontal 7)))
+```
+---
+    ((0 0 0 6 80) (1 7 0 5 80) (2 13 0 5 80) (3 19 0 5 80))((0 0 0 24 20) (1 0 21 24 19) (2 0 41 24 19) (3 0 61 24 19))((0 0 0 24 78) (1 0 79 6 1) (2 7 79 5 1) (3 13 79 5 1) (4 19 79 5 1))((0 0 0 22 80) (1 23 0 1 13) (2 23 14 1 13) (3 23 28 1 13) (4 23 42 1 12) (5 23 55 1 12) (6 23 68 1 12))
+
+### tiled: a grid, the last of a row and the last row taking what is left, a pane alone in a row the whole of it
+
+```tmux
+(def lay (fn (_ n) (layout-rects (layout-arrange 'tiled (List take n '(0 1 2 3 4 5 6)) 80 24) 0 0)))
+(List for-each write (list (lay 4) (lay 5) (lay 7)))
+```
+---
+    ((0 0 0 11 39) (1 0 40 11 40) (2 12 0 12 39) (3 12 40 12 40))((0 0 0 7 39) (1 0 40 7 40) (2 8 0 7 39) (3 8 40 7 40) (4 16 0 8 80))((0 0 0 7 26) (1 0 27 7 26) (2 0 54 7 26) (3 8 0 7 26) (4 8 27 7 26) (5 8 54 7 26) (6 16 0 8 80))
+
+### the main pane 80 cells wide or 24 rows high, or all but one cell in a small window
+
+```tmux
+(def lay (fn (_ name n cols rows) (layout-rects (layout-arrange name (List take n '(0 1 2)) cols rows) 0 0)))
+(List for-each write
+  (list (lay 'main-vertical 3 200 50) (lay 'main-horizontal 3 200 50) (lay 'main-vertical-mirrored 3 200 50)
+        (lay 'tiled 3 200 50) (lay 'main-vertical 2 10 5) (lay 'main-horizontal 2 10 5)
+        (lay 'even-horizontal 2 10 5) (lay 'tiled 2 10 5)))
+```
+---
+    ((0 0 0 50 80) (1 0 81 25 119) (2 26 81 24 119))((0 0 0 24 200) (1 25 0 25 100) (2 25 101 25 99))((1 0 0 25 119) (2 26 0 24 119) (0 0 120 50 80))((0 0 0 24 99) (1 0 100 24 100) (2 25 0 25 200))((0 0 0 5 8) (1 0 9 5 1))((0 0 0 3 10) (1 4 0 1 10))((0 0 0 5 5) (1 0 6 5 4))((0 0 0 2 10) (1 3 0 2 10))
+
+### one pane is left as it is
+
+```tmux
+(write (layout-arrange 'tiled '(0) 80 24))
+```
+---
+    ()

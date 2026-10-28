@@ -25,6 +25,20 @@ The prefix is C-b, and after it:
     C-arrows  move the active pane's border a cell that way
     M-arrows  5 cells
     z     zoom the active pane to fill the window, or put it back
+    ;     the pane active before
+    q     show the panes' numbers; a digit then picks that pane
+    {     swap the active pane with the one before it
+    }     swap it with the one after it
+    C-o   rotate the panes forward through their places
+    M-o   rotate them backward
+    M-1   even-horizontal layout: the panes side by side
+    M-2   even-vertical: one above another
+    M-3   main-horizontal: the first pane above the others
+    M-4   main-vertical: the first pane left of the others
+    M-5   tiled: a grid
+    M-6   main-horizontal-mirrored: the first pane below the others
+    M-7   main-vertical-mirrored: the first pane right of the others
+    Space the next of those layouts
     x     kill the active pane, asked first
     c     a new window
     n     the next window
@@ -55,7 +69,17 @@ border beside the pane, taking cells from the panes beyond it, each
 keeping one, as tmux's resize-pane does; for half a second after an
 arrow command another arrow repeats it without the prefix, tmux's
 repeat-time.  A zoomed window is marked `Z` on the status line;
-splitting, killing, resizing or picking a pane puts its pane back first.
+splitting, killing, resizing, picking, moving or laying out panes puts
+its pane back first.
+A pane's number is its place in the window's pane order, which a split,
+a swap or a rotation changes and a layout does not; swapping and
+rotating move the panes through the places, each place keeping its
+size.  The preset layouts are tmux's, sized as tmux sizes them, the main
+pane 80 cells wide or 24 rows high; Space goes on from the layout last
+given.  C-b `q` shows each pane's number for a second, in tmux's clock
+digits where the pane has room, red for the active pane and blue for the
+others, with its size at its top right; a digit picks that pane, the
+prefix goes on as the prefix, and any other key puts the numbers away.
 A pane whose shell exits is removed and its space given to the pane
 after it, or before it when it was the last, and the pane active before
 it is active again; every window's layout follows the terminal's size,
@@ -161,16 +185,18 @@ Each may be led by `-L NAME` or `-S PATH` for the server's socket,
 for the same bytes; `02-compiled` holds the compiled engine to the
 reference, read by read, on exercises fed in reads that end inside
 sequences; `03-layout` holds the layout to the pane sizes tmux 3.8
-reports for the same splits, kills, resizes and window sizes, and the
-pane an arrow picks to tmux's; `04-copy` holds copy mode's moves to the
+reports for the same splits, kills, resizes, swaps, rotations, preset
+layouts and window sizes, and the pane an arrow picks to tmux's;
+`04-copy` holds copy mode's moves to the
 positions and cursors tmux 3.8 reports for the same keys.
 
     X=/path/to/x sh tests/oracle/panes.sh
 
 runs x-tmux inside a real tmux pane, drives it with send-keys and reads
 it with capture-pane: typing, both splits, the next pane, a kill, a shell
-exiting, zoom, arrows, moved borders, a resize, each pane's size checked
-by `stty size`; copy mode;
+exiting, zoom, arrows, moved borders, the last pane, swaps, rotations,
+layouts, a resize, each pane's size checked by `stty size`; the panes'
+numbers; copy mode;
 windows made, shown, refused, asked about, killed and closed; then
 detaching, `ls`, attaching again, window names and renaming, the last
 pane exiting and
