@@ -71,6 +71,7 @@
   copy-do copy-selecting? copy-text copy-marks copy-vi? copy-key)
 (import tmux/layout layout-new layout-rects layout-borders layout-split layout-remove layout-panes
   layout-resize layout-fit layout-size layout-beside layout-relabel layout-names layout-arrange)
+(import tmux/command command-parse command-matches command-flag)
 (import tmux/proto proto-conn proto-fd proto-send! proto-send-text! proto-fill! proto-each! proto-text
   proto-fields)
 
@@ -167,7 +168,7 @@
 (def %window 0)      ; the shown window's index
 (def %last ())       ; the indexes of the windows shown before, the latest first
 (def %cwd "")        ; where the session was made, where a new window starts
-(def %prompt ())     ; the question on the status line, (LABEL TEXT AT YES TYPED), or nil
+(def %prompt ())     ; the question on the status line, (LABEL TEXT AT YES TYPED COMMAND), or nil
 (def %message ())    ; the message on the status line, or nil
 (def %until 0)       ; when the message goes, in microseconds since the epoch
 (def %recent ())     ; the panes' ids, the most recently active first
@@ -340,7 +341,7 @@
   (fn (_ direction)
     (%unzoom!)
     (def tree (layout-split %tree %active direction %next))
-    (if (null? tree) (%say! "no space for new pane")
+    (if (null? tree) (%say! "No space for new pane")
       (do (def rect (rest (List find (fn (_ r) (= (first r) %next)) (layout-rects tree 0 0))))
           (def id (%spawn! rect (Sys getcwd)))
           (set! %tree tree)
@@ -394,7 +395,7 @@
 (def %last-pane!
   (fn (_)
     ((fn (_ id)
-       (if (null? id) (%say! "no last pane")
+       (if (null? id) (%say! "No last pane")
          (do (%unzoom!) (%activate! id) (%name-due! %window))))
      (List find (fn (_ x) (if (= x %active) #f (%holds? %tree x))) %recent))))
 
@@ -450,6 +451,13 @@
 (def %next-layout!
   (fn (_)
     (%arrange! (Num remainder (+ (List ref 9 (%window-at %window)) 1) (List length layout-names)))))
+
+; The preset layout before the one last given the shown window, as
+; previous-layout, the last when none was or the first was.
+(def %previous-layout!
+  (fn (_)
+    ((fn (_ k) (%arrange! (if (< 0 k) (- k 1) (- (List length layout-names) 1))))
+     (List ref 9 (%window-at %window)))))
 
 ; Where M-1 to M-7 find their layouts in layout-names, tmux's bindings.
 (def %meta-layouts (lit (0 1 2 4 6 3 5)))
@@ -677,19 +685,201 @@
 (def %ask!
   (fn (_ text yes)
     (set! %message ())
-    (set! %prompt (list text "" 0 yes #f))
+    (set! %prompt (list text "" 0 yes #f #f))
     (%draw-status)))
 
 ; LABEL on the status line and TEXT after it to be edited, the cursor at
-; its end; YES called with the text Enter takes.
+; its end; YES called with the text Enter takes.  A COMMAND prompt keeps
+; a history and completes commands' names.
 (def %ask-for!
-  (fn (_ label text yes)
+  (fn (_ label text yes command)
     (set! %message ())
-    (set! %prompt (list label text (%byte-len text) yes #t))
+    (set! %prompt (list label text (%byte-len text) yes #t command))
+    (set! %back -1)
+    (set! %choices "")
     (%draw-status)))
 
+; The lines run from the command prompt, the latest first, 100 at most,
+; tmux's prompt-history-limit; which of them the prompt shows, -1 for
+; none; and the names Tab offers, shown after the text until the next key.
+(def %history ())
+(def %back -1)
+(def %choices "")
+
+; Where a question's text is shown from: as far along as keeps its cursor
+; on the terminal after its label, tmux's.
+(def %scrolled
+  (fn (_)
+    (%max 0 (- (+ (List ref 2 %prompt) 1) (%max 1 (- %cols (Str8 length (first %prompt))))))))
+
+; The command prompt: a line of tmux's commands, run on Enter.
+(def %command-prompt! (fn (_) (%ask-for! ":" "" %run-line! #t)))
+
+; LINE from the command prompt kept in its history and run: a line that
+; does not read runs none of its commands, and a command that fails stops
+; the ones after it, its message said.
+(def %run-line!
+  (fn (_ line)
+    (%remember! line)
+    (def parsed (command-parse line))
+    (if (not (first parsed)) (%say! (List ref 1 parsed))
+      ((fn (self commands)
+         (unless (if (null? commands) #t %done)
+           ((fn (_ wrong) (if (null? wrong) (self (rest commands)) (%say! wrong))) (%run! (first commands)))))
+       (List ref 1 parsed)))))
+
+; TEXT's digits as a number, or nil when it is empty or holds another
+; character.
+(def %count
+  (fn (_ text)
+    (def n (Str8 length text))
+    ((fn (self i acc)
+       (match
+         ((= i n) (if (= n 0) () acc))
+         (((fn (_ c) (if (< 47 c) (< c 58) #f)) (%pref (%str->ptr text) i 1))
+           (self (+ i 1) (+ (* acc 10) (- (%pref (%str->ptr text) i 1) 48))))
+         (#t ())))
+     0 0)))
+
+; TEXT less PREFIX when it starts with it.
+(def %less
+  (fn (_ prefix text)
+    (if (if (<= (Str8 length prefix) (Str8 length text)) (str=? prefix (Str8 sub 0 (Str8 length prefix) text)) #f)
+      (Str8 sub (Str8 length prefix) (- (Str8 length text) (Str8 length prefix)) text)
+      text)))
+
+; The pane a target names in the shown window, N, .N or :.N its number;
+; the active pane for none; nil for one not there.
+(def %pane-target
+  (fn (_ target)
+    (if (null? target) %active
+      ((fn (_ k) (if (if (null? k) #t (<= (List length (%order)) k)) () (List ref k (%order))))
+       (%count (%less "." (%less ":" target)))))))
+
+; The window a target names, N or :N its number; the shown one for none;
+; nil for one not there.
+(def %window-target
+  (fn (_ target)
+    (if (null? target) %window
+      ((fn (_ k) (if (if (null? k) #t (null? (%window-at k))) () k)) (%count (%less ":" target))))))
+
+; The directions of the flags D L R U, as layout-beside names them.
+(def %direction
+  (fn (_ flags)
+    ((fn (_ d) (if (null? d) () (%symbol (first d))))
+     (List filter (fn (_ d) (not (null? (command-flag flags d)))) (lit ("D" "L" "R" "U"))))))
+(def %symbol
+  (fn (_ d) (match ((str=? d "D") (lit D)) ((str=? d "L") (lit L)) ((str=? d "R") (lit R)) (#t (lit U)))))
+
+; COMMAND, (NAME FLAGS ARGS) as command-parse reads it, run as tmux runs
+; it: nil, or the message of what went wrong.
+(def %run!
+  (fn (_ command)
+    (%save-window!)
+    (def name (first command))
+    (def flags (List ref 1 command))
+    (def args (List ref 2 command))
+    (def on? (fn (_ letter) (not (null? (command-flag flags letter)))))
+    (def target (fn (_) ((fn (_ t) (if (eq? t #t) () t)) (command-flag flags "t"))))
+    (def is? (fn (_ n) (str=? name n)))
+    (def pane!
+      (fn (_ then)
+        ((fn (_ id) (if (null? id) (Str8 append "Can't find pane: " (target)) (do (then id) ())))
+         (%pane-target (target)))))
+    (def window!
+      (fn (_ then)
+        ((fn (_ i) (if (null? i) (Str8 append "Can't find window: " (target)) (do (then i) ())))
+         (%window-target (target)))))
+    (def done (fn (_ x) ()))
+    (match
+      ((is? "split-window") (done (%split! (if (on? "h") (lit h) (lit v)))))
+      ((is? "new-window")
+        (done (do (%new-window!) (unless (null? (command-flag flags "n")) (%rename! (command-flag flags "n"))))))
+      ((is? "kill-pane") (pane! %remove!))
+      ((is? "kill-window") (window! (fn (_ i) (List for-each %remove! (layout-panes (List ref 1 (%window-at i)))))))
+      ((is? "kill-session") (done (List for-each (fn (_ w) (List for-each %remove! (layout-panes (List ref 1 w)))) %windows)))
+      ((is? "last-pane") (done (%last-pane!)))
+      ((is? "last-window") (if (null? %last) "No last window" (done (%select! (first %last)))))
+      ((is? "next-window") (if (null? (%beside #f)) "No next window" (done (%step! #f ""))))
+      ((is? "previous-window") (if (null? (%beside #t)) "No previous window" (done (%step! #t ""))))
+      ((is? "select-window")
+        (match
+          ((on? "l") (if (null? %last) "No last window" (done (%select! (first %last)))))
+          ((on? "n") (if (null? (%beside #f)) "No next window" (done (%step! #f ""))))
+          ((on? "p") (if (null? (%beside #t)) "No previous window" (done (%step! #t ""))))
+          (#t (window! %select!))))
+      ((is? "select-pane")
+        (match
+          ((on? "l") (done (%last-pane!)))
+          ((not (null? (%direction flags))) (done (%beside! (%direction flags))))
+          (#t (pane! (fn (_ id) (unless (= id %active) (do (%unzoom!) (%activate! id) (%name-due! %window))))))))
+      ((is? "rename-window") (done (%rename! (first args))))
+      ((is? "resize-pane")
+        (if (on? "Z") (done (%zoom!))
+          ((fn (_ n)
+             (match
+               ((null? n) "Adjustment invalid")
+               ((null? (%direction flags)) ())
+               (#t (done (%resize! (%direction flags) n)))))
+           (if (null? args) 1 (%count (first args))))))
+      ((is? "swap-pane") (done (%swap! (on? "D"))))
+      ((is? "rotate-window") (done (%rotate! (on? "D"))))
+      ((is? "select-layout")
+        (match
+          ((on? "n") (done (%next-layout!)))
+          ((on? "p") (done (%previous-layout!)))
+          ((null? args) (done (%arrange! (%max 0 (List ref 9 (%window-at %window))))))
+          (#t ((fn (self names k)
+                 (match
+                   ((null? names) (Str8 append "Malformed layout header: " (first args)))
+                   ((str=? (symbol->str (first names)) (first args)) (done (%arrange! k)))
+                   (#t (self (rest names) (+ k 1)))))
+               layout-names 0))))
+      ((is? "next-layout") (done (%next-layout!)))
+      ((is? "previous-layout") (done (%previous-layout!)))
+      ((is? "display-panes") (done (%show-numbers!)))
+      ((is? "copy-mode") (done (do (%copy! #f) (when (on? "u") (%copy-do! (lit page-up))))))
+      ((is? "paste-buffer")
+        (done (unless (null? %buffers)
+                ((fn (_ t) (%send! (%pane-fd (%pane %active)) (%str->ptr t) (%byte-len t))) (%typed (first %buffers))))))
+      ((is? "send-prefix") (done (%send! (%pane-fd (%pane %active)) (%str->ptr (%byte 2)) 1)))
+      ((is? "detach-client") (done (%detach! (Str8 append "[detached (from session " %name ")]"))))
+      (#t ()))))
+
+; LINE kept as the latest in the history, unless it is empty or the same
+; as the latest.
+(def %remember!
+  (fn (_ line)
+    (unless (if (= (%byte-len line) 0) #t (if (null? %history) #f (str=? line (first %history))))
+      (set! %history
+        ((fn (self xs k) (if (if (null? xs) #t (= k 0)) () (pair (first xs) (self (rest xs) (- k 1)))))
+         (pair line %history) 100)))))
+
+; TEXT, the cursor at AT, with its first word completed as tmux completes
+; a command's name: the one name it starts, and a space; else what the
+; names it starts share, or, when that adds nothing, the names offered.
+; Answers (TEXT . AT).
+(def %complete
+  (fn (_ text at)
+    (def word (Str8 sub 0 at text))
+    (def names (command-matches word))
+    (def shared
+      (List fold
+        (fn (_ acc name)
+          ((fn (self k) (if (if (< k (Str8 length acc)) (str=? (Str8 sub k 1 acc) (Str8 sub k 1 name)) #f) (self (+ k 1)) (Str8 sub 0 k acc)))
+           0))
+        (if (null? names) "" (first names)) names))
+    (def after (Str8 sub at (- (%byte-len text) at) text))
+    (match
+      ((if (null? names) #t (not (null? (List find (fn (_ c) (if (str=? c " ") #t (str=? c "\t"))) (%chars word))))) (pair text at))
+      ((null? (rest names)) (pair (Str8 append (first names) " " after) (+ (Str8 length (first names)) 1)))
+      ((< (Str8 length word) (Str8 length shared)) (pair (Str8 append shared after) (Str8 length shared)))
+      (#t (do (set! %choices (Str8 join "" (List map (fn (_ name) (Str8 append " " name)) names))) (pair text at))))))
+(def %chars (fn (_ s) ((fn (self i) (if (= i (Str8 length s)) () (pair (Str8 sub i 1 s) (self (+ i 1))))) 0)))
+
 ; The key at byte I of the N at P put to the text being typed, as tmux's
-; prompt takes emacs's keys: answers the byte after it.
+; prompt takes emacs's keys: answers the byte after it.  The command
+; prompt takes Up and Down through its history and Tab to complete.
 (def %edit!
   (fn (_ p i n)
     (def b (%pref p i 1))
@@ -697,9 +887,16 @@
     (def text (List ref 1 %prompt))
     (def at (List ref 2 %prompt))
     (def yes (List ref 3 %prompt))
+    (def command (List ref 5 %prompt))
     (def len (%byte-len text))
-    (def put! (fn (_ t a) (set! %prompt (list label t a yes #t)) (%draw-status) (set! %touched #t)))
+    (set! %choices "")
+    (def put! (fn (_ t a) (set! %prompt (list label t a yes #t command)) (%draw-status) (set! %touched #t)))
     (def stop! (fn (_) (set! %prompt ()) (%draw-status) (set! %touched #t)))
+    (def recall!
+      (fn (_ k)
+        (when (if command (if (< k (List length %history)) (<= -1 k) #f) #f)
+          (do (set! %back k)
+              ((fn (_ t) (put! t (%byte-len t))) (if (= k -1) "" (List ref k %history)))))))
     (def move!
       (fn (_ k)
         (match
@@ -708,11 +905,14 @@
           ((eq? k (lit right)) (put! text (%min len (+ at 1))))
           ((eq? k (lit start-of-line)) (put! text 0))
           ((eq? k (lit end-of-line)) (put! text len))
+          ((eq? k (lit up)) (recall! (+ %back 1)))
+          ((eq? k (lit down)) (recall! (- %back 1)))
           (#t ()))))
     (if (= b 27)
       ((fn (_ k) (move! (first k)) (rest k)) (copy-key p i n #f))
       (do (match
             ((= b 13) (do (stop!) (yes text)))
+            ((if command (= b 9) #f) ((fn (_ c) (put! (first c) (rest c))) (%complete text at)))
             ((if (= b 3) #t (= b 7)) (stop!))
             ((= b 1) (move! (lit start-of-line)))
             ((= b 5) (move! (lit end-of-line)))
@@ -762,12 +962,22 @@
 
 ; The status line, tmux's: a question or a message black on yellow, or
 ; black on green the session and its windows, the shown one underlined,
-; marked * and the last one shown -, and a zoomed one Z.
+; marked * and the last one shown -, and a zoomed one Z.  A question's
+; text scrolls so its cursor shows, the names Tab offers underlined after
+; it.
 (def %draw-status
   (fn (_)
     (%out (%goto (- %rows 1) 0))
     (match
-      ((not (null? %prompt)) (%out (Str8 append (%esc "[0;30;43m") (%fit (Str8 append (first %prompt) (List ref 1 %prompt))) (%esc "[0m"))))
+      ((not (null? %prompt))
+        (do (def label ((fn (_ l) (Str8 sub 0 (%min %cols (Str8 length l)) l)) (first %prompt)))
+            (def text (List ref 1 %prompt))
+            (def from (%scrolled))
+            (def shown (Str8 sub from (%min (- (%byte-len text) from) (%max 0 (- %cols (Str8 length label)))) text))
+            (def room (%max 0 (- %cols (+ (Str8 length label) (Str8 length shown)))))
+            (def choices (Str8 sub 0 (%min room (Str8 length %choices)) %choices))
+            (%out (Str8 append (%esc "[0;30;43m") label shown (%esc "[4m") choices (%esc "[24m")
+                    (Str8 pad-right (- room (Str8 length choices)) #\space "") (%esc "[0m")))))
       ((not (null? %message)) (%out (Str8 append (%esc "[0;30;43m") (%fit %message) (%esc "[0m"))))
       (#t (%out (Str8 append (%esc "[0;30;42m") (%window-list) (%esc "[0m")))))))
 
@@ -820,7 +1030,7 @@
     (%out (Str8 append (%esc "[0m")
             (if (null? %prompt)
               (%goto (+ (first rect) (first c)) (+ (List ref 1 rect) (%min (rest c) (- (List ref 3 rect) 1))))
-              (%goto (- %rows 1) (%min (+ (%byte-len (first %prompt)) (List ref 2 %prompt)) (- %cols 1))))
+              (%goto (- %rows 1) (%min (+ (%byte-len (first %prompt)) (- (List ref 2 %prompt) (%scrolled))) (- %cols 1))))
             (%esc "[?25h")))))
 
 ; A copy mode's position, black on yellow at the right of its pane's top
@@ -921,7 +1131,8 @@
                   (%say! (Str8 append "Can't find window: " (%num (- b 48))))
                   (%select! (- b 48))))
               ((= b 38) (%ask! (Str8 append "kill-window " (List ref 3 (%window-at %window)) "? (y/n) ") %kill-window!))
-              ((= b 44) (%ask-for! "(rename-window) " (List ref 3 (%window-at %window)) %rename!))
+              ((= b 58) (%command-prompt!))
+              ((= b 44) (%ask-for! "(rename-window) " (List ref 3 (%window-at %window)) %rename! #f))
               ((= b 100) (%detach! (Str8 append "[detached (from session " %name ")]")))
               ((= b 91) (%copy! #f))
               ((= b 93) (unless (null? %buffers) ((fn (_ t) (%send! fd (%str->ptr t) (%byte-len t))) (%typed (first %buffers)))))

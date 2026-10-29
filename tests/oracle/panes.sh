@@ -51,6 +51,9 @@
 #   names     a window named after its foreground program, [tmux] in copy
 #             mode, the shell's name back; C-b , edited and Escaped, then
 #             taken, the name kept
+#   prompt    C-b :: a command run, an unknown one refused, the history,
+#             Tab completing and offering names, commands split by ; run
+#             in order, a pane not there stopping the rest
 #   exited    the last pane's shell exiting ends the session, the client
 #             and the server
 #   kill      kill-server ends a session made with new -d, and the server
@@ -399,6 +402,51 @@ tmux send-keys -t "$s" 'echo after-rename' Enter
 wait_for 'after-rename'
 sleep 1
 check "names -- a renamed window keeps its name" "$(row 30)" "[0] 0:work*"
+
+# prompt
+prefixed :
+sleep 1
+check "prompt -- C-b : asks for a command" "$(row 30)" ":"
+tmux send-keys -t "$s" -l 'renamew cmd'
+tmux send-keys -t "$s" Enter
+wait_for '0:cmd*'
+check "prompt -- a command run" "$(row 30)" "[0] 0:cmd*"
+prefixed :
+tmux send-keys -t "$s" -l 'foo'
+tmux send-keys -t "$s" Enter
+check "prompt -- an unknown command refused with tmux's message" \
+	"$(wait_for 'Unknown command: foo' && echo seen)" "seen"
+prefixed :
+tmux send-keys -t "$s" Up Up
+sleep 1
+check "prompt -- Up goes back through the history" "$(row 30)" ":renamew cmd"
+tmux send-keys -t "$s" C-u
+tmux send-keys -t "$s" -l 'sel'
+tmux send-keys -t "$s" Tab
+sleep 1
+check "prompt -- Tab completes what the names share" "$(row 30)" ":select-"
+tmux send-keys -t "$s" Tab
+sleep 1
+check "prompt -- a second Tab offers the names" "$(row 30)" ":select- select-layout select-pane select-window"
+tmux send-keys -t "$s" C-c
+sleep 1
+prefixed :
+tmux send-keys -t "$s" -l 'splitw -h ; renamew two'
+tmux send-keys -t "$s" Enter
+wait_for '0:two*'
+check "prompt -- commands split by ; run in order" "$(row 30) $(row 2 | grep -c '│')" "[0] 0:two* 1"
+prefixed :
+tmux send-keys -t "$s" -l 'killp -t 9 ; renamew no'
+tmux send-keys -t "$s" Enter
+check "prompt -- a pane not there refused, the commands after it not run" \
+	"$(wait_for "Can't find pane: 9" && echo seen)" "seen"
+wait_for '0:two*'
+prefixed :
+tmux send-keys -t "$s" -l 'killp -t 1 ; renamew work'
+tmux send-keys -t "$s" Enter
+wait_for '0:work*'
+sleep 1
+check "prompt -- kill-pane -t the pane of that number" "$(row 30) $(row 2 | grep -c '│')" "[0] 0:work* 0"
 
 # exited
 tmux send-keys -t "$s" 'exit' Enter
