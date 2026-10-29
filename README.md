@@ -47,6 +47,7 @@ The prefix is C-b, and after it:
     0-9   the window of that number
     &     kill the window, asked first
     ,     rename the window
+    :     the command prompt
     d     detach
     [     copy mode
     PgUp  copy mode, a page up; a page down to the bottom leaves it
@@ -63,6 +64,18 @@ every half second, as tmux's automatic-rename names it; the name is the
 kernel's for the process.  C-b `,` asks for a name on the status line,
 the old one there to edit with emacs's keys, Enter taking it and Escape
 leaving it; a renamed window keeps its name.
+C-b `:` reads a line of tmux's commands, by their names, their aliases
+or a prefix of only one name, with their flags and arguments as tmux
+reads them; `;` splits the line and quotes and `\` work as in tmux.  A
+line that does not read runs none of it, and a command that fails stops
+the ones after it, tmux's message on the status line.  Up and Down go
+through the last 100 lines, and Tab completes a command's name, a second
+Tab showing the names it could be.  The commands are those of the keys
+above: split-window, new-window, kill-pane, kill-window, kill-session,
+select-pane, last-pane, select-window, next-window, previous-window,
+last-window, rename-window, resize-pane, swap-pane, rotate-window,
+select-layout, next-layout, previous-layout, display-panes, copy-mode,
+paste-buffer, send-prefix and detach-client.
 An arrow picks, of the panes across the border that way, the one most
 recently active, wrapping at the window's edges.  A resize moves the
 border beside the pane, taking cells from the panes beyond it, each
@@ -188,7 +201,9 @@ sequences; `03-layout` holds the layout to the pane sizes tmux 3.8
 reports for the same splits, kills, resizes, swaps, rotations, preset
 layouts and window sizes, and the pane an arrow picks to tmux's;
 `04-copy` holds copy mode's moves to the
-positions and cursors tmux 3.8 reports for the same keys.
+positions and cursors tmux 3.8 reports for the same keys; `05-command`
+holds the command line's words, names and flags to how tmux 3.8 reads
+them, and its messages to tmux's.
 
     X=/path/to/x sh tests/oracle/panes.sh
 
@@ -198,7 +213,8 @@ exiting, zoom, arrows, moved borders, the last pane, swaps, rotations,
 layouts, a resize, each pane's size checked by `stty size`; the panes'
 numbers; copy mode;
 windows made, shown, refused, asked about, killed and closed; then
-detaching, `ls`, attaching again, window names and renaming, the last
+detaching, `ls`, attaching again, window names and renaming, the command
+prompt, the last
 pane exiting and
 `kill-server`, with tmux's messages.
 
