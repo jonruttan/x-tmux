@@ -16,7 +16,8 @@
 ;
 ; each led by the socket, as tmux's: -S PATH, or -L NAME for
 ; $TMUX_TMPDIR/x-tmux-UID/NAME, $TMUX_TMPDIR /tmp when it is not set and
-; NAME default when there is no -L;
+; NAME default when there is no -L, and by -f FILE, the file of commands
+; a server started reads in place of tmux.conf's;
 ;
 ; and the `vt` commands that exercise the screen's engine:
 ;
@@ -127,7 +128,7 @@
 
 (def %usage
   (fn (_)
-    (%write 2 (Str8 append "usage: x -l tmux -- [-L NAME | -S PATH] new-session [-d] [-s NAME] |"
+    (%write 2 (Str8 append "usage: x -l tmux -- [-L NAME | -S PATH] [-f FILE] new-session [-d] [-s NAME] |"
                 " attach-session [-t NAME] | list-sessions | kill-server\n"
                 "       x -l tmux -- vt check|bench|dump FILE | vt exercise SEED N\n"))
     2))
@@ -150,18 +151,31 @@
       (#t (self (rest ops) flag valued)))))
 (def %or-empty (fn (_ s) (if (null? s) "" s)))
 
-; A tmux command at the socket PATH.
+; A tmux command at the socket PATH, a server it starts reading FILES.
 (def %command
-  (fn (_ path ops)
+  (fn (_ path files ops)
     (def cmd (first ops))
     (match
       ((%one-of? cmd (list "new-session" "new"))
-        (tmux-new path (%flag ops "-d" #f) (%or-empty (%flag ops "-s" #t))))
+        (tmux-new path files (%flag ops "-d" #f) (%or-empty (%flag ops "-s" #t))))
       ((%one-of? cmd (list "attach-session" "attach" "a"))
         (tmux-attach path (%or-empty (%flag ops "-t" #t))))
       ((%one-of? cmd (list "list-sessions" "ls")) (tmux-ask path 76))
       ((str=? cmd "kill-server") (tmux-ask path 75))
       (#t (%usage)))))
+
+; The files a server reads as it starts, each (PATH . QUIET), as tmux's:
+; -f FILE's, else those of tmux's own places that are there.
+(def %config-files
+  (fn (_ given)
+    (if (null? given)
+      (List map (fn (_ f) (pair f #t))
+        (List append
+          (list "/etc/tmux.conf" "~/.tmux.conf")
+          ((fn (_ x) (if (if (null? x) #t (= (Str8 length x) 0)) () (list (Str8 append x "/tmux/tmux.conf"))))
+           (Sys getenv "XDG_CONFIG_HOME"))
+          (list "~/.config/tmux/tmux.conf")))
+      (List map (fn (_ f) (pair f #f)) given))))
 
 ; The command line run; answers the exit status.
 (def tmux-main
@@ -170,16 +184,22 @@
     ; the launcher pipes the program to the engine on fd 0 and parks the
     ; user's terminal on fd 3, as x-ash and the REPL reclaim it
     (guard (e ()) (do (Sys dup2 3 0) (Sys close 3)))
-    (match
-      ((if (str=? (first ops) "-S") (not (null? (arg 2))) #f) (%command (arg 1) (rest (rest ops))))
-      ((if (str=? (first ops) "-L") (not (null? (arg 2))) #f) (%command (%socket (arg 1)) (rest (rest ops))))
-      ((if (str=? (first ops) "vt") (not (null? (arg 2))) #f)
-        (match
-          ((str=? (arg 1) "check") (%check (arg 2)))
-          ((str=? (arg 1) "bench") (%bench (arg 2)))
-          ((str=? (arg 1) "dump") (%dump (arg 2)))
-          ((if (str=? (arg 1) "exercise") (not (null? (arg 3))) #f) (%exercise (%int (arg 2)) (%int (arg 3))))
-          (#t (%usage))))
-      (#t (%command (%socket "default") ops)))))
+    (if (if (str=? (first ops) "vt") (not (null? (arg 2))) #f)
+      (match
+        ((str=? (arg 1) "check") (%check (arg 2)))
+        ((str=? (arg 1) "bench") (%bench (arg 2)))
+        ((str=? (arg 1) "dump") (%dump (arg 2)))
+        ((if (str=? (arg 1) "exercise") (not (null? (arg 3))) #f) (%exercise (%int (arg 2)) (%int (arg 3))))
+        (#t (%usage)))
+      ; the socket and the files read from the options before the command
+      ((fn (self ops path files)
+         (def valued (fn (_ o) (if (str=? (first ops) o) (not (null? (rest ops))) #f)))
+         (match
+           ((null? ops) (%usage))
+           ((valued "-S") (self (rest (rest ops)) (first (rest ops)) files))
+           ((valued "-L") (self (rest (rest ops)) (%socket (first (rest ops))) files))
+           ((valued "-f") (self (rest (rest ops)) path (List append files (list (first (rest ops))))))
+           (#t (%command path (%config-files files) ops))))
+       ops (%socket "default") ()))))
 
 (provide tmux/cli tmux-main)

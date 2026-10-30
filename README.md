@@ -16,7 +16,7 @@ pane's place.  tmux is what it is tested against.
 
 ## Panes and windows
 
-The prefix is C-b, and after it:
+The prefix is C-b, and after it, as tmux binds its keys:
 
     %     split the active pane left and right
     "     split it top and bottom
@@ -75,13 +75,14 @@ above: split-window, new-window, kill-pane, kill-window, kill-session,
 select-pane, last-pane, select-window, next-window, previous-window,
 last-window, rename-window, resize-pane, swap-pane, rotate-window,
 select-layout, next-layout, previous-layout, display-panes, copy-mode,
-paste-buffer, send-prefix and detach-client.
+paste-buffer, send-prefix and detach-client, with command-prompt,
+confirm-before and those of the configuration below.
 An arrow picks, of the panes across the border that way, the one most
 recently active, wrapping at the window's edges.  A resize moves the
 border beside the pane, taking cells from the panes beyond it, each
-keeping one, as tmux's resize-pane does; for half a second after an
-arrow command another arrow repeats it without the prefix, tmux's
-repeat-time.  A zoomed window is marked `Z` on the status line;
+keeping one, as tmux's resize-pane does; for half a second after a
+key bound with -r, as the arrows are, another such key runs without the
+prefix, tmux's repeat-time.  A zoomed window is marked `Z` on the status line;
 splitting, killing, resizing, picking, moving or laying out panes puts
 its pane back first.
 A pane's number is its place in the window's pane order, which a split,
@@ -170,6 +171,40 @@ The compiled engine hands each byte past ASCII to the reference, so text
 past ASCII reads at the reference's speed, and each ED.  Not yet: SU and
 SD, mouse and bracketed-paste modes.
 
+## Configuration
+
+As the server starts it reads tmux's files of commands, as tmux reads
+them: `-f FILE`'s, else those of `/etc/tmux.conf`, `~/.tmux.conf`,
+`$XDG_CONFIG_HOME/tmux/tmux.conf` and `~/.config/tmux/tmux.conf` that
+are there.  A file holds a command a line, `;` splitting a line, `#`
+starting a comment, `\` at a line's end joining the next, and `{ }`
+holding commands over lines.  A file that does not read runs none of
+it; otherwise each command runs and each that fails is reported, as
+`FILE:LINE: MESSAGE` over the first session's first pane.  A tmux
+command x-tmux does not have reads, and says `command NAME: not in
+x-tmux` when it runs.
+
+    bind-key, bind [-nr] [-T TABLE] KEY COMMAND...
+    unbind-key, unbind [-an] [-T TABLE] [KEY]
+    set-option, set [-gqsuw] OPTION [VALUE]
+    source-file, source [-q] FILE...
+
+A key is named as tmux names it (`C-a`, `M-Left`, `^x`, `PPage`, `F5`);
+`-n` binds it without the prefix, `-r` lets it repeat, and the keys
+above are tmux's own bindings, which bind and unbind change.  The
+options, with tmux's defaults:
+
+    prefix              C-b
+    status-style        bg=green,fg=black
+    display-time        750, milliseconds a message shows
+    display-panes-time  1000, milliseconds C-b q's numbers show
+    repeat-time         500, milliseconds a -r key repeats
+    history-limit       2000, rows a new pane keeps
+    mode-keys           emacs, or vi when VISUAL or EDITOR is vi's
+
+source-file from the prompt shows a file that does not read in the same
+view, and a failing command's message on the status line.
+
 ## Commands
 
     new-session, new [-d] [-s NAME]      a session made and shown here,
@@ -181,7 +216,8 @@ SD, mouse and bracketed-paste modes.
 
 Each may be led by `-L NAME` or `-S PATH` for the server's socket,
 `$TMUX_TMPDIR/x-tmux-UID/NAME` (`/tmp` when `TMUX_TMPDIR` is not set,
-`default` with no `-L`).  The engine's own commands:
+`default` with no `-L`), and `-f FILE` for the file a server it starts
+reads.  The engine's own commands:
 
     vt check FILE         FILE fed to a screen by each engine, compared
                           after every 4096-byte read
@@ -203,7 +239,9 @@ layouts and window sizes, and the pane an arrow picks to tmux's;
 `04-copy` holds copy mode's moves to the
 positions and cursors tmux 3.8 reports for the same keys; `05-command`
 holds the command line's words, names and flags to how tmux 3.8 reads
-them, and its messages to tmux's.
+them, and its messages to tmux's; `06-keys` holds the keys typed and
+the names bind reads to tmux 3.8's, and a file of commands to how tmux
+3.8 reads its configuration.
 
     X=/path/to/x sh tests/oracle/panes.sh
 
@@ -216,7 +254,8 @@ windows made, shown, refused, asked about, killed and closed; then
 detaching, `ls`, attaching again, window names and renaming, the command
 prompt, the last
 pane exiting and
-`kill-server`, with tmux's messages.
+`kill-server`, with tmux's messages; then a configuration's prefix,
+bindings and errors, and source-file.
 
 ## Install
 
