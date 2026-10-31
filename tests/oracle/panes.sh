@@ -57,8 +57,13 @@
 #   exited    the last pane's shell exiting ends the session, the client
 #             and the server
 #   kill      kill-server ends a session made with new -d, and the server
+#   config    -f FILE read as the server starts: its prefix, bind and bind
+#             -n, a block over lines; source-file from the prompt, a file
+#             not there refused, one that does not read shown and not run;
+#             each line's error at start shown over the first pane
 #
-# x-tmux runs from a shell in the tmux pane, on a socket of its own.
+# x-tmux runs from a shell in the tmux pane, on a socket of its own, -f
+# /dev/null keeping the tester's own tmux.conf out of it.
 #
 # The real tmux is the oracle twice over: it runs the test, and the sizes
 # and layouts asserted are the ones it gives its own panes.
@@ -69,7 +74,8 @@ fx=$(mktemp -d "${TMPDIR:-/tmp}/x-tmux-oracle.XXXXXX")
 mkdir -p "$fx/langs"
 ln -s "$BUNDLE" "$fx/langs/x-tmux"
 s=xtmux-oracle-$$
-trap 'tmux kill-session -t $s 2>/dev/null; X_LANG_DIR=$fx/langs/ TMUX_TMPDIR=$fx $X -l tmux -- -L oracle kill-server 2>/dev/null; rm -rf "$fx"' EXIT
+c=/tmp/xtc$$
+trap 'tmux kill-session -t $s 2>/dev/null; X_LANG_DIR=$fx/langs/ TMUX_TMPDIR=$fx $X -l tmux -- -L oracle kill-server 2>/dev/null; rm -f "$c"; rm -rf "$fx"' EXIT
 failed=0
 
 screen() { tmux capture-pane -p -t "$s" | sed 's/ *$//'; }
@@ -89,7 +95,7 @@ check() {
 
 tmux new-session -d -s "$s" -x 80 -y 24 \
 	"env SHELL=/bin/sh PS1='$ ' VISUAL= EDITOR= X_LANG_DIR=$fx/langs/ TMUX_TMPDIR=$fx /bin/sh"
-xt="$X -l tmux -- -L oracle"
+xt="$X -l tmux -- -L oracle -f /dev/null"
 # The name tmux gives a window whose program is /bin/sh, which x-tmux's
 # panes run: x-tmux names its windows as tmux does.
 tmux new-window -d -t "$s" -n probe /bin/sh
@@ -464,5 +470,55 @@ tmux send-keys -t "$s" "clear; $xt kill-server; echo KILLED \$?; $xt ls; echo LI
 wait_for 'LISTED 1'
 check "kill -- kill-server ends it and the server" \
 	"$(screen | grep -cx 'KILLED 0') $(screen | grep -c '^no server running on ') $(ls "$fx/x-tmux-$(id -u)" | wc -l | tr -d ' ')" "1 1 0"
+
+# config, its files at a short path so that their errors fit a row
+ln -s "$fx" "$c"
+printf '%s\n' '# keys of its own' 'set -g prefix C-a' 'bind r renamew fromconf' 'bind -n M-z renamew zed' \
+	'bind q { renamew \' '  queued }' >"$c/good.conf"
+printf '%s\n' 'renamew sourced' >"$c/more.conf"
+printf '%s\n' 'set -g display-time abc' 'bind Foo neww' 'set -g history-limit 50' >"$c/bad.conf"
+printf '%s\n' 'renamew never' 'foo' >"$c/unread.conf"
+tmux send-keys -t "$s" "clear; $X -l tmux -- -L oracle -f $c/good.conf new; echo CONF \$?" Enter
+wait_for "0:$W*"
+tmux send-keys -t "$s" C-a r
+wait_for '0:fromconf*'
+check "config -- -f FILE's prefix and its binding" "$(screen | grep -c '0:fromconf\*')" "1"
+tmux send-keys -t "$s" M-z
+wait_for '0:zed*'
+check "config -- bind -n a key bound without the prefix" "$(screen | grep -c '0:zed\*')" "1"
+tmux send-keys -t "$s" C-a q
+wait_for '0:queued*'
+check "config -- a block over lines, a line joined by \\" "$(screen | grep -c '0:queued\*')" "1"
+tmux send-keys -t "$s" C-a :
+sleep 1
+tmux send-keys -t "$s" -l "source-file $c/more.conf"
+tmux send-keys -t "$s" Enter
+wait_for '0:sourced*'
+check "config -- source-file from the prompt runs the file" "$(screen | grep -c '0:sourced\*')" "1"
+tmux send-keys -t "$s" C-a :
+sleep 1
+tmux send-keys -t "$s" -l "source-file $c/none.conf"
+tmux send-keys -t "$s" Enter
+check "config -- a file that is not there refused as tmux refuses it" \
+	"$(wait_for "No such file or directory: " && echo seen)" "seen"
+tmux send-keys -t "$s" C-a :
+sleep 1
+tmux send-keys -t "$s" -l "source-file $c/unread.conf"
+tmux send-keys -t "$s" Enter
+wait_for "$c/unread.conf:2: unknown command: foo"
+check "config -- a file that does not read shown, none of it run" \
+	"$(screen | grep -cF "$c/unread.conf:2: unknown command: foo") $(screen | grep -c '0:never')" "1 0"
+tmux send-keys -t "$s" q
+sleep 1
+tmux send-keys -t "$s" C-d
+wait_for 'CONF 0'
+tmux send-keys -t "$s" "clear; $X -l tmux -- -L oracle -f $c/bad.conf new; echo BAD \$?" Enter
+wait_for "$c/bad.conf:2: unknown key: Foo"
+check "config -- each line's error shown over the first pane, the rest run" \
+	"$(screen | grep -cF "$c/bad.conf:1: value is invalid: abc") $(screen | grep -cF "$c/bad.conf:2: unknown key: Foo") $(screen | grep -c '0:\[tmux\]\*')" "1 1 1"
+tmux send-keys -t "$s" q
+sleep 1
+tmux send-keys -t "$s" C-d
+wait_for 'BAD 0'
 
 exit $failed

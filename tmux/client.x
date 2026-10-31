@@ -44,11 +44,11 @@
 ; A connection to the server at PATH, or nil when none answers.
 (def %connect (fn (_ path) (guard (e ()) (proto-conn (Socket unix-connect path)))))
 
-; A server started at PATH: the socket made here, so a client can connect
-; as soon as this returns, and a process forked off to serve it, apart
-; from this terminal.
+; A server started at PATH, reading FILES as it starts: the socket made
+; here, so a client can connect as soon as this returns, and a process
+; forked off to serve it, apart from this terminal.
 (def %start!
-  (fn (_ path)
+  (fn (_ path files)
     (def parts (Str8 split "/" path))
     (def dir (Str8 join "/" (List take (- (List length parts) 1) parts)))
     (guard (e ()) (File mkdir dir 448))
@@ -60,7 +60,7 @@
           (def null (%int (%call (%libc "open") (%str->ptr "/dev/null") 2)))
           (Sys dup2 null 0) (Sys dup2 null 1) (Sys dup2 null 2)
           (when (< 2 null) (Sys close null))
-          (Sys exit (tmux-serve fd path)))
+          (Sys exit (tmux-serve fd path files)))
       (Socket close fd))))
 
 ; The terminal's size, (COLS . ROWS); 80 x 24 when it is not one.
@@ -155,12 +155,12 @@
 (def %size-text (fn (_) ((fn (_ s) (Str8 append (%num (first s)) "\t" (%num (rest s)))) (%size))))
 
 ; new-session: a session NAME (empty for the next number) made, shown
-; unless DETACHED.
+; unless DETACHED; a server started for it reads FILES.
 (def tmux-new
-  (fn (_ path detached name)
+  (fn (_ path files detached name)
     (when (if (not detached) (not (Term tty? 0)) #f)
       (do (%write 2 "open terminal failed: not a terminal\n") (Sys exit 1)))
-    (def c ((fn (_ c) (if (null? c) (do (%start! path) (%connect path)) c)) (%connect path)))
+    (def c ((fn (_ c) (if (null? c) (do (%start! path files) (%connect path)) c)) (%connect path)))
     (def text (Str8 append (%size-text) "\t" (if detached "1" "0") "\t" name "\t" (Sys getcwd)))
     (match
       ((null? c) (do (%write 2 (Str8 append "error connecting to " path "\n")) 1))

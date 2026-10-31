@@ -36,7 +36,7 @@ message is the one tmux 3.8 shows on its status line for the same line.
 (write (list (command-parse "renamew a\\") (command-parse "") (command-parse "   ")))
 ```
 ---
-    ((#f "Syntax error") (#t ()) (#t ()))
+    ((#f "syntax error") (#t ()) (#t ()))
 
 ## names
 
@@ -54,7 +54,7 @@ message is the one tmux 3.8 shows on its status line for the same line.
 (write (list (command-find "bar") (command-find "n")))
 ```
 ---
-    ((#f "Unknown command: bar") (#f "Ambiguous command: n, could be: new-pane, new-session, new-window, next-layout, next-window"))
+    ((#f "unknown command: bar") (#f "ambiguous command: n, could be: new-pane, new-session, new-window, next-layout, next-window"))
 
 ### the names a prefix completes to, in tmux's order
 
@@ -70,7 +70,7 @@ message is the one tmux 3.8 shows on its status line for the same line.
 (write (list (command-parse "foo; neww") (command-parse "neww; foo")))
 ```
 ---
-    ((#f "Unknown command: foo") (#f "Unknown command: foo"))
+    ((#f "unknown command: foo") (#f "unknown command: foo"))
 
 ## flags and arguments
 
@@ -90,7 +90,7 @@ message is the one tmux 3.8 shows on its status line for the same line.
   (list "split-window -x" "detach-client -x" "selectp -t" "kill-window -t" "rename-window" "rename-window a b"))
 ```
 ---
-    "Command split-window: unknown flag -x""|""Command detach-client: unknown flag -x""|""Command select-pane: -t expects an argument""|""Command kill-window: -t expects an argument""|""Command rename-window: too few arguments (need at least 1)""|""Command rename-window: too many arguments (need at most 1)""|"
+    "command split-window: unknown flag -x""|""command detach-client: unknown flag -x""|""command select-pane: -t expects an argument""|""command kill-window: -t expects an argument""|""command rename-window: too few arguments (need at least 1)""|""command rename-window: too many arguments (need at most 1)""|"
 
 ### a value looked up
 
