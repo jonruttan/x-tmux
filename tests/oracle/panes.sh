@@ -57,7 +57,8 @@
 #   exited    the last pane's shell exiting ends the session, the client
 #             and the server
 #   kill      kill-server ends a session made with new -d, and the server
-#   config    -f FILE read as the server starts: its prefix, bind and bind
+#   config    -f FILE read as the server starts, a session made with no
+#             command after it: its prefix, bind and bind
 #             -n, a block over lines; source-file from the prompt, a file
 #             not there refused, one that does not read shown and not run;
 #             each line's error at start shown over the first pane
@@ -478,7 +479,7 @@ printf '%s\n' '# keys of its own' 'set -g prefix C-a' 'bind r renamew fromconf' 
 printf '%s\n' 'renamew sourced' >"$c/more.conf"
 printf '%s\n' 'set -g display-time abc' 'bind Foo neww' 'set -g history-limit 50' >"$c/bad.conf"
 printf '%s\n' 'renamew never' 'foo' >"$c/unread.conf"
-tmux send-keys -t "$s" "clear; $X -l tmux -- -L oracle -f $c/good.conf new; echo CONF \$?" Enter
+tmux send-keys -t "$s" "clear; $X -l tmux -- -L oracle -f $c/good.conf; echo CONF \$?" Enter
 wait_for "0:$W*"
 tmux send-keys -t "$s" C-a r
 wait_for '0:fromconf*'

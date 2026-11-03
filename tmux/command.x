@@ -23,6 +23,8 @@
 
 (module tmux/command)
 
+(import x/sys/gc)
+
 ; tmux 3.8's commands, in its order: a prefix is looked for among these.
 (def %names
   (lit ("attach-session" "bind-key" "break-pane" "capture-pane" "choose-buffer" "choose-client" "choose-tree"
@@ -84,7 +86,9 @@
         ("swap-pane" "DU" "" 0 0) ("unbind-key" "anq" "T" 0 1))))
 
 (def %char (fn (_ s i) (Str8 sub i 1 s)))
-(def %prefix? (fn (_ p s) (if (<= (Str8 length p) (Str8 length s)) (str=? p (Str8 sub 0 (Str8 length p) s)) #f)))
+(def %byte-len (prim-ref (lit str) (lit byte-len)))
+(def %byte-sub (prim-ref (lit str) (lit byte-sub)))
+(def %prefix? (fn (_ p s) (if (<= (%byte-len p) (%byte-len s)) (str=? p (%byte-sub s 0 (%byte-len p))) #f)))
 (def %has? (fn (_ letters c) (not (null? (List find (fn (_ x) (str=? x c)) (%letters letters))))))
 (def %letters
   (fn (_ s) ((fn (self i) (if (= i (Str8 length s)) () (pair (%char s i) (self (+ i 1))))) 0)))
@@ -102,8 +106,10 @@
     (def add (fn (_ word s) (Str8 append (if (null? word) "" word) s)))
     ; at I on LINE: WORD the word so far, nil for none; WORDS this
     ; command's, the latest first, the command started on AT; DONE the
-    ; commands before, the latest first
+    ; commands before, the latest first.  x collects only when asked, and
+    ; a step leaves its garbage, so the heap is collected every 256 bytes.
     ((fn (self i line at word words done)
+       (when (= (& i 255) 0) (Heap collect))
        (def start (if (if (null? word) (null? words) #f) line at))
        (if (= i n)
          (list #t (List reverse (end-command at (end-word word words) done)))
@@ -184,13 +190,15 @@
 (def command-find
   (fn (_ word)
     (def alias (List find (fn (_ a) (str=? (first a) word)) %aliases))
-    (def matches (command-matches word))
     (match
       ((not (null? alias)) (list #t (rest alias)))
       ((not (null? (List find (fn (_ x) (str=? x word)) %names))) (list #t word))
-      ((null? matches) (list #f (Str8 append "unknown command: " word)))
-      ((null? (rest matches)) (list #t (first matches)))
-      (#t (list #f (Str8 append "ambiguous command: " word ", could be: " (Str8 join ", " matches)))))))
+      (#t ((fn (_ matches)
+             (match
+               ((null? matches) (list #f (Str8 append "unknown command: " word)))
+               ((null? (rest matches)) (list #t (first matches)))
+               (#t (list #f (Str8 append "ambiguous command: " word ", could be: " (Str8 join ", " matches))))))
+           (command-matches word))))))
 
 ; --- commands -----------------------------------------------------------
 
