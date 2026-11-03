@@ -191,11 +191,12 @@
         ((str=? (arg 1) "dump") (%dump (arg 2)))
         ((if (str=? (arg 1) "exercise") (not (null? (arg 3))) #f) (%exercise (%int (arg 2)) (%int (arg 3))))
         (#t (%usage)))
-      ; the socket and the files read from the options before the command
+      ; the socket and the files read from the options before the command,
+      ; new-session when there is none, as tmux's
       ((fn (self ops path files)
          (def valued (fn (_ o) (if (str=? (first ops) o) (not (null? (rest ops))) #f)))
          (match
-           ((null? ops) (%usage))
+           ((null? ops) (%command path (%config-files files) (list "new-session")))
            ((valued "-S") (self (rest (rest ops)) (first (rest ops)) files))
            ((valued "-L") (self (rest (rest ops)) (%socket (first (rest ops))) files))
            ((valued "-f") (self (rest (rest ops)) path (List append files (list (first (rest ops))))))

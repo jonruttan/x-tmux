@@ -217,7 +217,8 @@ view, and a failing command's message on the status line.
 Each may be led by `-L NAME` or `-S PATH` for the server's socket,
 `$TMUX_TMPDIR/x-tmux-UID/NAME` (`/tmp` when `TMUX_TMPDIR` is not set,
 `default` with no `-L`), and `-f FILE` for the file a server it starts
-reads.  The engine's own commands:
+reads; with no command after them, new-session.  The engine's own
+commands:
 
     vt check FILE         FILE fed to a screen by each engine, compared
                           after every 4096-byte read
