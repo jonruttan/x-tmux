@@ -391,23 +391,17 @@
 
 ; --- the exercise: every sequence the screen reads, at random ------------
 
-(def %make-str (prim-ref (lit str) (lit make)))
-(def %str->ptr (prim-ref (lit str) (lit ->ptr)))
-(def %ptr->int (prim-ref (lit ptr) (lit ->int)))
-(def %pset (prim-ref (lit ptr) (lit set!)))
-(def %call (prim-ref (lit ptr) (lit call)))
-(def %rem (prim-ref (lit int) (lit %)))
+(import x/core/doors str-make str->ptr ptr->int ptr-set! ptr-call int% int/)
 
 ; The generator's next state, a 31-bit linear congruence.
 (def %lcg (fn (_ x) (& (+ (* x 1103515245) 12345) 2147483647)))
 
 ; Writes at P from AT: one byte, or a number's decimal digits.
-(def %put (fn (_ p at b) (%pset p at b 1) (+ at 1)))
+(def %put (fn (_ p at b) (ptr-set! p at b 1) (+ at 1)))
 (def %digits
   (fn (_ p at n)
     (if (< n 10) (%put p at (+ 48 n))
-      (%put p (%put p at (+ 48 (%quot n 10))) (+ 48 (%rem n 10))))))
-(def %quot (prim-ref (lit int) (lit /)))
+      (%put p (%put p at (+ 48 (int/ n 10))) (+ 48 (int% n 10))))))
 
 ; The CSI finals the screen reads, and SGR parameters of each form it
 ; reads, and one with a private marker it does not.  %text writes one.
@@ -432,28 +426,28 @@
 ; BUF NUL-terminated.
 (def vt-exercise
   (fn (_ seed n)
-    (def buf (%make-str (+ (* n 96) 1)))
-    (def p (%str->ptr buf))
+    (def buf (str-make (+ (* n 96) 1)))
+    (def p (str->ptr buf))
     (def len ((fn (self i x at) (if (= i n) at (%op self i x at p))) 0 (%lcg seed) 0))
-    (%pset p len 0 1)
+    (ptr-set! p len 0 1)
     (pair buf len)))
 
 (def %op
   (fn (_ loop i x at p)
-    (def k (%rem x 24))
+    (def k (int% x 24))
     (def y (%lcg x))
     (loop (+ i 1) (%lcg y)
       (match
-        ((< k 6) (%run p at (+ 1 (%rem y 90)) y))
+        ((< k 6) (%run p at (+ 1 (int% y 90)) y))
         ((= k 6) (%put p (%put p at 13) 10))
         ((= k 7) (%put p at 10))
         ((= k 8) (%put p at (if (= (& y 1) 0) 8 9)))
         ((< k 14) (%csi p at y))
-        ((= k 14) (%put p (%put p at 27) (%pick (list 55 56 77 68 69) (%rem y 5))))
+        ((= k 14) (%put p (%put p at 27) (%pick (list 55 56 77 68 69) (int% y 5))))
         ((= k 15) (%put p (%put p (%put p (%put p (%put p at 27) 93) 48) 59) 7))
         ((= k 16) (%put p (%put p (%put p at 27) 40) 66))
-        ((= k 17) (%alt p at (= (& y 1) 0) (%pick (list 1049 47 1047 1049 25 1 2004 1000) (%rem (>> y 1) 8))))
-        ((< k 23) (%bytes p at (%pick %chars (%rem y 8))))
+        ((= k 17) (%alt p at (= (& y 1) 0) (%pick (list 1049 47 1047 1049 25 1 2004 1000) (int% (>> y 1) 8))))
+        ((< k 23) (%bytes p at (%pick %chars (int% y 8))))
         (#t (%put p at 9))))))
 
 (def %chars
@@ -463,20 +457,20 @@
 
 (def %run
   (fn (self p at n y)
-    (if (= n 0) at (self p (%put p at (+ 33 (%rem y 94))) (- n 1) (%lcg y)))))
+    (if (= n 0) at (self p (%put p at (+ 33 (int% y 94))) (- n 1) (%lcg y)))))
 
 (def %csi
   (fn (_ p at y)
-    (def f (%pick %finals (%rem y 19)))
+    (def f (%pick %finals (int% y 19)))
     (def z (%lcg y))
     (def at1 (%put p (%put p at 27) 91))
     (def at2
       (if (= f 109)
-        (%text p at1 (%pick %sgrs (%rem z 22)))
+        (%text p at1 (%pick %sgrs (int% z 22)))
         (match
-          ((= (%rem z 3) 0) at1)
-          ((= (%rem z 3) 1) (%digits p at1 (%rem (>> z 4) 30)))
-          (#t (%digits p (%put p (%digits p at1 (%rem (>> z 4) 30)) 59) (%rem (>> z 9) 30))))))
+          ((= (int% z 3) 0) at1)
+          ((= (int% z 3) 1) (%digits p at1 (int% (>> z 4) 30)))
+          (#t (%digits p (%put p (%digits p at1 (int% (>> z 4) 30)) 59) (int% (>> z 9) 30))))))
     (%put p at2 f)))
 
 (def %alt
@@ -485,8 +479,8 @@
     (%put p (if (< mode 100) (%digits p at1 mode) (%digits4 p at1 mode)) (if on 104 108))))
 (def %digits4
   (fn (_ p at n)
-    (%put p (%put p (%put p (%put p at (+ 48 (%quot n 1000))) (+ 48 (%rem (%quot n 100) 10)))
-              (+ 48 (%rem (%quot n 10) 10))) (+ 48 (%rem n 10)))))
+    (%put p (%put p (%put p (%put p at (+ 48 (int/ n 1000))) (+ 48 (int% (int/ n 100) 10)))
+              (+ 48 (int% (int/ n 10) 10))) (+ 48 (int% n 10)))))
 
 ; --- agreement -----------------------------------------------------------
 
@@ -519,17 +513,17 @@
   (fn (_ engine ex chunk)
     (def a (vt-origin! (vt-make-history 24 80 40) 2 41))
     (def b (vt-origin! (vt-make-history 24 80 40) 2 41))
-    (def base (%ptr->int (%str->ptr (first ex))))
+    (def base (ptr->int (str->ptr (first ex))))
     (def len (rest ex))
     ((fn (self at)
        (if (< at len)
          (do (def n (if (< (- len at) chunk) (- len at) chunk))
-             (if (if (< 511 chunk) #t (= (& (%quot at chunk) 7) 0)) (Heap collect) ())
+             (if (if (< 511 chunk) #t (= (& (int/ at chunk) 7) 0)) (Heap collect) ())
              (vt-feed-pure! a (+ base at) n)
              (vt-feed-compiled! (first engine) b (+ base at) n)
              (def na (vt-render-pure! a))
              (def nb (vt-render-compiled! (rest engine) b))
-             (if (if (vt-same? a b) (if (= na nb) (= 0 (%call (%memcmp) (vt-out a) (vt-out b) na)) #f) #f)
+             (if (if (vt-same? a b) (if (= na nb) (= 0 (ptr-call (%memcmp) (vt-out a) (vt-out b) na)) #f) #f)
                (self (+ at n))
                (+ at n)))
          #t))

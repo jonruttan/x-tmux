@@ -38,16 +38,11 @@
 (import tmux/client tmux-new tmux-attach tmux-ask)
 
 (def %clock (prim-ref (lit sys) (lit clock)))
-(def %make-str (prim-ref (lit str) (lit make)))
-(def %str->ptr (prim-ref (lit str) (lit ->ptr)))
-(def %ptr->int (prim-ref (lit ptr) (lit ->int)))
-(def %pset (prim-ref (lit ptr) (lit set!)))
-(def %call (prim-ref (lit ptr) (lit call)))
-(def %byte-len (prim-ref (lit str) (lit byte-len)))
+(import x/core/doors str-make str->ptr ptr->int ptr-set! ptr-call str-byte-len)
 (def %libc (fn (_ name) ((prim-ref (lit ffi) (lit dlsym)) ((prim-ref (lit ffi) (lit dlopen)) () 1) name)))
 (def %num (fn (_ n) ((prim-ref (lit convert) (lit to)) n (Type named STRING) 10)))
 (def %int (fn (_ s) ((prim-ref (lit convert) (lit to)) s (Type named INTEGER) 10)))
-(def %write (fn (_ fd s) (%call (%libc "write") fd (%str->ptr s) (%byte-len s))))
+(def %write (fn (_ fd s) (ptr-call (%libc "write") fd (str->ptr s) (str-byte-len s))))
 (def %say (fn (_ s) (%write 1 s)))
 
 ; FILE's reads, each (EACH ADDRESS LENGTH), NUL-terminated.  x collects
@@ -55,17 +50,17 @@
 ; is collected every sixteenth read.
 (def %reads
   (fn (_ path each)
-    (def fd (%call (%libc "open") (%str->ptr path) 0))
-    (def buf (%make-str 4097))
-    (def p (%str->ptr buf))
+    (def fd (ptr-call (%libc "open") (str->ptr path) 0))
+    (def buf (str-make 4097))
+    (def p (str->ptr buf))
     (def rd (%libc "read"))
     ((fn (self i)
-       (def got (%call rd fd p 4096))
+       (def got (ptr-call rd fd p 4096))
        (when (< 0 got)
          (do (when (= (& i 15) 15) (Heap collect))
-             (%pset p got 0 1) (each (%ptr->int p) got) (self (+ i 1)))))
+             (ptr-set! p got 0 1) (each (ptr->int p) got) (self (+ i 1)))))
      0)
-    (%call (%libc "close") fd)))
+    (ptr-call (%libc "close") fd)))
 
 (def %check
   (fn (_ path)
@@ -123,7 +118,7 @@
 (def %exercise
   (fn (_ seed n)
     (def ex (vt-exercise seed n))
-    (%call (%libc "write") 1 (%str->ptr (first ex)) (rest ex))
+    (ptr-call (%libc "write") 1 (str->ptr (first ex)) (rest ex))
     0))
 
 (def %usage

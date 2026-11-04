@@ -54,17 +54,7 @@
 
 (import tmux/width char-width)
 
-(def %make-str (prim-ref (lit str) (lit make)))
-(def %str->ptr (prim-ref (lit str) (lit ->ptr)))
-(def %ptr->int (prim-ref (lit ptr) (lit ->int)))
-(def %int->ptr (prim-ref (lit int) (lit ->ptr)))
-(def %pref (prim-ref (lit ptr) (lit ref)))
-(def %pset (prim-ref (lit ptr) (lit set!)))
-(def %call (prim-ref (lit ptr) (lit call)))
-(def %dlsym (prim-ref (lit ffi) (lit dlsym)))
-(def %dlopen (prim-ref (lit ffi) (lit dlopen)))
-(def %quot (prim-ref (lit int) (lit /)))
-(def %rem (prim-ref (lit int) (lit %)))
+(import x/core/doors str-make str->ptr ptr->int int->ptr ptr-ref ptr-set! ptr-call ffi-dlsym ffi-dlopen int/ int%)
 (def %min (fn (_ a b) (if (< a b) a b)))
 (def %max (fn (_ a b) (if (< a b) b a)))
 
@@ -73,14 +63,14 @@
 (def %c-strspn ()) (def %c-memcmp ()) (def %c-memchr ())
 (def %resolve!
   (fn (_)
-    (def lib (%dlopen () 1))
-    (set! %c-memcmp (%dlsym lib "memcmp"))
-    (set! %c-memchr (%dlsym lib "memchr"))
-    (set! %c-memcpy (%dlsym lib "memcpy"))
-    (set! %c-memmove (%dlsym lib "memmove"))
-    (set! %c-memset (%dlsym lib "memset"))
-    (set! %c-strcspn (%dlsym lib "strcspn"))
-    (set! %c-strspn (%dlsym lib "strspn"))))
+    (def lib (ffi-dlopen () 1))
+    (set! %c-memcmp (ffi-dlsym lib "memcmp"))
+    (set! %c-memchr (ffi-dlsym lib "memchr"))
+    (set! %c-memcpy (ffi-dlsym lib "memcpy"))
+    (set! %c-memmove (ffi-dlsym lib "memmove"))
+    (set! %c-memset (ffi-dlsym lib "memset"))
+    (set! %c-strcspn (ffi-dlsym lib "strcspn"))
+    (set! %c-strspn (ffi-dlsym lib "strspn"))))
 
 ; The state words, by byte offset: the buffers' addresses, then the
 ; cursor and the parser.  PARAMS holds up to 16 CSI parameters.  Words 40
@@ -131,28 +121,28 @@
 ; A cell's byte for a character in the extended buffer, and for padding.
 (def %WIDE 128) (def %PAD 129)
 
-(def %w (fn (_ s o) (%pref s o 8)))
-(def %w! (fn (_ s o x) (%pset s o x 8)))
-(def %addr (fn (_ s o) (%int->ptr (%pref s o 8))))
+(def %w (fn (_ s o) (ptr-ref s o 8)))
+(def %w! (fn (_ s o x) (ptr-set! s o x 8)))
+(def %addr (fn (_ s o) (int->ptr (ptr-ref s o 8))))
 
 ; The bytes a printable run stops at: every control byte, DEL, and every
 ; byte past ASCII, which the UTF-8 reader takes.
 (def %stops
   (fn (_)
-    (def s (%make-str 161))
-    (def p (%str->ptr s))
+    (def s (str-make 161))
+    (def p (str->ptr s))
     ((fn (self i) (if (< i 32) (self (%stop! p (- i 1) i)) ())) 1)
-    (%pset p 31 127 1)
+    (ptr-set! p 31 127 1)
     ((fn (self i) (if (< i 256) (self (%stop! p (- i 96) i)) ())) 128)
-    (%pset p 160 0 1)
+    (ptr-set! p 160 0 1)
     s))
-(def %stop! (fn (_ p at b) (%pset p at b 1) (+ b 1)))
+(def %stop! (fn (_ p at b) (ptr-set! p at b 1) (+ b 1)))
 
 (def %buffer
   (fn (_ n fill)
-    (def s (%make-str (+ n 1)))
-    (%call %c-memset (%str->ptr s) fill n)
-    (%pset (%str->ptr s) n 0 1)
+    (def s (str-make (+ n 1)))
+    (ptr-call %c-memset (str->ptr s) fill n)
+    (ptr-set! (str->ptr s) n 0 1)
     s))
 
 ; A screen: (KEEP . S), S the state's pointer, KEEP what holds the
@@ -163,12 +153,12 @@
   (fn (_ rows cols limit)
     (%resolve!)
     (def words (%buffer (* 8 %WORDS) 0))
-    (def s (%str->ptr words))
+    (def s (str->ptr words))
     (def cells (%buffer (* rows cols) 32))
     (def attrs (%buffer (* rows cols) 1))
     (def dirty (%buffer rows 1))
     (def stop (%stops))
-    (def out (%make-str (+ 64 (* rows (+ 16 (* cols (+ 24 %SLOT)))))))
+    (def out (str-make (+ 64 (* rows (+ 16 (* cols (+ 24 %SLOT)))))))
     (def styles (%buffer (* 8 %STYLES) 0))
     (def sgrs (%buffer (* %SLOT %STYLES) 0))
     (def one (%buffer 1 1))
@@ -177,25 +167,25 @@
     (def ext (%buffer (* 16 (* rows cols)) 0))
     (def saved-ext (%buffer (* 16 (* rows cols)) 0))
     (def marks (%buffer 2 %WIDE))
-    (%pset (%str->ptr marks) 1 %PAD 1)
+    (ptr-set! (str->ptr marks) 1 %PAD 1)
     (def map (%identity rows))
     (def saved-map (%identity rows))
     (def scratch (%buffer (* 8 rows) 0))
     (def history-cells (%buffer (* limit cols) 32))
     (def history-attrs (%buffer (* limit cols) 1))
     (def history-ext (%buffer (* 16 (* limit cols)) 0))
-    (%w! s %HC (%ptr->int (%str->ptr history-cells))) (%w! s %HA (%ptr->int (%str->ptr history-attrs)))
-    (%w! s %HX (%ptr->int (%str->ptr history-ext))) (%w! s %HLIM limit)
-    (%w! s %MAP (%ptr->int (%str->ptr map))) (%w! s %SMAP (%ptr->int (%str->ptr saved-map)))
-    (%w! s %TMAP (%ptr->int (%str->ptr scratch)))
+    (%w! s %HC (ptr->int (str->ptr history-cells))) (%w! s %HA (ptr->int (str->ptr history-attrs)))
+    (%w! s %HX (ptr->int (str->ptr history-ext))) (%w! s %HLIM limit)
+    (%w! s %MAP (ptr->int (str->ptr map))) (%w! s %SMAP (ptr->int (str->ptr saved-map)))
+    (%w! s %TMAP (ptr->int (str->ptr scratch)))
     (%w! s %ROWS rows) (%w! s %COLS cols)
-    (%w! s %CP (%ptr->int (%str->ptr cells))) (%w! s %AP (%ptr->int (%str->ptr attrs)))
-    (%w! s %DP (%ptr->int (%str->ptr dirty))) (%w! s %SP (%ptr->int (%str->ptr stop)))
-    (%w! s %OP (%ptr->int (%str->ptr out))) (%w! s %ONE (%ptr->int (%str->ptr one)))
-    (%w! s %SCP (%ptr->int (%str->ptr saved-cells))) (%w! s %SAP (%ptr->int (%str->ptr saved-attrs)))
-    (%w! s %EP (%ptr->int (%str->ptr ext))) (%w! s %SEP (%ptr->int (%str->ptr saved-ext)))
-    (%w! s %MARKS (%ptr->int (%str->ptr marks)))
-    (%w! s %STY (%ptr->int (%str->ptr styles))) (%w! s %SGRB (%ptr->int (%str->ptr sgrs)))
+    (%w! s %CP (ptr->int (str->ptr cells))) (%w! s %AP (ptr->int (str->ptr attrs)))
+    (%w! s %DP (ptr->int (str->ptr dirty))) (%w! s %SP (ptr->int (str->ptr stop)))
+    (%w! s %OP (ptr->int (str->ptr out))) (%w! s %ONE (ptr->int (str->ptr one)))
+    (%w! s %SCP (ptr->int (str->ptr saved-cells))) (%w! s %SAP (ptr->int (str->ptr saved-attrs)))
+    (%w! s %EP (ptr->int (str->ptr ext))) (%w! s %SEP (ptr->int (str->ptr saved-ext)))
+    (%w! s %MARKS (ptr->int (str->ptr marks)))
+    (%w! s %STY (ptr->int (str->ptr styles))) (%w! s %SGRB (ptr->int (str->ptr sgrs)))
     (%w! s %NSTY 2)
     (%style-bytes! (+ (%w s %SGRB) %SLOT) 0)
     (%w! s %ATTR 1) (%w! s %NUM -1) (%w! s %BOTTOM (- rows 1))
@@ -207,25 +197,25 @@
 (def %identity
   (fn (_ rows)
     (def m (%buffer (* 8 rows) 0))
-    ((fn (self i) (if (< i rows) (self (%word-at! (%str->ptr m) i)) ())) 0)
+    ((fn (self i) (if (< i rows) (self (%word-at! (str->ptr m) i)) ())) 0)
     m))
-(def %word-at! (fn (_ p i) (%pset p (* 8 i) i 8) (+ i 1)))
+(def %word-at! (fn (_ p i) (ptr-set! p (* 8 i) i 8) (+ i 1)))
 
 ; Cell (ROW, COL) of the buffer at BASE, %CP or %AP, through the row map.
 ; The lookup is written out in each, as these run for nearly every cell.
 (def %at
   (fn (_ s base row col)
-    (%int->ptr (+ (%pref s base 8) (+ (* (%pref (%int->ptr (+ (%pref s %MAP 8) (* 8 row))) 0 8) (%pref s %COLS 8)) col)))))
-(def %row (fn (_ s row) (%pref (%int->ptr (+ (%w s %MAP) (* 8 row))) 0 8)))
+    (int->ptr (+ (ptr-ref s base 8) (+ (* (ptr-ref (int->ptr (+ (ptr-ref s %MAP 8) (* 8 row))) 0 8) (ptr-ref s %COLS 8)) col)))))
+(def %row (fn (_ s row) (ptr-ref (int->ptr (+ (%w s %MAP) (* 8 row))) 0 8)))
 ; A cell's slot in an extended buffer, BASE %EP.
 (def %slot
   (fn (_ s base row col)
-    (%int->ptr (+ (%pref s base 8)
-                  (* 16 (+ (* (%pref (%int->ptr (+ (%pref s %MAP 8) (* 8 row))) 0 8) (%pref s %COLS 8)) col))))))
-(def %cell (fn (_ s row col) (%pref (%at s %CP row col) 0 1)))
-(def %cell! (fn (_ s row col b) (%pset (%at s %CP row col) 0 b 1)))
-(def %dirty! (fn (_ s row) (%pset (%addr s %DP) row 1 1)))
-(def %dirty-rows! (fn (_ s a b) (%call %c-memset (%int->ptr (+ (%w s %DP) a)) 1 (+ (- b a) 1))))
+    (int->ptr (+ (ptr-ref s base 8)
+                  (* 16 (+ (* (ptr-ref (int->ptr (+ (ptr-ref s %MAP 8) (* 8 row))) 0 8) (ptr-ref s %COLS 8)) col))))))
+(def %cell (fn (_ s row col) (ptr-ref (%at s %CP row col) 0 1)))
+(def %cell! (fn (_ s row col b) (ptr-set! (%at s %CP row col) 0 b 1)))
+(def %dirty! (fn (_ s row) (ptr-set! (%addr s %DP) row 1 1)))
+(def %dirty-rows! (fn (_ s a b) (ptr-call %c-memset (int->ptr (+ (%w s %DP) a)) 1 (+ (- b a) 1))))
 
 ; Cells from (ROW, A) to (ROW, B) inclusive blanked.
 (def %blank!
@@ -233,8 +223,8 @@
     (if (< b a) () (%blank-run! s row a (+ (- b a) 1)))))
 (def %blank-run!
   (fn (_ s row a n)
-    (%call %c-memset (%at s %CP row a) 32 n)
-    (%call %c-memset (%at s %AP row a) (%w s %ATTR) n)
+    (ptr-call %c-memset (%at s %CP row a) 32 n)
+    (ptr-call %c-memset (%at s %AP row a) (%w s %ATTR) n)
     (%dirty! s row)))
 (def %blank-rows!
   (fn (self s r e) (if (< r e) (self s (%blank-row! s r) e) ())))
@@ -256,10 +246,10 @@
 ; TO, and the K put back at IN.
 (def %turn!
   (fn (_ s out from to in k keep)
-    (%call %c-memcpy (%addr s %TMAP) (%map-at s out) (* 8 k))
-    (%call %c-memmove (%map-at s to) (%map-at s from) (* 8 keep))
-    (%call %c-memcpy (%map-at s in) (%addr s %TMAP) (* 8 k))))
-(def %map-at (fn (_ s row) (%int->ptr (+ (%w s %MAP) (* 8 row)))))
+    (ptr-call %c-memcpy (%addr s %TMAP) (%map-at s out) (* 8 k))
+    (ptr-call %c-memmove (%map-at s to) (%map-at s from) (* 8 keep))
+    (ptr-call %c-memcpy (%map-at s in) (%addr s %TMAP) (* 8 k))))
+(def %map-at (fn (_ s row) (int->ptr (+ (%w s %MAP) (* 8 row)))))
 
 (def %linefeed!
   (fn (_ s)
@@ -283,9 +273,9 @@
     (def count (%w s %HCOUNT))
     (def from (* (%row s r) cols))
     (def to (* (%history-slot s count) cols))
-    (%call %c-memcpy (%int->ptr (+ (%w s %HC) to)) (%int->ptr (+ (%w s %CP) from)) cols)
-    (%call %c-memcpy (%int->ptr (+ (%w s %HA) to)) (%int->ptr (+ (%w s %AP) from)) cols)
-    (%call %c-memcpy (%int->ptr (+ (%w s %HX) (* 16 to))) (%int->ptr (+ (%w s %EP) (* 16 from))) (* 16 cols))
+    (ptr-call %c-memcpy (int->ptr (+ (%w s %HC) to)) (int->ptr (+ (%w s %CP) from)) cols)
+    (ptr-call %c-memcpy (int->ptr (+ (%w s %HA) to)) (int->ptr (+ (%w s %AP) from)) cols)
+    (ptr-call %c-memcpy (int->ptr (+ (%w s %HX) (* 16 to))) (int->ptr (+ (%w s %EP) (* 16 from))) (* 16 cols))
     (if (< count (%w s %HLIM))
       (%w! s %HCOUNT (+ count 1))
       (%w! s %HHEAD (%history-slot s 1)))
@@ -314,8 +304,8 @@
     (def col (%w s %COL))
     (def k (%min n (- cols col)))
     (%unpair! s row col (+ col (- k 1)))
-    (%call %c-memcpy (%at s %CP row col) (%int->ptr p) k)
-    (%call %c-memset (%at s %AP row col) (%w s %ATTR) k)
+    (ptr-call %c-memcpy (%at s %CP row col) (int->ptr p) k)
+    (ptr-call %c-memset (%at s %AP row col) (%w s %ATTR) k)
     (%dirty! s row)
     (%w! s %COL (+ col k))
     k))
@@ -358,12 +348,12 @@
 (def %encode!
   (fn (_ p cp)
     (match
-      ((< cp 128) (do (%pset p 0 cp 1) 1))
-      ((< cp 2048) (do (%pset p 0 (| 192 (>> cp 6)) 1) (%pset p 1 (| 128 (& cp 63)) 1) 2))
-      ((< cp 65536) (do (%pset p 0 (| 224 (>> cp 12)) 1) (%pset p 1 (| 128 (& (>> cp 6) 63)) 1)
-                        (%pset p 2 (| 128 (& cp 63)) 1) 3))
-      (#t (do (%pset p 0 (| 240 (>> cp 18)) 1) (%pset p 1 (| 128 (& (>> cp 12) 63)) 1)
-              (%pset p 2 (| 128 (& (>> cp 6) 63)) 1) (%pset p 3 (| 128 (& cp 63)) 1) 4)))))
+      ((< cp 128) (do (ptr-set! p 0 cp 1) 1))
+      ((< cp 2048) (do (ptr-set! p 0 (| 192 (>> cp 6)) 1) (ptr-set! p 1 (| 128 (& cp 63)) 1) 2))
+      ((< cp 65536) (do (ptr-set! p 0 (| 224 (>> cp 12)) 1) (ptr-set! p 1 (| 128 (& (>> cp 6) 63)) 1)
+                        (ptr-set! p 2 (| 128 (& cp 63)) 1) 3))
+      (#t (do (ptr-set! p 0 (| 240 (>> cp 18)) 1) (ptr-set! p 1 (| 128 (& (>> cp 12) 63)) 1)
+              (ptr-set! p 2 (| 128 (& (>> cp 6) 63)) 1) (ptr-set! p 3 (| 128 (& cp 63)) 1) 4)))))
 
 ; A whole character put at the cursor, by its width: wide or narrow, a
 ; wrap first when it does not fit; or joined to the character before the
@@ -380,14 +370,14 @@
     (def col (%w s %COL))
     (%unpair! s row col (+ col (- w 1)))
     (def slot (%slot s %EP row col))
-    (%pset slot 14 (%encode! slot cp) 1)
-    (%pset slot 15 w 1)
+    (ptr-set! slot 14 (%encode! slot cp) 1)
+    (ptr-set! slot 15 w 1)
     (%cell! s row col %WIDE)
-    (%pset (%at s %AP row col) 0 (%w s %ATTR) 1)
+    (ptr-set! (%at s %AP row col) 0 (%w s %ATTR) 1)
     (if (= w 2) (%pad! s row (+ col 1) (%w s %ATTR)) ())
     (%dirty! s row)
     (%w! s %COL (+ col w))))
-(def %pad! (fn (_ s row col attr) (%cell! s row col %PAD) (%pset (%at s %AP row col) 0 attr 1)))
+(def %pad! (fn (_ s row col attr) (%cell! s row col %PAD) (ptr-set! (%at s %AP row col) 0 attr 1)))
 
 ; A zero-width character joined to the cell before the cursor (the wide
 ; character it belongs to, when that cell is padding), its bytes appended
@@ -403,27 +393,27 @@
     (def c (if (if (< 0 at) (= (%cell s row at) %PAD) #f) (- at 1) at))
     (if (= (%cell s row c) %WIDE) () (%to-slot! s row c))
     (def slot (%slot s %EP row c))
-    (def n (%pref slot 14 1))
-    (def tmp (%make-str 5))
-    (def k (%encode! (%str->ptr tmp) cp))
-    (if (< (+ n k) 15) (%append! slot n (%str->ptr tmp) k) ())
-    (if (if (= cp 65039) (if (= (%pref slot 15 1) 1) (if (= (+ c 1) (%w s %COL)) (< (%w s %COL) (%w s %COLS)) #f) #f) #f)
+    (def n (ptr-ref slot 14 1))
+    (def tmp (str-make 5))
+    (def k (%encode! (str->ptr tmp) cp))
+    (if (< (+ n k) 15) (%append! slot n (str->ptr tmp) k) ())
+    (if (if (= cp 65039) (if (= (ptr-ref slot 15 1) 1) (if (= (+ c 1) (%w s %COL)) (< (%w s %COL) (%w s %COLS)) #f) #f) #f)
       (%widen! s row c slot)
       ())
     (%dirty! s row)))
-(def %append! (fn (_ slot n p k) (%call %c-memcpy (%int->ptr (+ (%ptr->int slot) n)) p k) (%pset slot 14 (+ n k) 1)))
+(def %append! (fn (_ slot n p k) (ptr-call %c-memcpy (int->ptr (+ (ptr->int slot) n)) p k) (ptr-set! slot 14 (+ n k) 1)))
 (def %to-slot!
   (fn (_ s row c)
     (def slot (%slot s %EP row c))
-    (%pset slot 0 (%cell s row c) 1)
-    (%pset slot 14 1 1)
-    (%pset slot 15 1 1)
+    (ptr-set! slot 0 (%cell s row c) 1)
+    (ptr-set! slot 14 1 1)
+    (ptr-set! slot 15 1 1)
     (%cell! s row c %WIDE)))
 (def %widen!
   (fn (_ s row c slot)
     (%unpair! s row (+ c 1) (+ c 1))
-    (%pset slot 15 2 1)
-    (%pad! s row (+ c 1) (%pref (%at s %AP row c) 0 1))
+    (ptr-set! slot 15 2 1)
+    (%pad! s row (+ c 1) (ptr-ref (%at s %AP row c) 0 1))
     (%w! s %COL (+ c 2))))
 
 ; A move to (ROW, COL), each kept on the screen.
@@ -443,7 +433,7 @@
   (fn (_ s)
     (def n (%min (%w s %NP) 16))
     (%w! s %ATTR (%intern! s (if (= n 0) 0 (%sgr-apply s (%style s (%w s %ATTR)) 0 n))))))
-(def %style (fn (_ s i) (%pref (%addr s %STY) (* 8 i) 8)))
+(def %style (fn (_ s i) (ptr-ref (%addr s %STY) (* 8 i) 8)))
 
 ; The attribute bits SGR 1 to 9 set, by their parameter; 6 sets none.
 (def %flag (fn (_ p) (List ref (- p 1) (lit (1 2 4 8 16 0 32 64 128)))))
@@ -518,10 +508,10 @@
   (fn (_ s key)
     (def table (%addr s %STY))
     (def n (%w s %NSTY))
-    ((fn (self i) (if (< i n) (if (= (%pref table (* 8 i) 8) key) i (self (+ i 1))) 0)) 1)))
+    ((fn (self i) (if (< i n) (if (= (ptr-ref table (* 8 i) 8) key) i (self (+ i 1))) 0)) 1)))
 (def %put-style!
   (fn (_ s at key)
-    (%pset (%addr s %STY) (* 8 at) key 8)
+    (ptr-set! (%addr s %STY) (* 8 at) key 8)
     (%style-bytes! (+ (%w s %SGRB) (* %SLOT at)) key)
     at))
 
@@ -534,10 +524,10 @@
       (fn (_ i)
         (if (= i (%w s %ATTR)) #t
           (if (= i (%w s %AATTR)) #t
-            (if (not (= 0 (%call %c-memchr (%addr s %AP) i n))) #t
-              (if (not (= 0 (%call %c-memchr (%addr s %SAP) i n))) #t
-                (not (= 0 (%call %c-memchr (%addr s %HA) i (* (%w s %HLIM) (%w s %COLS)))))))))))
-    ((fn (self i) (when (< i %STYLES) (do (unless (used? i) (%pset (%addr s %STY) (* 8 i) -1 8)) (self (+ i 1))))) 2)))
+            (if (not (= 0 (ptr-call %c-memchr (%addr s %AP) i n))) #t
+              (if (not (= 0 (ptr-call %c-memchr (%addr s %SAP) i n))) #t
+                (not (= 0 (ptr-call %c-memchr (%addr s %HA) i (* (%w s %HLIM) (%w s %COLS)))))))))))
+    ((fn (self i) (when (< i %STYLES) (do (unless (used? i) (ptr-set! (%addr s %STY) (* 8 i) -1 8)) (self (+ i 1))))) 2)))
 
 ; KEY's SGR written to the slot at address AT: its length, then ESC [ 0,
 ; each attribute's parameter, the foreground's and the background's, m.
@@ -553,7 +543,7 @@
                              (& (>> key 8) 67108863) 3 9 38)
              (& (>> key 34) 67108863) 4 10 48)
            109))
-    (%pset (%int->ptr at) 0 (- end (+ at 1)) 1)))
+    (ptr-set! (int->ptr at) 0 (- end (+ at 1)) 1)))
 ; Colour C's parameters, ;3N ;9N ;38;5;N or ;38;2;R;G;B for a foreground
 ; (BASE 3, BRIGHT 9, EXT 38): none for the default.
 (def %colour-bytes!
@@ -635,12 +625,12 @@
 (def %alt-save!
   (fn (_ s cursor)
     (def n (* (%w s %ROWS) (%w s %COLS)))
-    (%call %c-memcpy (%addr s %SCP) (%addr s %CP) n)
-    (%call %c-memcpy (%addr s %SAP) (%addr s %AP) n)
-    (%call %c-memcpy (%addr s %SEP) (%addr s %EP) (* 16 n))
-    (%call %c-memcpy (%addr s %SMAP) (%addr s %MAP) (* 8 (%w s %ROWS)))
-    (%call %c-memset (%addr s %CP) 32 n)
-    (%call %c-memset (%addr s %AP) 1 n)
+    (ptr-call %c-memcpy (%addr s %SCP) (%addr s %CP) n)
+    (ptr-call %c-memcpy (%addr s %SAP) (%addr s %AP) n)
+    (ptr-call %c-memcpy (%addr s %SEP) (%addr s %EP) (* 16 n))
+    (ptr-call %c-memcpy (%addr s %SMAP) (%addr s %MAP) (* 8 (%w s %ROWS)))
+    (ptr-call %c-memset (%addr s %CP) 32 n)
+    (ptr-call %c-memset (%addr s %AP) 1 n)
     (%dirty-rows! s 0 (- (%w s %ROWS) 1))
     (%w! s %ASAVED (if cursor 1 0))
     (%w! s %AROW (%w s %ROW)) (%w! s %ACOL (%w s %COL)) (%w! s %AATTR (%w s %ATTR))
@@ -651,10 +641,10 @@
 (def %alt-restore!
   (fn (_ s cursor)
     (def n (* (%w s %ROWS) (%w s %COLS)))
-    (%call %c-memcpy (%addr s %CP) (%addr s %SCP) n)
-    (%call %c-memcpy (%addr s %AP) (%addr s %SAP) n)
-    (%call %c-memcpy (%addr s %EP) (%addr s %SEP) (* 16 n))
-    (%call %c-memcpy (%addr s %MAP) (%addr s %SMAP) (* 8 (%w s %ROWS)))
+    (ptr-call %c-memcpy (%addr s %CP) (%addr s %SCP) n)
+    (ptr-call %c-memcpy (%addr s %AP) (%addr s %SAP) n)
+    (ptr-call %c-memcpy (%addr s %EP) (%addr s %SEP) (* 16 n))
+    (ptr-call %c-memcpy (%addr s %MAP) (%addr s %SMAP) (* 8 (%w s %ROWS)))
     (%dirty-rows! s 0 (- (%w s %ROWS) 1))
     (if (if cursor (= (%w s %ASAVED) 1) #f) (%alt-cursor! s) ())
     (%w! s %ASAVED 0)
@@ -695,7 +685,7 @@
   (fn (self s n)
     (if (if (< 0 n) (%blank-row? s (- n 1)) #f) (self s (- n 1)) n)))
 (def %blank-row?
-  (fn (_ s r) (not (< (%call %c-strspn (%at s %CP r 0) (%str->ptr " ")) (%w s %COLS)))))
+  (fn (_ s r) (not (< (ptr-call %c-strspn (%at s %CP r 0) (str->ptr " ")) (%w s %COLS)))))
 (def %below! (fn (_ s row col rows cols) (%blank! s row col (- cols 1)) (%blank-rows! s (+ row 1) rows)))
 (def %above! (fn (_ s row col cols) (%blank-rows! s 0 row) (%blank! s row 0 (%min col (- cols 1)))))
 (def %delete-chars!
@@ -710,9 +700,9 @@
     (%blank! s row col (- (+ col n) 1))))
 (def %shift!
   (fn (_ s row to from n)
-    (%call %c-memmove (%at s %CP row to) (%at s %CP row from) n)
-    (%call %c-memmove (%at s %AP row to) (%at s %AP row from) n)
-    (%call %c-memmove (%slot s %EP row to) (%slot s %EP row from) (* 16 n))))
+    (ptr-call %c-memmove (%at s %CP row to) (%at s %CP row from) n)
+    (ptr-call %c-memmove (%at s %AP row to) (%at s %AP row from) n)
+    (ptr-call %c-memmove (%slot s %EP row to) (%slot s %EP row from) (* 16 n))))
 
 ; The parser's states: 0 ground, 1 after ESC, 2 in a CSI, 3 in an OSC,
 ; 4 one byte to swallow (a charset designation).
@@ -810,10 +800,10 @@
 ; An ASCII byte where a character was being read cuts it short first.
 (def %step!
   (fn (_ s stop i end)
-    (def b (%pref (%int->ptr i) 0 1))
+    (def b (ptr-ref (int->ptr i) 0 1))
     (if (if (< 0 (%w s %UNEED)) (< b 128) #f) (%utf8-cut! s) ())
     (if (= (%w s %STATE) 0)
-      (%ground-step! s i b (%min (%call %c-strcspn (%int->ptr i) stop) (- end i)))
+      (%ground-step! s i b (%min (ptr-call %c-strcspn (int->ptr i) stop) (- end i)))
       (%escaped-step! s i))))
 (def %ground-step!
   (fn (_ s i b run)
@@ -822,28 +812,28 @@
       ((< b 128) (%controlled! s i))
       (#t (if (%utf8! s b) (+ i 1) i)))))
 (def %ran! (fn (_ s i run) (%put! s i run) (+ i run)))
-(def %controlled! (fn (_ s i) (%control! s (%pref (%int->ptr i) 0 1)) (+ i 1)))
-(def %escaped-step! (fn (_ s i) (%escaped! s (%pref (%int->ptr i) 0 1)) (+ i 1)))
+(def %controlled! (fn (_ s i) (%control! s (ptr-ref (int->ptr i) 0 1)) (+ i 1)))
+(def %escaped-step! (fn (_ s i) (%escaped! s (ptr-ref (int->ptr i) 0 1)) (+ i 1)))
 
 ; The rows marked since the last render written to the output buffer as
 ; a terminal redraws them: a cursor move, then each run of one attribute
 ; as its SGR and its bytes.  Answers the byte count; the marks are cleared.
-(def %b! (fn (_ at b) (%pset (%int->ptr at) 0 b 1) (+ at 1)))
+(def %b! (fn (_ at b) (ptr-set! (int->ptr at) 0 b 1) (+ at 1)))
 
 ; N, at most three digits, in decimal.
 (def %dec!
   (fn (_ at n)
     (if (< n 10) (%b! at (+ 48 n))
-      (if (< n 100) (%b! (%b! at (+ 48 (%quot n 10))) (+ 48 (%rem n 10)))
-        (%b! (%b! (%b! at (+ 48 (%quot n 100))) (+ 48 (%rem (%quot n 10) 10)))
-             (+ 48 (%rem n 10)))))))
+      (if (< n 100) (%b! (%b! at (+ 48 (int/ n 10))) (+ 48 (int% n 10)))
+        (%b! (%b! (%b! at (+ 48 (int/ n 100))) (+ 48 (int% (int/ n 10) 10)))
+             (+ 48 (int% n 10)))))))
 
 ; Style A's SGR, from its slot.
 (def %sgr-bytes!
   (fn (_ s at a)
     (def slot (+ (%w s %SGRB) (* %SLOT a)))
-    (def n (%pref (%int->ptr slot) 0 1))
-    (%call %c-memcpy (%int->ptr at) (%int->ptr (+ slot 1)) n)
+    (def n (ptr-ref (int->ptr slot) 0 1))
+    (ptr-call %c-memcpy (int->ptr at) (int->ptr (+ slot 1)) n)
     (+ at n)))
 
 (def vt-render-pure!
@@ -852,11 +842,11 @@
     (def rows (%w s %ROWS))
     (def base (%w s %OP))
     (def end ((fn (self r at) (if (= r rows) at (self (+ r 1) (%render-row! s r at)))) 0 base))
-    (%call %c-memset (%addr s %DP) 0 rows)
+    (ptr-call %c-memset (%addr s %DP) 0 rows)
     (- end base)))
 (def %render-row!
   (fn (_ s r at)
-    (if (= (%pref (%addr s %DP) r 1) 0) at
+    (if (= (ptr-ref (%addr s %DP) r 1) 0) at
       (%render-runs! s r 0
         (%b! (%dec! (%b! (%dec! (%b! (%b! at 27) 91) (+ r (+ 1 (%w s %OROW)))) 59) (+ 1 (%w s %OCOL))) 72)))))
 (def %render-runs!
@@ -867,11 +857,11 @@
 (def %run-length
   (fn (_ s r c)
     (def one (%addr s %ONE))
-    (%pset one 0 (%pref (%at s %AP r c) 0 1) 1)
-    (%max 1 (%min (%call %c-strspn (%at s %AP r c) one) (- (%w s %COLS) c)))))
+    (ptr-set! one 0 (ptr-ref (%at s %AP r c) 0 1) 1)
+    (%max 1 (%min (ptr-call %c-strspn (%at s %AP r c) one) (- (%w s %COLS) c)))))
 (def %render-run!
   (fn (_ s r c k at)
-    (%emit-cells! s r c (+ c k) (%sgr-bytes! s at (%pref (%at s %AP r c) 0 1)))))
+    (%emit-cells! s r c (+ c k) (%sgr-bytes! s at (ptr-ref (%at s %AP r c) 0 1)))))
 
 ; Cells C..E-1 of row R written from AT: runs of ASCII as they are, a
 ; character past ASCII as its slot's bytes, padding as nothing after the
@@ -884,23 +874,23 @@
     (if (= c e) at
       ((fn (_ n)
          (match
-           ((< 0 n) (do (%call %c-memcpy (%int->ptr at) (%at s %CP r c) n) (self s r (+ c n) e (+ at n))))
+           ((< 0 n) (do (ptr-call %c-memcpy (int->ptr at) (%at s %CP r c) n) (self s r (+ c n) e (+ at n))))
            ((= (%cell s r c) %WIDE) (self s r (+ c 1) e (%emit-wide! s r c at)))
            (#t (self s r (+ c 1) e (if (%padding? s r c) at (%b! at 32))))))
-       (%min (%call %c-strcspn (%at s %CP r c) (%addr s %MARKS)) (- e c))))))
+       (%min (ptr-call %c-strcspn (%at s %CP r c) (%addr s %MARKS)) (- e c))))))
 (def %emit-wide!
   (fn (_ s r c at)
     (def slot (%slot s %EP r c))
-    (def n (%pref slot 14 1))
-    (%call %c-memcpy (%int->ptr at) slot n)
-    (if (if (= (%pref slot 15 1) 2) (not (%padded? s r c)) #f)
+    (def n (ptr-ref slot 14 1))
+    (ptr-call %c-memcpy (int->ptr at) slot n)
+    (if (if (= (ptr-ref slot 15 1) 2) (not (%padded? s r c)) #f)
       (%cup! (+ at n) (+ r (+ 1 (%w s %OROW))) (+ c (+ 2 (%w s %OCOL))))
       (+ at n))))
 (def %padded? (fn (_ s r c) (if (< (+ c 1) (%w s %COLS)) (= (%cell s r (+ c 1)) %PAD) #f)))
 (def %padding?
   (fn (_ s r c)
     (if (< 0 c)
-      (if (= (%cell s r (- c 1)) %WIDE) (= (%pref (%slot s %EP r (- c 1)) 15 1) 2) #f)
+      (if (= (%cell s r (- c 1)) %WIDE) (= (ptr-ref (%slot s %EP r (- c 1)) 15 1) 2) #f)
       #f)))
 (def %cup! (fn (_ at row col) (%b! (%dec! (%b! (%dec! (%b! (%b! at 27) 91) row) 59) col) 72)))
 
@@ -909,9 +899,9 @@
 (def vt-style
   (fn (_ h i)
     (def slot (+ (%w (rest h) %SGRB) (* %SLOT i)))
-    (def n (%pref (%int->ptr slot) 0 1))
-    (def s (%make-str (- n 2)))
-    (%call %c-memcpy (%str->ptr s) (%int->ptr (+ slot 3)) (- n 3))
+    (def n (ptr-ref (int->ptr slot) 0 1))
+    (def s (str-make (- n 2)))
+    (ptr-call %c-memcpy (str->ptr s) (int->ptr (+ slot 3)) (- n 3))
     ((prim-ref (lit str) (lit byte-sub)) s 0 (- n 3))))
 ; Whether the program shows the cursor (?25), wants its cursor keys as
 ; SS3 (?1), and its pastes bracketed (?2004).
@@ -933,7 +923,7 @@
 (def vt-touch!
   (fn (_ h)
     (def s (rest h))
-    (%call %c-memset (%addr s %DP) 1 (%w s %ROWS))
+    (ptr-call %c-memset (%addr s %DP) 1 (%w s %ROWS))
     h))
 
 ; A new screen of ROWS x COLS with H's cells and attributes where they
@@ -960,8 +950,8 @@
 ; S's styles, and their SGRs, T's: the cells T takes from S keep theirs.
 (def %carry-styles!
   (fn (_ s t)
-    (%call %c-memcpy (%addr t %STY) (%addr s %STY) (* 8 %STYLES))
-    (%call %c-memcpy (%addr t %SGRB) (%addr s %SGRB) (* %SLOT %STYLES))
+    (ptr-call %c-memcpy (%addr t %STY) (%addr s %STY) (* 8 %STYLES))
+    (ptr-call %c-memcpy (%addr t %SGRB) (%addr s %SGRB) (* %SLOT %STYLES))
     (%w! t %NSTY (%w s %NSTY))))
 ; One screen's rows of S, by its map at MAP, copied to T's in order: T is
 ; new, and its maps are in order.
@@ -971,11 +961,11 @@
     (def keep-cols (%min cols (%w s %COLS)))
     ((fn (self r)
        (when (< r keep-rows)
-         (do (def from (* (%pref (%int->ptr (+ (%w s map) (* 8 r))) 0 8) (%w s %COLS)))
+         (do (def from (* (ptr-ref (int->ptr (+ (%w s map) (* 8 r))) 0 8) (%w s %COLS)))
              (def to (* r cols))
-             (%call %c-memcpy (%int->ptr (+ (%w t cells) to)) (%int->ptr (+ (%w s cells) from)) keep-cols)
-             (%call %c-memcpy (%int->ptr (+ (%w t attrs) to)) (%int->ptr (+ (%w s attrs) from)) keep-cols)
-             (%call %c-memcpy (%int->ptr (+ (%w t ext) (* 16 to))) (%int->ptr (+ (%w s ext) (* 16 from)))
+             (ptr-call %c-memcpy (int->ptr (+ (%w t cells) to)) (int->ptr (+ (%w s cells) from)) keep-cols)
+             (ptr-call %c-memcpy (int->ptr (+ (%w t attrs) to)) (int->ptr (+ (%w s attrs) from)) keep-cols)
+             (ptr-call %c-memcpy (int->ptr (+ (%w t ext) (* 16 to))) (int->ptr (+ (%w s ext) (* 16 from)))
                (* 16 keep-cols))
              (self (+ r 1)))))
      0)))
@@ -997,9 +987,9 @@
 (def %copy-row!
   (fn (_ t r tc ta tx cells attrs ext from keep-cols)
     (def to (* r (%w t %COLS)))
-    (%call %c-memcpy (%int->ptr (+ (%w t tc) to)) (%int->ptr (+ cells from)) keep-cols)
-    (%call %c-memcpy (%int->ptr (+ (%w t ta) to)) (%int->ptr (+ attrs from)) keep-cols)
-    (%call %c-memcpy (%int->ptr (+ (%w t tx) (* 16 to))) (%int->ptr (+ ext (* 16 from))) (* 16 keep-cols))))
+    (ptr-call %c-memcpy (int->ptr (+ (%w t tc) to)) (int->ptr (+ cells from)) keep-cols)
+    (ptr-call %c-memcpy (int->ptr (+ (%w t ta) to)) (int->ptr (+ attrs from)) keep-cols)
+    (ptr-call %c-memcpy (int->ptr (+ (%w t tx) (* 16 to))) (int->ptr (+ ext (* 16 from))) (* 16 keep-cols))))
 
 ; Row R's text: its characters in UTF-8, padding as nothing, as tmux's
 ; capture-pane writes a row.
@@ -1013,17 +1003,17 @@
 ; Its cells FROM to TO-1.
 (def %text-span
   (fn (_ cells ext from to)
-    (def buf (%make-str (+ 1 (* 14 (- to from)))))
-    (def p (%ptr->int (%str->ptr buf)))
+    (def buf (str-make (+ 1 (* 14 (- to from)))))
+    (def p (ptr->int (str->ptr buf)))
     (def n ((fn (self c at) (if (= c to) at (self (+ c 1) (%text-cell! cells ext c at)))) from p))
     ((prim-ref (lit str) (lit byte-sub)) buf 0 (- n p))))
 (def %text-cell!
   (fn (_ cells ext c at)
-    (def b (%pref (%int->ptr cells) c 1))
+    (def b (ptr-ref (int->ptr cells) c 1))
     (match
       ((< b 128) (%b! at b))
-      ((= b %WIDE) ((fn (_ slot) (do (%call %c-memcpy (%int->ptr at) slot (%pref slot 14 1)) (+ at (%pref slot 14 1))))
-                     (%int->ptr (+ ext (* 16 c)))))
+      ((= b %WIDE) ((fn (_ slot) (do (ptr-call %c-memcpy (int->ptr at) slot (ptr-ref slot 14 1)) (+ at (ptr-ref slot 14 1))))
+                     (int->ptr (+ ext (* 16 c)))))
       (#t at))))
 ; Row R's length: its cells to the last one not blank.
 (def vt-row-length
@@ -1065,12 +1055,12 @@
     (def s (rest a))
     (def t (rest b))
     (def cols (%w s %COLS))
-    (def p (%int->ptr (+ (%w s %HC) (* (%history-slot s i) cols))))
-    (def q (%int->ptr (+ (%w t %HC) (* (%history-slot t i) cols))))
-    (if (= 0 (%call %c-memcmp p q cols))
-      (if (= 0 (%call %c-memcmp (%int->ptr (+ (%w s %HA) (* (%history-slot s i) cols)))
-                 (%int->ptr (+ (%w t %HA) (* (%history-slot t i) cols))) cols))
-        (if (= 0 (%call %c-memchr p %WIDE cols))
+    (def p (int->ptr (+ (%w s %HC) (* (%history-slot s i) cols))))
+    (def q (int->ptr (+ (%w t %HC) (* (%history-slot t i) cols))))
+    (if (= 0 (ptr-call %c-memcmp p q cols))
+      (if (= 0 (ptr-call %c-memcmp (int->ptr (+ (%w s %HA) (* (%history-slot s i) cols)))
+                 (int->ptr (+ (%w t %HA) (* (%history-slot t i) cols))) cols))
+        (if (= 0 (ptr-call %c-memchr p %WIDE cols))
           #t
           (str=? (vt-history-row a i) (vt-history-row b i)))
         #f)
@@ -1094,7 +1084,7 @@
 (def vt-line-length
   (fn (_ h line)
     (def cells (first (%line (rest h) line)))
-    ((fn (loop c) (if (if (< 0 c) (= (%pref (%int->ptr cells) (- c 1) 1) 32) #f) (loop (- c 1)) c))
+    ((fn (loop c) (if (if (< 0 c) (= (ptr-ref (int->ptr cells) (- c 1) 1) 32) #f) (loop (- c 1)) c))
      (%w (rest h) %COLS))))
 
 ; A screen the size of H showing its rows OFF up from the bottom: history
@@ -1129,7 +1119,7 @@
     (def s (rest h))
     (%w! s %IN p) (%w! s %POS 0) (%w! s %END len)
     ((fn (self)
-       (when (= (feed (%ptr->int s)) 1)
+       (when (= (feed (ptr->int s)) 1)
          (do (vt-feed-pure! h (+ p (%w s %POS)) 1)
              (%w! s %POS (+ (%w s %POS) 1))
              (self)))))))
@@ -1138,7 +1128,7 @@
   (fn (_ render h)
     (def s (rest h))
     (%w! s %RR 0) (%w! s %RC 0) (%w! s %RS 0) (%w! s %RO 0)
-    (render (%ptr->int s))))
+    (render (ptr->int s))))
 
 ; The engine every screen uses: () for this file's, else the compiled
 ; (FEED . RENDER) vt-adopt! was given.
