@@ -339,14 +339,68 @@ what every sequence does from there.
 
 ## attributes
 
-### SGR kept as a cell's attribute byte: 1, plus 1 bold, 2 reverse, 4(N+1) a foreground N, 64 a background
+A cell's attribute byte numbers its style in the screen's table, and a
+style is written as the SGR a render puts before its cells; spec-styles
+reads each cell's as its parameters.
+
+### SGR kept as a cell's style, the default style 1
 
 ```tmux
 (do (def h (spec-screen vt-feed-pure! "^[1;31mA^[0mB^[7mC^[42mD^[39mE^[mF"))
-    (write (spec-attrs h 0 6)))
+    (write (list (spec-attrs h 0 6) (spec-styles h 0 6))))
 ```
 ---
-    (10 1 3 67 67 1)
+    ((2 1 3 4 4 1) ("0;1;31" "0" "0;7" "0;7;42" "0;7;42" "0"))
+
+### the attributes, each set and reset
+
+```tmux
+(do (def h (spec-screen vt-feed-pure! "^[1;2;3;4;5;7;8;9mA^[22mB^[23;24mC^[25;27mD^[28;29mE^[21mF^[4:0mG^[4:3mH^[6mI"))
+    (write (spec-styles h 0 9)))
+```
+---
+    ("0;1;2;3;4;5;7;8;9" "0;3;4;5;7;8;9" "0;5;7;8;9" "0;8;9" "0" "0;4" "0" "0;4" "0;4")
+
+### the colours: 8, bright, 256 and RGB, with semicolons or colons, and their resets
+
+```tmux
+(do (def h (spec-screen vt-feed-pure! "^[31;42mA^[91;102mB^[38;5;196;48;5;21mC^[38;2;1;2;3;48;2;250;0;9mD^[38:5:99mE^[38:2::10:20:30mF^[48:2:7:8:9mG^[39mH^[49mI"))
+    (write (spec-styles h 0 9)))
+```
+---
+    ("0;31;42" "0;91;102" "0;38;5;196;48;5;21" "0;38;2;1;2;3;48;2;250;0;9" "0;38;5;99;48;2;250;0;9" "0;38;2;10;20;30;48;2;250;0;9" "0;38;2;10;20;30;48;2;7;8;9" "0;48;2;7;8;9" "0")
+
+### an underscore's colour is passed over, and so is a colour that names none
+
+```tmux
+(do (def h (spec-screen vt-feed-pure! "^[58;5;9;1mA^[58:2::1:2:3;3mB^[38;7mC^[m^[38;5mD"))
+    (write (spec-styles h 0 4)))
+```
+---
+    ("0;1" "0;1;3" "0;1;3" "0")
+
+### a sequence with a private marker is not an SGR
+
+```tmux
+(do (def h (spec-screen vt-feed-pure! "^[>4;1mA^[?1mB"))
+    (write (spec-styles h 0 2)))
+```
+---
+    ("0" "0")
+
+### a style takes one number however often it is set, and a table that fills gives up the styles no cell has
+
+```tmux
+(do (def h (vt-make-history 2 4 0))
+    (def colour (fn (_ i) (Str8 append "^[38;5;" ((prim-ref (lit convert) (lit to)) (& i 255) (Type named STRING) 10)
+                            ";48;5;" ((prim-ref (lit convert) (lit to)) (>> i 8) (Type named STRING) 10) "mx\r")))
+    (spec-feed! vt-feed-pure! h "^[31mA^[32mB^[31mC")
+    (def before (spec-attrs h 0 3))
+    ((fn (self i) (when (< i 600) (do (spec-feed! vt-feed-pure! h (colour i)) (self (+ i 1))))) 0)
+    (write (list before (spec-styles h 0 3))))
+```
+---
+    ((2 3 2) ("0;38;5;87;48;5;2" "0;32" "0;31"))
 
 ## the render
 
@@ -369,6 +423,17 @@ what every sequence does from there.
 ```
 ---
     ("^[1;1H^[0mab^[0;31mc^[0m                                                                             ^[3;1H^[0;31mz^[0m                                                                               " 0)
+
+### a render writes each run's style as its SGR, colours of every form
+
+```tmux
+(do (def h (vt-make 2 8))
+    (vt-render-pure! h)
+    (spec-feed! vt-feed-pure! h "a^[1;38;5;9mb^[3;48:2::1:2:3mc^[mde")
+    (write (spec-rendered h (vt-render-pure! h))))
+```
+---
+    "^[1;1H^[0ma^[0;1;38;5;9mb^[0;1;3;38;5;9;48;2;1;2;3mc^[0mde   "
 
 ### a render at an origin puts each row's cursor move where the screen sits on the terminal
 
@@ -525,19 +590,73 @@ what every sequence does from there.
 
 ```tmux
 (do (def h (spec-screen vt-feed-pure! "^[31mred^[?1049h^[0mA^[?1049lX"))
-    (write (spec-attrs h 0 4)))
+    (write (spec-styles h 0 4)))
 ```
 ---
-    (9 9 9 9)
+    ("0;31" "0;31" "0;31" "0;31")
 
 ### the alternate screen is cleared with the default attribute, not the current one
 
 ```tmux
 (do (def h (spec-screen vt-feed-pure! "^[42m^[?1049hA"))
-    (write (spec-attrs h 0 3)))
+    (write (spec-styles h 0 3)))
 ```
 ---
-    (65 1 1)
+    ("0;42" "0" "0")
+
+## modes
+
+### ?25 hides the cursor, ?1 asks for SS3 cursor keys, ?2004 for bracketed pastes; l undoes each, and others are passed over
+
+```tmux
+(do (def h (spec-screen vt-feed-pure! ""))
+    (def modes (fn (_) (list (vt-cursor-shown? h) (vt-cursor-keys? h) (vt-bracketed? h))))
+    (def before (modes))
+    (spec-feed! vt-feed-pure! h "^[?25l^[?1;2004h^[?7l^[4h")
+    (def set (modes))
+    (spec-feed! vt-feed-pure! h "^[?25h^[?1;2004l")
+    (write (list before set (modes))))
+```
+---
+    ((#t #f #f) (#f #t #t) (#t #f #f))
+
+### a resized screen keeps its modes
+
+```tmux
+(do (def h (vt-carry (spec-screen vt-feed-pure! "^[?25l^[?2004h") 10 20))
+    (write (list (vt-cursor-shown? h) (vt-bracketed? h))))
+```
+---
+    (#f #t)
+
+## SU and SD
+
+### SU scrolls the region up, each row to the history, the cursor kept
+
+```tmux
+(do (def h (spec-screen vt-feed-pure! "1\r\n2\r\n3^[2S"))
+    (write (list (spec-rows h) (spec-history h))))
+```
+---
+    (((0 "3") ('cursor 2 1)) (2 "1" "2"))
+
+### SU within a region keeps its top rows, past its size the whole region
+
+```tmux
+(do (def h (spec-screen vt-feed-pure! "1\r\n2\r\n3\r\n4^[2;3r^[9S"))
+    (write (list (spec-rows h) (spec-history h))))
+```
+---
+    (((0 "1") (3 "4") ('cursor 0 0)) (2 "2" "3"))
+
+### SD scrolls the region down, to the history nothing; a private or five-parameter SD is passed over
+
+```tmux
+(do (def h (spec-screen vt-feed-pure! "1\r\n2\r\n3^[T^[?T^[1;2;3;4;5T"))
+    (write (list (spec-rows h) (spec-history h))))
+```
+---
+    (((1 "1") (2 "2") (3 "3") ('cursor 2 1)) (0))
 
 ## UTF-8
 

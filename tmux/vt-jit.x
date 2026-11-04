@@ -16,8 +16,8 @@
 ; The feed is one function, (fn (self a) ...), over the screen's state words at a: it
 ; takes a byte a turn and loops by a tail self-call, which the assembler
 ; lane compiles as a jump, so a whole read is one call.  Work that spans
-; cells -- a scroll, an erase, an SGR list -- is a mode the loop runs a
-; cell or a parameter a turn before it reads another byte; a non-tail
+; cells -- a scroll, an erase -- is a mode the loop runs a cell a turn
+; before it reads another byte; a non-tail
 ; call would cost a consed frame each.  The words are vt.x's, so its
 ; render and its rows read either engine's screen.
 ;
@@ -42,12 +42,11 @@
         (pair 'J 45) (pair 'X 46) (pair 'NMODE 47) (pair 'NK 48) (pair 'NJ 49) (pair 'B 50)
         (pair 'OUT 6) (pair 'RR 51) (pair 'RC 52) (pair 'RS 53) (pair 'RO 54) (pair 'RA 55)
         (pair 'OROW 56) (pair 'OCOL 57)
-        (pair 'SC 36) (pair 'SA 37) (pair 'ALT 38) (pair 'ASAVED 39)
-        (pair 'AROW 58) (pair 'ACOL 59) (pair 'AATTR 60)
-        (pair 'EXT 10) (pair 'SEXT 61) (pair 'UNEED 63) (pair 'RX 65) (pair 'RN 66)
-        (pair 'MAP 67) (pair 'SMAP 68) (pair 'RT 70) (pair 'RE 71) (pair 'RH 72) (pair 'RB 73)
+        (pair 'ALT 38)
+        (pair 'EXT 10) (pair 'UNEED 63) (pair 'RX 65) (pair 'RN 66)
+        (pair 'MAP 67) (pair 'RT 70) (pair 'RE 71) (pair 'RH 72) (pair 'RB 73)
         (pair 'HC 74) (pair 'HA 75) (pair 'HX 76) (pair 'HLIM 77) (pair 'HHEAD 78) (pair 'HCOUNT 79)
-        (pair 'HD 80)))
+        (pair 'HD 80) (pair 'SGRB 82) (pair 'COLON 85)))
 (def %vj-params 20)
 
 ; A cell's extended slot copied with it when the cell holds a character
@@ -65,14 +64,11 @@
 
 ; The modes: 0 reading bytes, 1 blank cells K..J-1, 2 copy X cells up
 ; (K the destination, J the source, ascending), 3 copy X cells down
-; (descending), 5 apply SGR parameter K, 6 save cells K..J-1 to the
-; alternate screen's buffers, 7 restore them, 8 look from parameter K for
-; one naming an alternate screen, 9 blank cells K..J-1 with the default
-; attribute, 11 turn the map's rows K..RE up one X times, 12 down, 13 save
-; the map then the cells, 14 restore the map, 15 copy cells K..J-1 to the
-; history's from HD.  Modes 1, 2, 3, 7 and 15 chain to NMODE with NK and
-; NJ when they end.  An ED is tmux/vt's, handed over as a byte past ASCII
-; is.
+; (descending), 11 turn the map's rows K..RE up one X times, 12 down, 15
+; copy cells K..J-1 to the history's from HD.  Modes 1, 2, 3 and 15 chain
+; to NMODE with NK and NJ when they end.  An ED, an SGR, a mode set or
+; reset, an SU and an SD are tmux/vt's, handed over as a byte past ASCII
+; is, and so is a colon between parameters.
 ;
 ; Cells are found through the row map, (CELL ROW COL), and the dirty
 ; marks go by the screen's rows: an edit within a row marks it as it
@@ -129,21 +125,6 @@
                        (if (< HCOUNT HLIM) (set HCOUNT (+ HCOUNT 1))
                          (set HHEAD (if (< (+ HHEAD 1) HLIM) (+ HHEAD 1) 0)))
                        (set K (CELL TOP 0)) (set J (+ K COLS)) (set MODE 15))))
-          ((eq? (first e) 'ALT-SWITCH)
-            ; the alternate screen up (h) or down (l) for mode P, as tmux/vt's
-            ; %alt-on! and %alt-off!: a save then a clear, or a restore
-            (self (list 'if '(= B 104)
-                    (list 'if '(= ALT 1) '(set MODE 0)
-                      (list 'do (list 'set 'ASAVED (list 'if (list '= (List ref 1 e) 1049) 1 0))
-                        '(set AROW ROW) '(set ACOL COL) '(set AATTR ATTR) '(set ALT 1)
-                        '(set K 0) '(set MODE 13)))
-                    (list 'if '(= ALT 0) '(set MODE 0)
-                      (list 'do
-                        (list 'if (list 'and (list '= (List ref 1 e) 1049) '(= ASAVED 1))
-                          '(do (set ROW AROW) (set COL ACOL) (set ATTR AATTR)) 0)
-                        '(set ASAVED 0) '(set ALT 0)
-                        '(set K 0) '(set J (* ROWS COLS)) '(set NMODE 14) '(set NK 0) '(set NJ 0)
-                        '(set MODE 7))))))
           ((eq? (first e) 'DIGITS)
             ; a number of at most three digits, in decimal
             (self (list 'do (list 'set 'X (List ref 1 e))
@@ -157,8 +138,6 @@
                     '(set NP (+ NP 1)) '(set NUM -1))))
           (#t (List map self e)))))))
 
-; One cell of a mode's walk over the whole buffer: its row marked.
-(def %vj-dirty '(%mem-byte-set-at! DIRTY (/ K COLS) 1))
 (def %vj-chain '(do (set MODE NMODE) (set K NK) (set J NJ) (set NMODE 0)))
 
 ; One turn of blanking cells K..J-1 with ATTR: a word where K is
@@ -191,10 +170,6 @@
     (list '(= MODE 1) (list 'if '(< K J) %vj-blank-step %vj-chain))
     (list '(= MODE 11) (%vj-turn #t))
     (list '(= MODE 12) (%vj-turn #f))
-    (list '(= MODE 13)
-      '(if (< K ROWS)
-         (do (%mem-set-at! SMAP K (ROWAT K)) (set K (+ K 1)))
-         (do (set K 0) (set J (* ROWS COLS)) (set NMODE 9) (set NK 0) (set NJ (* ROWS COLS)) (set MODE 6))))
     (list '(= MODE 15)
       (list 'if '(< K J)
         (list 'if (list 'and '(and (< (+ K 7) J) (and (= (& K 7) 0) (= (& HD 7) 0)))
@@ -207,8 +182,6 @@
                 '(%mem-byte-set-at! HA HD (%mem-byte-ref-at ATTRS K))
                 '(set K (+ K 1)) '(set HD (+ HD 1))))
         %vj-chain))
-    (list '(= MODE 14)
-      '(if (< K ROWS) (do (%mem-set-at! MAP K (%mem-ref-at SMAP K)) (set K (+ K 1))) (set MODE 0)))
     ; a word a turn where both ends are word-aligned and eight remain, else a byte
     (list '(= MODE 2)
       (list 'if '(> X 0)
@@ -234,56 +207,7 @@
                 '(%mem-byte-set-at! ATTRS K (%mem-byte-ref-at ATTRS J))
                 '(set K (- K 1)) '(set J (- J 1)) '(set X (- X 1))))
         %vj-chain))
-    (list '(= MODE 6)
-      (list 'if '(< K J)
-        (list 'if (list 'and '(< (+ K 7) J) (%vj-ascii-word '(%mem-ref-at CELLS (>> K 3))))
-          '(do (%mem-set-at! SC (>> K 3) (%mem-ref-at CELLS (>> K 3)))
-               (%mem-set-at! SA (>> K 3) (%mem-ref-at ATTRS (>> K 3)))
-               (set K (+ K 8)))
-          (list 'do (%vj-slot-copy 'SEXT 'K 'EXT 'CELLS 'K)
-                '(%mem-byte-set-at! SC K (%mem-byte-ref-at CELLS K))
-                '(%mem-byte-set-at! SA K (%mem-byte-ref-at ATTRS K))
-                '(set K (+ K 1))))
-        %vj-chain))
-    (list '(= MODE 7)
-      (list 'if '(< K J)
-        (list 'if (list 'and '(< (+ K 7) J) (%vj-ascii-word '(%mem-ref-at SC (>> K 3))))
-          (list 'do '(%mem-set-at! CELLS (>> K 3) (%mem-ref-at SC (>> K 3)))
-                '(%mem-set-at! ATTRS (>> K 3) (%mem-ref-at SA (>> K 3)))
-                %vj-dirty '(%mem-byte-set-at! DIRTY (/ (+ K 7) COLS) 1) '(set K (+ K 8)))
-          (list 'do (%vj-slot-copy 'EXT 'K 'SEXT 'SC 'K)
-                '(%mem-byte-set-at! CELLS K (%mem-byte-ref-at SC K))
-                '(%mem-byte-set-at! ATTRS K (%mem-byte-ref-at SA K))
-                %vj-dirty '(set K (+ K 1))))
-        %vj-chain))
-    (list '(= MODE 8)
-      '(if (< K NP)
-         (if (or (= (P K) 1049) (or (= (P K) 47) (= (P K) 1047)))
-           (ALT-SWITCH (P K))
-           (set K (+ K 1)))
-         (set MODE 0)))
-    (list '(= MODE 9)
-      (list 'if '(< K J)
-        (list 'if '(< (+ K 7) J)
-          (list 'do '(%mem-set-at! CELLS (>> K 3) 2314885530818453536)
-                '(%mem-set-at! ATTRS (>> K 3) 72340172838076673)
-                %vj-dirty '(%mem-byte-set-at! DIRTY (/ (+ K 7) COLS) 1) '(set K (+ K 8)))
-          (list 'do '(%mem-byte-set-at! CELLS K 32) '(%mem-byte-set-at! ATTRS K 1) %vj-dirty '(set K (+ K 1))))
-        '(set MODE 0)))
-    (list #t
-      (list 'if '(< K NP)
-        '(do (set X (- ATTR 1))
-             (set ATTR (+ 1 (match
-               ((= (P K) 0) 0)
-               ((= (P K) 1) (| X 1))
-               ((= (P K) 7) (| X 2))
-               ((and (> (P K) 29) (< (P K) 38)) (| (& X 67) (* 4 (- (P K) 29))))
-               ((= (P K) 39) (& X 67))
-               ((and (> (P K) 39) (< (P K) 48)) (| (& X 63) 64))
-               ((= (P K) 49) (& X 63))
-               (#t X))))
-             (set K (+ K 1)))
-        '(set MODE 0)))))
+    '(#t (set MODE 0))))
 
 ; A printable byte at the cursor.  A cursor past the last column wraps
 ; first, and the byte is read again once the wrap's scroll is done.  A
@@ -314,7 +238,7 @@
 
 (def %vj-esc
   '(match
-     ((= B 91) (do (set STATE 2) (set NP 0) (set NUM -1) (set PRIV 0)))
+     ((= B 91) (do (set STATE 2) (set NP 0) (set NUM -1) (set PRIV 0) (set COLON 0)))
      ((= B 93) (set STATE 3))
      ((= B 40) (set STATE 4))
      ((= B 41) (set STATE 4))
@@ -328,7 +252,6 @@
 
 (def %vj-final
   '(match
-     ((= B 109) (if (= NP 0) (set ATTR 1) (do (set K 0) (set MODE 5))))
      ((= B 72) (GOTO (- (ARG 0 1) 1) (- (ARG 1 1) 1)))
      ((= B 102) (GOTO (- (ARG 0 1) 1) (- (ARG 1 1) 1)))
      ((= B 65) (GOTO (- ROW (ARG 0 1)) COL))
@@ -362,8 +285,6 @@
            (set X (- (- COLS COL) X))
            (%mem-byte-set-at! DIRTY ROW 1)
            (set NMODE 1) (set MODE 3)))
-     ((= B 104) (if (= PRIV 1) (do (set K 0) (set MODE 8)) 0))
-     ((= B 108) (if (= PRIV 1) (do (set K 0) (set MODE 8)) 0))
      (#t 0)))
 
 (def %vj-csi
@@ -371,6 +292,7 @@
     '((and (> B 47) (< B 58)) (set NUM (+ (* (if (< NUM 0) 0 NUM) 10) (- B 48))))
     '((= B 59) (PUSH (if (< NUM 0) 0 NUM)))
     '((= B 63) (set PRIV 1))
+    '((and (> B 59) (< B 63)) (set PRIV 2))
     (list '(and (> B 63) (< B 127))
       (list 'do '(if (< NUM 0) (if (> NP 0) (PUSH 0) 0) (PUSH NUM)) '(set STATE 0) %vj-final))
     '(#t 0)))
@@ -397,9 +319,12 @@
         (list 'do '(set B (%mem-byte-ref-at IN POS))
           ; a byte past ASCII, or one where a character is part read, is
           ; tmux/vt's: answer 1, POS at it, for the driver to hand over.
-          ; So is an ED's final, as an erase of the screen may scroll it
-          ; into the history first.
-          (list 'if '(or (or (> UNEED 0) (and (= STATE 0) (> B 127))) (and (= STATE 2) (= B 74)))
+          ; So are the finals of an ED, which may scroll the screen into
+          ; the history first, an SGR, which looks its style up, an h or
+          ; an l, an SU and an SD, and a colon between parameters.
+          (list 'if '(or (or (> UNEED 0) (and (= STATE 0) (> B 127)))
+                         (and (= STATE 2) (or (or (or (= B 74) (= B 109)) (or (= B 104) (= B 108)))
+                                              (or (or (= B 83) (= B 84)) (= B 58)))))
             1
             (list 'do
               (list 'if '(> STATE 0)
@@ -412,7 +337,8 @@
 
 ; The render, compiled: vt.x's vt-render! as a loop over RR (the row), RC
 ; (the column) and RS (0 a row to start, 1 a run to start, 2 in a run of
-; attribute RA, 3 writing a slot's bytes, RX of RN), writing at OUT + RO.
+; attribute RA, 3 writing a slot's bytes, RX of RN, 4 writing RA's SGR,
+; RX of RN, from its slot of 64 bytes), writing at OUT + RO.
 ; RB is the row's first cell, found through the map as the row starts.
 ; Answers RO, the byte count.
 (def %vr-body
@@ -432,14 +358,12 @@
            (do (%mem-byte-set-at! DIRTY RR 0) (set RR (+ RR 1)) (set RS 0) (self a)))
          ((= RS 1)
            (do (set RA (%mem-byte-ref-at ATTRS (+ RB RC)))
-               (set X (- RA 1))
-               (EMIT 27) (EMIT 91) (EMIT 48)
-               (if (= (& X 1) 1) (do (EMIT 59) (EMIT 49)) 0)
-               (if (= (& X 2) 2) (do (EMIT 59) (EMIT 55)) 0)
-               (if (> (& (>> X 2) 15) 0) (do (EMIT 59) (EMIT 51) (EMIT (+ 47 (& (>> X 2) 15)))) 0)
-               (EMIT 109)
-               (set RS 2)
+               (set RN (%mem-byte-ref-at SGRB (* RA 64))) (set RX 0) (set RS 4)
                (self a)))
+         ((= RS 4)
+           (if (< RX RN)
+             (do (EMIT (%mem-byte-ref-at SGRB (+ (* RA 64) (+ RX 1)))) (set RX (+ RX 1)) (self a))
+             (do (set RS 2) (self a))))
          ((= RS 3)
            (if (< RX RN)
              (do (EMIT (%mem-byte-ref-at EXT (+ (* (+ RB RC) 16) RX))) (set RX (+ RX 1)) (self a))
@@ -485,15 +409,24 @@
       (%put p (%put p at (+ 48 (%quot n 10))) (+ 48 (%rem n 10))))))
 (def %quot (prim-ref (lit int) (lit /)))
 
-; The CSI finals the screen reads, and the SGR codes it keeps.
-(def %finals (list 72 102 65 66 67 68 71 100 75 74 114 76 77 88 80 64 109))
-(def %sgrs (list 0 1 7 31 32 33 39 41 44 49))
+; The CSI finals the screen reads, and SGR parameters of each form it
+; reads, and one with a private marker it does not.  %text writes one.
+(def %finals (list 72 102 65 66 67 68 71 100 75 74 114 76 77 88 80 64 109 83 84))
+(def %sgrs
+  (list "0" "1" "7" "31" "32" "33" "39" "41" "44" "49" "2;3;4;5;9" "22;23;24" "38;5;196" "48;5;21"
+        "38;2;10;200;30" "48:2::1:2:3" "38:5:99" "4:3" "4:0" "92;103" "" ">4;1"))
+(def %text
+  (fn (_ p at t)
+    ((fn (self i at) (if (= i ((prim-ref (lit str) (lit byte-len)) t)) at
+                       (self (+ i 1) (%put p at ((prim-ref (lit ptr) (lit ref)) ((prim-ref (lit str) (lit ->ptr)) t) i 1)))))
+     0 at)))
 (def %pick (fn (self xs i) (if (= i 0) (first xs) (self (rest xs) (- i 1)))))
 
 ; N operations from SEED as bytes: printable runs, CR and LF, backspace and
 ; tab, CSI sequences with up to two parameters (some empty), ESC 7 8 M D E,
 ; an OSC title, a charset designation, the alternate screen (?1049, ?47,
-; ?1047), and characters past ASCII: narrow, wide, an emoji, a combining
+; ?1047) and the modes the screen keeps (?25, ?1, ?2004, ?1000), and
+; characters past ASCII: narrow, wide, an emoji, a combining
 ; mark, a heart widened by U+FE0F, a zero-width space, a byte no
 ; character starts with and a character cut short.  Answers (BUF . LEN),
 ; BUF NUL-terminated.
@@ -519,7 +452,7 @@
         ((= k 14) (%put p (%put p at 27) (%pick (list 55 56 77 68 69) (%rem y 5))))
         ((= k 15) (%put p (%put p (%put p (%put p (%put p at 27) 93) 48) 59) 7))
         ((= k 16) (%put p (%put p (%put p at 27) 40) 66))
-        ((= k 17) (%alt p at (= (& y 1) 0) (%pick (list 1049 47 1047 1049) (%rem (>> y 1) 4))))
+        ((= k 17) (%alt p at (= (& y 1) 0) (%pick (list 1049 47 1047 1049 25 1 2004 1000) (%rem (>> y 1) 8))))
         ((< k 23) (%bytes p at (%pick %chars (%rem y 8))))
         (#t (%put p at 9))))))
 
@@ -534,12 +467,12 @@
 
 (def %csi
   (fn (_ p at y)
-    (def f (%pick %finals (%rem y 17)))
+    (def f (%pick %finals (%rem y 19)))
     (def z (%lcg y))
     (def at1 (%put p (%put p at 27) 91))
     (def at2
       (if (= f 109)
-        (%digits p at1 (%pick %sgrs (%rem z 10)))
+        (%text p at1 (%pick %sgrs (%rem z 22)))
         (match
           ((= (%rem z 3) 0) at1)
           ((= (%rem z 3) 1) (%digits p at1 (%rem (>> z 4) 30)))
@@ -614,7 +547,7 @@
 ; change to them.
 (def vt-jit-make
   (fn (_)
-    (jit-group "x-tmux-vt-8" (fn (_) (list (vt-jit-form) (vt-render-form)))
+    (jit-group "x-tmux-vt-9" (fn (_) (list (vt-jit-form) (vt-render-form)))
       (fn (_ fns replayed?)
         (def engine (pair (first fns) (first (rest fns))))
         (unless replayed?

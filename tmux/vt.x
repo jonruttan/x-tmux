@@ -7,9 +7,19 @@
 ; @license MIT No Attribution (MIT-0)
 ;
 ; The screen is two byte buffers of ROWS x COLS: the cells, and each cell's
-; attribute (1 + its SGR bits, never 0, so strspn can find a run of one).
-; A row written since the last render is marked in the dirty buffer, and a
-; render writes those rows alone, as a terminal redraws them.
+; attribute, its style's number in the screen's table of styles (never 0,
+; so strspn can find a run of one).  A row written since the last render
+; is marked in the dirty buffer, and a render writes those rows alone, as
+; a terminal redraws them.
+;
+; A style is a word: the attribute bits (1 bold, 2 dim, 4 italics, 8
+; underscore, 16 blink, 32 reverse, 64 hidden, 128 strikethrough), the
+; foreground colour from bit 8 and the background from bit 34.  A colour
+; is 26 bits: its form from bit 24 (0 the default, 1 one of the 16 named
+; by 30-37 and 90-97, 2 one of 256, 3 RGB) and its value.  Style 1 is the
+; default.  Each style's SGR, written as it is first used, is what a
+; render puts before a run of its cells.  A table that fills is swept: a
+; style no cell, cursor or saved cursor has is given up.
 ;
 ; The rows are kept in no fixed order: the row map, a word a row, gives
 ; the buffers' row that holds each of the screen's.  A scroll turns the
@@ -87,7 +97,10 @@
 ; scratch; words 70 to 73 are the compiled engine's again.  Words 74 to 79
 ; are the history's: its cells', attributes' and extended slots'
 ; addresses, the most rows it keeps, its oldest row's slot, and how many
-; rows it holds.  Word 80 is the compiled engine's.
+; rows it holds.  Word 80 is the compiled engine's.  Words 81 to 83 are the
+; styles': the table's address, its SGRs', and how many entries it uses.
+; Word 84 holds the modes a program sets, 85 which parameters followed a
+; colon.
 (def %ROWS 0) (def %COLS 8) (def %CP 16) (def %AP 24) (def %DP 32) (def %SP 40)
 (def %OP 48) (def %ONE 56) (def %ROW 64) (def %COL 72) (def %EP 80) (def %ATTR 88)
 (def %STATE 96) (def %NUM 104) (def %NP 112) (def %PRIVATE 120) (def %TOP 128)
@@ -99,7 +112,18 @@
 (def %SEP 488) (def %UACC 496) (def %UNEED 504) (def %MARKS 512)
 (def %MAP 536) (def %SMAP 544) (def %TMAP 552)
 (def %HC 592) (def %HA 600) (def %HX 608) (def %HLIM 616) (def %HHEAD 624) (def %HCOUNT 632)
-(def %WORDS 81)
+(def %STY 648) (def %SGRB 656) (def %NSTY 664) (def %MODES 672) (def %COLON 680)
+(def %WORDS 86)
+
+; The styles a screen keeps, and the bytes a style's SGR slot holds: its
+; length, then the SGR.
+(def %STYLES 256) (def %SLOT 64)
+
+; The modes' bits: the cursor hidden (?25l), cursor keys sent as SS3
+; (?1h), pastes bracketed (?2004h), and the mouse's reports (?1000h,
+; ?1002h, ?1003h, ?1006h), kept but not yet sent.
+(def %HIDDEN 1) (def %APP-CURSOR 2) (def %BRACKETED 4)
+(def %mode-bits (lit ((25 . 1) (1 . 2) (2004 . 4) (1000 . 8) (1002 . 16) (1003 . 32) (1006 . 64))))
 
 ; The rows of history a screen keeps, tmux's history-limit.
 (def %HISTORY 2000)
@@ -144,7 +168,9 @@
     (def attrs (%buffer (* rows cols) 1))
     (def dirty (%buffer rows 1))
     (def stop (%stops))
-    (def out (%make-str (+ 64 (* rows (+ 16 (* cols 12))))))
+    (def out (%make-str (+ 64 (* rows (+ 16 (* cols (+ 24 %SLOT)))))))
+    (def styles (%buffer (* 8 %STYLES) 0))
+    (def sgrs (%buffer (* %SLOT %STYLES) 0))
     (def one (%buffer 1 1))
     (def saved-cells (%buffer (* rows cols) 32))
     (def saved-attrs (%buffer (* rows cols) 1))
@@ -169,9 +195,12 @@
     (%w! s %SCP (%ptr->int (%str->ptr saved-cells))) (%w! s %SAP (%ptr->int (%str->ptr saved-attrs)))
     (%w! s %EP (%ptr->int (%str->ptr ext))) (%w! s %SEP (%ptr->int (%str->ptr saved-ext)))
     (%w! s %MARKS (%ptr->int (%str->ptr marks)))
+    (%w! s %STY (%ptr->int (%str->ptr styles))) (%w! s %SGRB (%ptr->int (%str->ptr sgrs)))
+    (%w! s %NSTY 2)
+    (%style-bytes! (+ (%w s %SGRB) %SLOT) 0)
     (%w! s %ATTR 1) (%w! s %NUM -1) (%w! s %BOTTOM (- rows 1))
     (pair (list words cells attrs dirty stop out one saved-cells saved-attrs ext saved-ext marks
-            map saved-map scratch history-cells history-attrs history-ext)
+            map saved-map scratch history-cells history-attrs history-ext styles sgrs)
           s)))
 
 ; A row map in order: row I in buffer row I.
@@ -407,27 +436,137 @@
 (def %p (fn (_ s i) (if (< i (%w s %NP)) (%w s (+ %PARAMS (* 8 i))) 0)))
 (def %arg (fn (_ s i dflt) (def x (%p s i)) (if (= x 0) dflt x)))
 
-; The SGR bits: 1 bold, 2 reverse, fg 1..8 times 4, bg 64; 1 + bits keeps
-; the byte non-zero.
+; --- styles ----------------------------------------------------------------
+
+; An SGR's parameters applied to the cursor's style, as tmux reads them.
 (def %sgr!
-  (fn (self s i)
-    (if (< i (%w s %NP))
-      (self s (%sgr-one! s (%p s i) i))
-      (if (= (%w s %NP) 0) (%w! s %ATTR 1) ()))))
-(def %sgr-one!
-  (fn (_ s p i)
-    (def a (- (%w s %ATTR) 1))
-    (%w! s %ATTR
-      (+ 1 (match
-             ((= p 0) 0)
-             ((= p 1) (| a 1))
-             ((= p 7) (| a 2))
-             ((if (< 29 p) (< p 38) #f) (| (& a 67) (* 4 (+ (- p 30) 1))))
-             ((= p 39) (& a 67))
-             ((if (< 39 p) (< p 48) #f) (| (& a 63) 64))
-             ((= p 49) (& a 63))
-             (#t a))))
-    (+ i 1)))
+  (fn (_ s)
+    (def n (%min (%w s %NP) 16))
+    (%w! s %ATTR (%intern! s (if (= n 0) 0 (%sgr-apply s (%style s (%w s %ATTR)) 0 n))))))
+(def %style (fn (_ s i) (%pref (%addr s %STY) (* 8 i) 8)))
+
+; The attribute bits SGR 1 to 9 set, by their parameter; 6 sets none.
+(def %flag (fn (_ p) (List ref (- p 1) (lit (1 2 4 8 16 0 32 64 128)))))
+(def %clear (fn (_ key bits) (- key (& key bits))))
+(def %FG (<< 67108863 8)) (def %BG (<< 67108863 34))
+(def %fg (fn (_ key c) (| (%clear key %FG) (<< c 8))))
+(def %bg (fn (_ key c) (| (%clear key %BG) (<< c 34))))
+
+; KEY with parameters I to N-1 applied.
+(def %sgr-apply
+  (fn (self s key i n)
+    (if (< i n)
+      ((fn (_ p)
+         (match
+           ((= p 0) (self s 0 (+ i 1) n))
+           ((if (= p 4) (%colon? s (+ i 1)) #f)
+             (self s (if (= (%p s (+ i 1)) 0) (%clear key 8) (| key 8)) (%past-colons s (+ i 1)) n))
+           ((if (< 0 p) (< p 10) #f) (self s (| key (%flag p)) (+ i 1) n))
+           ((= p 21) (self s (| key 8) (+ i 1) n))
+           ((= p 22) (self s (%clear key 3) (+ i 1) n))
+           ((if (< 22 p) (< p 30) #f) (self s (%clear key (%flag (- p 20))) (+ i 1) n))
+           ((if (< 29 p) (< p 38) #f) (self s (%fg key (+ 16777216 (- p 30))) (+ i 1) n))
+           ((if (< 89 p) (< p 98) #f) (self s (%fg key (+ 16777216 (- p 82))) (+ i 1) n))
+           ((if (< 39 p) (< p 48) #f) (self s (%bg key (+ 16777216 (- p 40))) (+ i 1) n))
+           ((if (< 99 p) (< p 108) #f) (self s (%bg key (+ 16777216 (- p 92))) (+ i 1) n))
+           ((= p 39) (self s (%fg key 0) (+ i 1) n))
+           ((= p 49) (self s (%bg key 0) (+ i 1) n))
+           ((= p 38) (%colour s key i n self %fg))
+           ((= p 48) (%colour s key i n self %bg))
+           ((= p 58) (%colour s key i n self (fn (_ k c) k)))
+           (#t (self s key (+ i 1) n))))
+       (%p s i))
+      key)))
+
+; Whether parameter I followed a colon; the first parameter from I on that
+; did not.
+(def %colon? (fn (_ s i) (if (< i 16) (= 1 (& 1 (>> (%w s %COLON) i))) #f)))
+(def %past-colons (fn (self s i) (if (%colon? s i) (self s (+ i 1)) i)))
+
+; A colour named from parameter I, 38, 48 or 58: 5;N or 2;R;G;B, or with
+; colons 5:N, 2:R:G:B or 2::R:G:B; SET puts it in KEY, and APPLY goes on
+; after it.  One that names none is passed over.
+(def %colour
+  (fn (_ s key i n apply set)
+    (def j (+ i 1))
+    (def colons (- (%past-colons s j) j))
+    (def form (%p s j))
+    (def rgb (fn (_ at) (+ 50331648 (| (<< (& (%p s at) 255) 16) (| (<< (& (%p s (+ at 1)) 255) 8) (& (%p s (+ at 2)) 255))))))
+    (match
+      ((< 0 colons)
+        (apply s (match
+                   ((if (= form 5) (< 1 colons) #f) (set key (+ 33554432 (& (%p s (+ j 1)) 255))))
+                   ((if (= form 2) (< 4 colons) #f) (set key (rgb (+ j 2))))
+                   ((if (= form 2) (= colons 4) #f) (set key (rgb (+ j 1))))
+                   (#t key))
+          (+ j colons) n))
+      ((if (= form 5) (< (+ j 1) n) #f) (apply s (set key (+ 33554432 (& (%p s (+ j 1)) 255))) (+ j 2) n))
+      ((if (= form 2) (< (+ j 3) n) #f) (apply s (set key (rgb (+ j 1))) (+ j 4) n))
+      (#t (apply s key (+ j 1) n)))))
+
+; KEY's number in the table: the entry that holds it, else a new one, else
+; one given up by a sweep; style 1 when every entry is in use.
+(def %intern!
+  (fn (_ s key)
+    (def found (%find-style s key))
+    (if (< 0 found) found
+      ((fn (_ at) (if (< 0 at) (%put-style! s at key) 1))
+       (if (< (%w s %NSTY) %STYLES)
+         ((fn (_ at) (%w! s %NSTY (+ at 1)) at) (%w s %NSTY))
+         ((fn (_ at) (if (< 0 at) at (do (%sweep! s) (%find-style s -1)))) (%find-style s -1)))))))
+(def %find-style
+  (fn (_ s key)
+    (def table (%addr s %STY))
+    (def n (%w s %NSTY))
+    ((fn (self i) (if (< i n) (if (= (%pref table (* 8 i) 8) key) i (self (+ i 1))) 0)) 1)))
+(def %put-style!
+  (fn (_ s at key)
+    (%pset (%addr s %STY) (* 8 at) key 8)
+    (%style-bytes! (+ (%w s %SGRB) (* %SLOT at)) key)
+    at))
+
+; Every style from 2 that no cell of the screen, its saved screen or its
+; history has, nor the cursor or the cursor ?1049 saved, given up.
+(def %sweep!
+  (fn (_ s)
+    (def n (* (%w s %ROWS) (%w s %COLS)))
+    (def used?
+      (fn (_ i)
+        (if (= i (%w s %ATTR)) #t
+          (if (= i (%w s %AATTR)) #t
+            (if (not (= 0 (%call %c-memchr (%addr s %AP) i n))) #t
+              (if (not (= 0 (%call %c-memchr (%addr s %SAP) i n))) #t
+                (not (= 0 (%call %c-memchr (%addr s %HA) i (* (%w s %HLIM) (%w s %COLS)))))))))))
+    ((fn (self i) (when (< i %STYLES) (do (unless (used? i) (%pset (%addr s %STY) (* 8 i) -1 8)) (self (+ i 1))))) 2)))
+
+; KEY's SGR written to the slot at address AT: its length, then ESC [ 0,
+; each attribute's parameter, the foreground's and the background's, m.
+(def %style-bytes!
+  (fn (_ at key)
+    (def flags (fn (self at bits ps)
+                 (if (null? ps) at
+                   (self (if (= 0 (& bits (first (first ps)))) at (%b! (%b! at 59) (rest (first ps))))
+                         bits (rest ps)))))
+    (def end
+      (%b! (%colour-bytes! (%colour-bytes! (flags (%b! (%b! (%b! (+ at 1) 27) 91) 48) key
+                                              (lit ((1 . 49) (2 . 50) (4 . 51) (8 . 52) (16 . 53) (32 . 55) (64 . 56) (128 . 57))))
+                             (& (>> key 8) 67108863) 3 9 38)
+             (& (>> key 34) 67108863) 4 10 48)
+           109))
+    (%pset (%int->ptr at) 0 (- end (+ at 1)) 1)))
+; Colour C's parameters, ;3N ;9N ;38;5;N or ;38;2;R;G;B for a foreground
+; (BASE 3, BRIGHT 9, EXT 38): none for the default.
+(def %colour-bytes!
+  (fn (_ at c base bright ext)
+    (def v (& c 16777215))
+    (def form (>> c 24))
+    (match
+      ((= form 0) at)
+      ((if (= form 1) (< v 8) #f) (%dec! (%b! at 59) (+ (* base 10) v)))
+      ((= form 1) (%dec! (%b! at 59) (+ (* bright 10) (- v 8))))
+      ((= form 2) (%dec! (%b! (%dec! (%b! (%dec! (%b! at 59) ext) 59) 5) 59) v))
+      (#t (%dec! (%b! (%dec! (%b! (%dec! (%b! (%dec! (%b! (%dec! (%b! at 59) ext) 59) 2) 59) (>> v 16)) 59)
+                                (& (>> v 8) 255)) 59) (& v 255))))))
 
 ; A CSI sequence's final byte F.
 (def %csi!
@@ -435,7 +574,7 @@
     (def row (%w s %ROW)) (def col (%w s %COL))
     (def rows (%w s %ROWS)) (def cols (%w s %COLS))
     (match
-      ((= f 109) (%sgr! s 0))
+      ((= f 109) (if (= (%w s %PRIVATE) 0) (%sgr! s) ()))
       ((= f 72) (%goto! s (- (%arg s 0 1) 1) (- (%arg s 1 1) 1)))
       ((= f 102) (%goto! s (- (%arg s 0 1) 1) (- (%arg s 1 1) 1)))
       ((= f 65) (%goto! s (- row (%arg s 0 1)) col))
@@ -452,9 +591,32 @@
       ((= f 88) (%blank! s row col (%min (- cols 1) (- (+ col (%arg s 0 1)) 1))))
       ((= f 80) (%delete-chars! s row col cols (%min (%arg s 0 1) (- cols col))))
       ((= f 64) (%insert-chars! s row col cols (%min (%arg s 0 1) (- cols col))))
-      ((= f 104) (if (= (%w s %PRIVATE) 1) (%alt-on! s (%alt-mode s 0)) ()))
-      ((= f 108) (if (= (%w s %PRIVATE) 1) (%alt-off! s (%alt-mode s 0)) ()))
+      ((= f 104) (when (= (%w s %PRIVATE) 1) (do (%alt-on! s (%alt-mode s 0)) (%modes! s #t 0))))
+      ((= f 108) (when (= (%w s %PRIVATE) 1) (do (%alt-off! s (%alt-mode s 0)) (%modes! s #f 0))))
+      ((= f 83) (when (= (%w s %PRIVATE) 0) (%scroll-ups! s (%arg s 0 1))))
+      ((= f 84) (when (if (= (%w s %PRIVATE) 0) (< (%w s %NP) 2) #f) (%scroll! s (%w s %TOP) (%w s %BOTTOM) (- 0 (%arg s 0 1)))))
       (#t ()))))
+
+; SU: the region up N rows, each kept in the history as a line feed at the
+; bottom keeps it, as tmux scrolls it; the cursor stays.
+(def %scroll-ups!
+  (fn (self s n)
+    (when (< 0 n)
+      (do (%scroll-up! s (%w s %TOP) (%w s %BOTTOM))
+          (self s (%min (- n 1) (- (%w s %BOTTOM) (%w s %TOP))))))))
+
+; The private modes of an h (ON) or l, from parameter I: each the screen
+; keeps sets or clears its bit.  ?25 is kept as the cursor hidden.
+(def %modes!
+  (fn (self s on i)
+    (when (< i (%min (%w s %NP) 16))
+      (do (def bit (Assoc entry (%p s i) %mode-bits))
+          (unless (null? bit)
+            (%w! s %MODES
+              (if (if on (not (= (rest bit) %HIDDEN)) (= (rest bit) %HIDDEN))
+                (| (%w s %MODES) (rest bit))
+                (%clear (%w s %MODES) (rest bit)))))
+          (self s on (+ i 1))))))
 
 ; The alternate screen, as tmux keeps it.  ?1049h saves the cursor and its
 ; attribute, then shows a cleared screen; ?47h and ?1047h show one without
@@ -569,7 +731,7 @@
       ((= b 69) (%ground! s (%newline! s)))
       (#t (%w! s %STATE 0)))))
 (def %ground! (fn (_ s _x) (%w! s %STATE 0)))
-(def %csi-start! (fn (_ s) (%w! s %STATE 2) (%w! s %NP 0) (%w! s %NUM -1) (%w! s %PRIVATE 0)))
+(def %csi-start! (fn (_ s) (%w! s %STATE 2) (%w! s %NP 0) (%w! s %NUM -1) (%w! s %PRIVATE 0) (%w! s %COLON 0)))
 (def %save! (fn (_ s) (%w! s %SROW (%w s %ROW)) (%w! s %SCOL (%w s %COL)) (%w! s %STATE 0)))
 (def %restore! (fn (_ s) (%goto! s (%w s %SROW) (%w s %SCOL)) (%w! s %STATE 0)))
 (def %reverse-index!
@@ -584,7 +746,10 @@
     (match
       ((if (< 47 b) (< b 58) #f) (%w! s %NUM (+ (* (%max 0 (%w s %NUM)) 10) (- b 48))))
       ((= b 59) (%param! s (%max 0 (%w s %NUM))))
+      ((= b 58) (do (%param! s (%max 0 (%w s %NUM)))
+                    (when (< (%w s %NP) 16) (%w! s %COLON (| (%w s %COLON) (<< 1 (%w s %NP)))))))
       ((= b 63) (%w! s %PRIVATE 1))
+      ((if (< 59 b) (< b 63) #f) (%w! s %PRIVATE 2))
       ((if (< 63 b) (< b 127) #f) (%csi-end! s b))
       (#t ()))))
 (def %param!
@@ -673,16 +838,13 @@
         (%b! (%b! (%b! at (+ 48 (%quot n 100))) (+ 48 (%rem (%quot n 10) 10)))
              (+ 48 (%rem n 10)))))))
 
-; ESC [ 0 ;1 ;7 ;3N ;4N m, for the bits an attribute byte holds.
+; Style A's SGR, from its slot.
 (def %sgr-bytes!
-  (fn (_ at a)
-    (def bits (- a 1))
-    (def at1 (%b! (%b! (%b! at 27) 91) 48))
-    (def at2 (if (= (& bits 1) 1) (%b! (%b! at1 59) 49) at1))
-    (def at3 (if (= (& bits 2) 2) (%b! (%b! at2 59) 55) at2))
-    (def fg (& (>> bits 2) 15))
-    (def at4 (if (< 0 fg) (%b! (%b! (%b! at3 59) 51) (+ 47 fg)) at3))
-    (%b! at4 109)))
+  (fn (_ s at a)
+    (def slot (+ (%w s %SGRB) (* %SLOT a)))
+    (def n (%pref (%int->ptr slot) 0 1))
+    (%call %c-memcpy (%int->ptr at) (%int->ptr (+ slot 1)) n)
+    (+ at n)))
 
 (def vt-render-pure!
   (fn (_ h)
@@ -709,7 +871,7 @@
     (%max 1 (%min (%call %c-strspn (%at s %AP r c) one) (- (%w s %COLS) c)))))
 (def %render-run!
   (fn (_ s r c k at)
-    (%emit-cells! s r c (+ c k) (%sgr-bytes! at (%pref (%at s %AP r c) 0 1)))))
+    (%emit-cells! s r c (+ c k) (%sgr-bytes! s at (%pref (%at s %AP r c) 0 1)))))
 
 ; Cells C..E-1 of row R written from AT: runs of ASCII as they are, a
 ; character past ASCII as its slot's bytes, padding as nothing after the
@@ -743,6 +905,19 @@
 (def %cup! (fn (_ at row col) (%b! (%dec! (%b! (%dec! (%b! (%b! at 27) 91) row) 59) col) 72)))
 
 (def vt-out (fn (_ h) (%addr (rest h) %OP)))
+; Style I's SGR parameters, as a render writes them between ESC [ and m.
+(def vt-style
+  (fn (_ h i)
+    (def slot (+ (%w (rest h) %SGRB) (* %SLOT i)))
+    (def n (%pref (%int->ptr slot) 0 1))
+    (def s (%make-str (- n 2)))
+    (%call %c-memcpy (%str->ptr s) (%int->ptr (+ slot 3)) (- n 3))
+    ((prim-ref (lit str) (lit byte-sub)) s 0 (- n 3))))
+; Whether the program shows the cursor (?25), wants its cursor keys as
+; SS3 (?1), and its pastes bracketed (?2004).
+(def vt-cursor-shown? (fn (_ h) (= 0 (& (%w (rest h) %MODES) %HIDDEN))))
+(def vt-cursor-keys? (fn (_ h) (= %APP-CURSOR (& (%w (rest h) %MODES) %APP-CURSOR))))
+(def vt-bracketed? (fn (_ h) (= %BRACKETED (& (%w (rest h) %MODES) %BRACKETED))))
 (def vt-cursor (fn (_ h) (pair (%w (rest h) %ROW) (%w (rest h) %COL))))
 (def vt-size (fn (_ h) (pair (%w (rest h) %ROWS) (%w (rest h) %COLS))))
 
@@ -779,7 +954,15 @@
     (%w! t %ALT (%w s %ALT)) (%w! t %ASAVED (%w s %ASAVED))
     (%w! t %AROW (%min (%w s %AROW) (- rows 1))) (%w! t %ACOL (%min (%w s %ACOL) cols))
     (%w! t %AATTR (%w s %AATTR))
+    (%w! t %MODES (%w s %MODES))
+    (%carry-styles! s t)
     (vt-origin! n (%w s %OROW) (%w s %OCOL))))
+; S's styles, and their SGRs, T's: the cells T takes from S keep theirs.
+(def %carry-styles!
+  (fn (_ s t)
+    (%call %c-memcpy (%addr t %STY) (%addr s %STY) (* 8 %STYLES))
+    (%call %c-memcpy (%addr t %SGRB) (%addr s %SGRB) (* %SLOT %STYLES))
+    (%w! t %NSTY (%w s %NSTY))))
 ; One screen's rows of S, by its map at MAP, copied to T's in order: T is
 ; new, and its maps are in order.
 (def %carry-cells!
@@ -933,6 +1116,7 @@
                (%copy-row! t r %CP %AP %EP (%w s %CP) (%w s %AP) (%w s %EP) (* (%row s (- line count)) cols) cols))
              (self (+ r 1)))))
      0)
+    (%carry-styles! s t)
     (vt-origin! v (%w s %OROW) (%w s %OCOL))))
 
 ; The compiled engine's two functions, each (fn (self a)) over a screen's
@@ -976,4 +1160,4 @@
   vt-touch! vt-carry vt-row vt-row-length vt-attrs vt-history vt-history-row vt-history-attrs
   vt-history-same? vt-view vt-line vt-line-length
   vt-feed-pure! vt-render-pure! vt-feed-compiled! vt-render-compiled! vt-adopt!
-  vt-compiled?)
+  vt-compiled? vt-style vt-cursor-shown? vt-cursor-keys? vt-bracketed?)

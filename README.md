@@ -160,16 +160,33 @@ as tmux's scroll-on-clear does; ED 3 empties the history.
 
 Read: printable bytes (wrapping at the margin, tmux's cursor running to
 column 80 before a wrap), CR, LF, VT, FF, BS, TAB; CUP, HVP, CUU, CUD,
-CUF, CUB, CHA, VPA; EL, ED, ECH; ICH, DCH; IL, DL; DECSTBM, IND, RI,
-NEL; DECSC, DECRC; SGR bold, reverse, foreground and background; the
-alternate screen, ?1049 (with the cursor saved and restored), ?47 and
-?1047, as tmux keeps it; OSC strings and charset designations,
-swallowed.  UTF-8: a character takes the cells its width gives, wide
-ones two and combining marks none, by a table that agrees with tmux 3.8;
-a byte no character starts with, or a character cut short, is U+FFFD.
-The compiled engine hands each byte past ASCII to the reference, so text
-past ASCII reads at the reference's speed, and each ED.  Not yet: SU and
-SD, mouse and bracketed-paste modes.
+CUF, CUB, CHA, VPA; EL, ED, ECH; ICH, DCH; IL, DL; SU (each row kept in
+the history, as a line feed keeps it) and SD; DECSTBM, IND, RI, NEL;
+DECSC, DECRC; the alternate screen, ?1049 (with the cursor saved and
+restored), ?47 and ?1047, as tmux keeps it; OSC strings and charset
+designations, swallowed.  UTF-8: a character takes the cells its width
+gives, wide ones two and combining marks none, by a table that agrees
+with tmux 3.8; a byte no character starts with, or a character cut
+short, is U+FFFD.
+
+SGR: bold, dim, italics, underscore (4:0 to 4:5 too, any but 4:0 an
+underscore), blink, reverse, hidden and strikethrough, each with its
+reset; a foreground and a background of the 8 colours, the 8 bright
+ones (90-97, 100-107), the 256 (38;5;N) and RGB (38;2;R;G;B), with
+semicolons or colons; an underscore's colour (58) passed over.  A
+sequence with a private marker (`CSI > 4;1 m`) is not an SGR.  A cell's
+attribute byte numbers its style in the screen's table of 255, which a
+render writes as each style's SGR; a table that fills gives up the
+styles no cell uses.
+
+The modes a program sets: ?25l hides the terminal's cursor while its
+pane is the active one; ?1h has the arrows, Home and End sent to it as
+ESC O X, whichever the terminal sends; ?2004h brackets C-b `]`'s paste between
+ESC [ 200 ~ and ESC [ 201 ~, as `paste-buffer -p` does.  The mouse's
+modes (?1000, ?1002, ?1003, ?1006) are kept, but no mouse report is
+sent yet.  The compiled engine hands each byte past ASCII to the
+reference, so text past ASCII reads at the reference's speed, and each
+ED, SGR, SU, SD, mode set and reset, and colon between parameters.
 
 ## Configuration
 

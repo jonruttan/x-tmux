@@ -70,6 +70,9 @@
     (def s (vt-attrs h row))
     (List map (fn (_ i) (%spec-pref (%spec-str->ptr s) i 1)) (List range 0 n))))
 
+; ROW's first N cells' styles, each its SGR's parameters.
+(def spec-styles (fn (_ h row n) (List map (fn (_ a) (vt-style h a)) (spec-attrs h row n))))
+
 ; What a render of H wrote, N bytes, ESC shown as ^.
 (def spec-rendered
   (fn (_ h n)
