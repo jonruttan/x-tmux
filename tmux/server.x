@@ -65,6 +65,8 @@
 (import x/sys/pty)
 (import x/sys/socket)
 (import x/sys/host)
+(import x/sys/date)
+(import tmux/format format-expand format-time)
 (import tmux/vt vt-make vt-make-history vt-feed! vt-render! vt-out vt-cursor vt-size vt-origin! vt-touch! vt-carry
   vt-cursor-shown? vt-cursor-keys? vt-bracketed?)
 (import tmux/vt-jit vt-jit!)
@@ -105,7 +107,11 @@
     (set! %c-write (%libc "write"))
     (set! %c-waitpid (%libc "waitpid"))
     (set! %c-kill (%libc "kill"))
-    (set! %c-memcpy (%libc "memcpy"))))
+    (set! %c-memcpy (%libc "memcpy"))
+    (def buf (%make-str 256))
+    (%call (%libc "gethostname") (%str->ptr buf) 255)
+    (set! %host ((fn (self i) (if (= (%pref (%str->ptr buf) i 1) 0) (Str8 sub 0 i buf) (self (+ i 1)))) 0))
+    (set! %host-short ((fn (_ parts) (if (null? parts) %host (first parts))) (Str8 split "." %host)))))
 
 (def %esc
   (fn (_ text)
@@ -271,7 +277,7 @@
 ; too; every screen and copy marked to be drawn whole.
 (def %place!
   (fn (_ w)
-    (def whole (list 0 0 (- %rows 1) %cols))
+    (def whole (list 0 0 (%pane-rows) %cols))
     (List for-each
       (fn (_ r)
         (def p (%pane (first r)))
@@ -445,11 +451,11 @@
   (fn (_ k)
     (%unzoom!)
     (%window-set! %window 9 k)
-    (def t (layout-arrange (List ref k layout-names) (%order) %cols (- %rows 1)))
+    (def t (layout-arrange (List ref k layout-names) (%order) %cols (%pane-rows)))
     (unless (null? t)
       ((fn (_ size)
-         (when (if (<= (first size) %cols) (<= (rest size) (- %rows 1)) #f) (do (set! %tree t) (%redraw!))))
-       (layout-size (layout-fit t %cols (- %rows 1)))))))
+         (when (if (<= (first size) %cols) (<= (rest size) (%pane-rows)) #f) (do (set! %tree t) (%redraw!))))
+       (layout-size (layout-fit t %cols (%pane-rows)))))))
 
 ; The preset layout after the one last given the shown window, as
 ; next-layout, the first when none was.
@@ -592,8 +598,8 @@
 (def %new-window!
   (fn (_)
     (def i ((fn (self i) (if (null? (%window-at i)) i (self (+ i 1)))) 0))
-    (def id (%spawn! (list 0 0 (- %rows 1) %cols) %cwd))
-    (def w (list i (layout-new id %cols (- %rows 1)) id "x-tmux" #t 0 #f #f (list id) -1))
+    (def id (%spawn! (list 0 0 (%pane-rows) %cols) %cwd))
+    (def w (list i (layout-new id %cols (%pane-rows)) id "x-tmux" #t 0 #f #f (list id) -1))
     (unless (null? %windows) (do (%save-window!) (set! %last (pair %window %last))))
     (set! %windows
       ((fn (self ws) (match ((null? ws) (list w)) ((< i (first (first ws))) (pair w ws)) (#t (pair (first ws) (self (rest ws))))))
@@ -680,10 +686,30 @@
 ; letter a capital, as tmux shows a command's message.
 (def %say!
   (fn (_ text)
-    (set! %message
-      (if (= (Str8 length text) 0) text (Str8 append (Str8 upcase (Str8 sub 0 1 text)) (Str8 sub 1 (- (Str8 length text) 1) text))))
-    (set! %until (+ (%micros) (* 1000 (%option "display-time"))))
+    (%show! (if (= (Str8 length text) 0) text (Str8 append (Str8 upcase (Str8 sub 0 1 text)) (Str8 sub 1 (- (Str8 length text) 1) text)))
+      ())))
+
+; TEXT on the status line for MS milliseconds, display-time's for nil, or
+; until a key for 0, as display-message shows it.
+(def %show!
+  (fn (_ text ms)
+    (def wait (if (null? ms) (%option "display-time") ms))
+    (set! %message text)
+    (set! %until (+ (%micros) (if (= wait 0) 315360000000000 (* 1000 wait))))
     (%draw-status)))
+
+; Whether status-interval's seconds have passed since the status lines
+; were last drawn for it, the next time set when they have; never for 0.
+(def %status-next 0)
+(def %status-tick!
+  (fn (_)
+    (def every (* 1000000 (%option "status-interval")))
+    (def now (%micros))
+    (if (if (< 0 every) (<= %status-next now) #f) (do (set! %status-next (+ now every)) #t) #f)))
+
+; What display-message shows without a format, tmux's.
+(def %display-template
+  "[#{session_name}] #{window_index}:#{window_name}, current pane #{pane_index} - (%H:%M %d-%b-%y)")
 
 ; TEXT asked on the status line; YES called if the answer is y.
 (def %ask!
@@ -787,29 +813,6 @@
 (def %symbol
   (fn (_ d) (match ((str=? d "D") (lit D)) ((str=? d "L") (lit L)) ((str=? d "R") (lit R)) (#t (lit U)))))
 
-; TEXT with tmux's formats for the shown window put in: #W its name, #I
-; its index, #P the active pane's number, #S the session's name, ## a #.
-(def %format
-  (fn (_ text)
-    (def n (Str8 length text))
-    ((fn (self i acc)
-       (match
-         ((= i n) acc)
-         ((if (str=? (Str8 sub i 1 text) "#") (< (+ i 1) n) #f)
-           ((fn (_ c)
-              (self (+ i 2)
-                (Str8 append acc
-                  (match
-                    ((str=? c "W") (List ref 3 (%window-at %window)))
-                    ((str=? c "I") (%num %window))
-                    ((str=? c "P") (%num (%number %active)))
-                    ((str=? c "S") %name)
-                    ((str=? c "#") "#")
-                    (#t (Str8 append "#" c))))))
-            (Str8 sub (+ i 1) 1 text)))
-         (#t (self (+ i 1) (Str8 append acc (Str8 sub i 1 text))))))
-     0 "")))
-
 ; TEMPLATE with each %% and %1 in it the ANSWER, as command-prompt fills
 ; its template.
 (def %fill
@@ -898,20 +901,37 @@
 ; --- options --------------------------------------------------------------
 
 ; The options x-tmux has: (NAME KIND DEFAULT LOW HIGH), KIND key, number
-; (DEFAULT LOW and HIGH numbers), choice (LOW the choices) or style.
+; (DEFAULT LOW and HIGH numbers), choice (LOW the choices), string or
+; style.  A choice of off and on without a value is turned over.
+(def %window-format "#I:#W#{?window_flags,#{window_flags}, }")
 (def %option-specs
   (list (list "display-panes-time" (lit number) 1000 1 2147483647)
     (list "display-time" (lit number) 750 0 2147483647)
     (list "history-limit" (lit number) 2000 0 2147483647)
+    (list "message-style" (lit style) "bg=yellow,fg=black" () ())
     (list "mode-keys" (lit choice) "emacs" (lit ("emacs" "vi")) ())
     (list "prefix" (lit key) "C-b" () ())
     (list "repeat-time" (lit number) 500 0 2000000)
-    (list "status-style" (lit style) "bg=green,fg=black" () ())))
+    (list "status" (lit choice) "on" (lit ("off" "on")) ())
+    (list "status-interval" (lit number) 15 0 2147483647)
+    (list "status-justify" (lit choice) "left" (lit ("left" "centre" "right" "absolute-centre")) ())
+    (list "status-left" (lit string) "[#{session_name}] " () ())
+    (list "status-left-length" (lit number) 10 0 32767)
+    (list "status-left-style" (lit style) "default" () ())
+    (list "status-right" (lit string)
+      "#{?window_bigger,[#{window_offset_x}#,#{window_offset_y}] ,}\"#{=21:pane_title}\" %H:%M %d-%b-%y" () ())
+    (list "status-right-length" (lit number) 40 0 32767)
+    (list "status-right-style" (lit style) "default" () ())
+    (list "status-style" (lit style) "bg=green,fg=black" () ())
+    (list "window-status-current-format" (lit string) %window-format () ())
+    (list "window-status-current-style" (lit style) "underscore" () ())
+    (list "window-status-format" (lit string) %window-format () ())
+    (list "window-status-last-style" (lit style) "default" () ())
+    (list "window-status-separator" (lit string) " " () ())
+    (list "window-status-style" (lit style) "default" () ())))
 
-; The options' values, (NAME . VALUE), and the status line's colours as
-; status-style gives them.
+; The options' values, (NAME . VALUE).
 (def %options ())
-(def %status-sgr "0;30;42")
 (def %option (fn (_ name) (rest (List find (fn (_ o) (str=? (first o) name)) %options))))
 
 ; Every option and key at its default; mode-keys vi when VISUAL or EDITOR
@@ -920,19 +940,27 @@
   (fn (_)
     (set! %options (List map (fn (_ s) (pair (first s) (List ref 2 s))) %option-specs))
     (%set-option! "mode-keys" (if (copy-vi?) "vi" "emacs"))
-    (%set-option! "status-style" "bg=green,fg=black")
     (set! %tables ())
     (List for-each (fn (_ c) (%run! (rest c))) (List ref 1 (command-read %defaults)))))
 
-; NAME set to VALUE, as set-option sets it: nil, or tmux's message.
+; NAME set to VALUE, as set-option sets it: nil, or tmux's message.  The
+; panes are placed again when the status line comes or goes.
 (def %set-option!
   (fn (_ name value)
     (def spec (List find (fn (_ s) (str=? (first s) name)) %option-specs))
     (def kind (if (null? spec) () (List ref 1 spec)))
-    (def put! (fn (_ v) (set! %options (List map (fn (_ o) (if (str=? (first o) name) (pair name v) o)) %options)) ()))
+    (def put!
+      (fn (_ v)
+        (set! %options (List map (fn (_ o) (if (str=? (first o) name) (pair name v) o)) %options))
+        (unless (null? %current) (if (str=? name "status") (%redraw!) (%draw-status)))
+        ()))
     (match
       ((null? spec) (Str8 append "invalid option: " name))
+      ((if (null? value) (eq? kind (lit choice)) #f)
+        (if (equal? (List ref 3 spec) (lit ("off" "on"))) (put! (if (str=? (%option name) "on") "off" "on"))
+          "empty value"))
       ((null? value) "empty value")
+      ((eq? kind (lit string)) (put! value))
       ((eq? kind (lit number))
         ((fn (_ k)
            (match
@@ -945,43 +973,78 @@
         (if (null? (List find (fn (_ c) (str=? c value)) (List ref 3 spec))) (Str8 append "unknown value: " value)
           (do (when (str=? name "mode-keys") (set! %vi (str=? value "vi"))) (put! value))))
       ((eq? kind (lit key)) ((fn (_ k) (if (null? k) (Str8 append "bad key: " value) (put! k))) (key-name value)))
-      (#t ((fn (_ sgr) (if (null? sgr) (Str8 append "invalid style: " value) (do (set! %status-sgr sgr) (put! value))))
-           (%style value))))))
+      (#t (if (null? (%style-on %plain value %plain)) (Str8 append "invalid style: " value) (put! value))))))
 
-; The SGR parameters for STYLE, tmux's fg=, bg= and attributes separated
-; by commas or spaces, on the default black on green; nil for a style
-; that does not read.
-(def %style
-  (fn (_ style)
+; --- styles -------------------------------------------------------------------
+
+; A style as SGR draws it: (FG BG ATTRIBUTES), FG and BG SGR's parameters
+; for a colour, ATTRIBUTES the parameters of those it has, in order.  The
+; terminal's own is plain.
+(def %plain (lit ("39" "49" ())))
+(def %attributes
+  (lit (("bold" . "1") ("bright" . "1") ("dim" . "2") ("italics" . "3") ("underscore" . "4") ("blink" . "5")
+        ("reverse" . "7") ("hidden" . "8") ("strikethrough" . "9"))))
+(def %attribute-order (lit ("1" "2" "3" "4" "5" "7" "8" "9")))
+(def %sgr
+  (fn (_ s) (Str8 append "0" (Str8 join "" (List map (fn (_ a) (Str8 append ";" a)) (List ref 2 s))) ";" (first s) ";" (List ref 1 s))))
+
+; STATE with STYLE laid over it, as tmux lays one: fg= and bg= a colour's
+; name, bright name, colourN or #RRGGBB, or default for BASE's; an
+; attribute added, noATTRIBUTE taken away, none every one taken away;
+; default BASE again.  The parts go by commas or spaces; nil for a style
+; that does not read.  fill=, align=, list, range and the like draw
+; nothing here and are passed over.
+(def %style-on
+  (fn (_ state style base)
     (def names (lit ("black" "red" "green" "yellow" "blue" "magenta" "cyan" "white")))
     (def at (fn (self xs k c) (match ((null? xs) ()) ((str=? (first xs) c) k) (#t (self (rest xs) (+ k 1) c)))))
-    ; colour C as SGR's parameter, BASE 30 for the foreground, 40 the
-    ; background
+    (def hex (fn (_ s) (guard (e ()) ((prim-ref (lit convert) (lit to)) s (Type named INTEGER) 16))))
+    ; colour C as SGR's parameter, FROM 30 for the foreground, 40 the
+    ; background, OWN BASE's
     (def colour
-      (fn (_ c base)
+      (fn (_ c from own)
         (match
-          ((str=? c "default") (%num (+ base 9)))
-          ((not (null? (at names 0 c))) (%num (+ base (at names 0 c))))
+          ((str=? c "default") own)
+          ((not (null? (at names 0 c))) (%num (+ from (at names 0 c))))
           ((if (%prefix? "bright" c) (not (null? (at names 0 (%less "bright" c)))) #f)
-            (%num (+ base 60 (at names 0 (%less "bright" c)))))
+            (%num (+ from 60 (at names 0 (%less "bright" c)))))
           ((if (%prefix? "colour" c) #t (%prefix? "color" c))
-            ((fn (_ k) (if (if (null? k) #t (< 255 k)) () (Str8 append (%num (+ base 8)) ";5;" (%num k))))
+            ((fn (_ k) (if (if (null? k) #t (< 255 k)) () (Str8 append (%num (+ from 8)) ";5;" (%num k))))
              (%count (%less "color" (%less "colour" c)))))
+          ((if (%prefix? "#" c) (= (Str8 length c) 7) #f)
+            ((fn (_ r g b)
+               (if (if (null? r) #t (if (null? g) #t (null? b))) ()
+                 (Str8 append (%num (+ from 8)) ";2;" (%num r) ";" (%num g) ";" (%num b))))
+             (hex (Str8 sub 1 2 c)) (hex (Str8 sub 3 2 c)) (hex (Str8 sub 5 2 c))))
           (#t ()))))
-    (def attrs (lit (("bold" . "1") ("dim" . "2") ("italics" . "3") ("underscore" . "4") ("blink" . "5") ("reverse" . "7"))))
-    ((fn (self parts fg bg more)
-       (if (null? parts) (Str8 append "0" more ";" fg ";" bg)
+    (def with
+      (fn (_ attrs a keep)
+        (List filter (fn (_ x) (if (str=? x a) keep (not (null? (List find (fn (_ y) (str=? y x)) attrs)))))
+          %attribute-order)))
+    (def passed (lit ("fill=" "align=" "list" "nolist" "range" "norange" "push-default" "pop-default" "width=")))
+    ((fn (self parts st)
+       (if (null? parts) st
          ((fn (_ p)
-            (def attr (List find (fn (_ a) (str=? (first a) p)) attrs))
+            (def attr (List find (fn (_ a) (str=? (first a) p)) %attributes))
+            (def off (if (%prefix? "no" p) (List find (fn (_ a) (str=? (first a) (%less "no" p))) %attributes) ()))
+            (def next (fn (_ s) (if (null? s) () (self (rest parts) s))))
             (match
-              ((= (Str8 length p) 0) (self (rest parts) fg bg more))
-              ((%prefix? "fg=" p) ((fn (_ c) (if (null? c) () (self (rest parts) c bg more))) (colour (%less "fg=" p) 30)))
-              ((%prefix? "bg=" p) ((fn (_ c) (if (null? c) () (self (rest parts) fg c more))) (colour (%less "bg=" p) 40)))
-              ((if (str=? p "default") #t (str=? p "none")) (self (rest parts) fg bg ""))
-              ((not (null? attr)) (self (rest parts) fg bg (Str8 append more ";" (rest attr))))
+              ((= (Str8 length p) 0) (self (rest parts) st))
+              ((%prefix? "fg=" p)
+                (next ((fn (_ c) (if (null? c) () (list c (List ref 1 st) (List ref 2 st)))) (colour (%less "fg=" p) 30 (first base)))))
+              ((%prefix? "bg=" p)
+                (next ((fn (_ c) (if (null? c) () (list (first st) c (List ref 2 st)))) (colour (%less "bg=" p) 40 (List ref 1 base)))))
+              ((str=? p "default") (self (rest parts) base))
+              ((str=? p "none") (self (rest parts) (list (first st) (List ref 1 st) ())))
+              ((not (null? attr)) (self (rest parts) (list (first st) (List ref 1 st) (with (List ref 2 st) (rest attr) #t))))
+              ((not (null? off)) (self (rest parts) (list (first st) (List ref 1 st) (with (List ref 2 st) (rest off) #f))))
+              ((not (null? (List find (fn (_ x) (%prefix? x p)) passed))) (self (rest parts) st))
               (#t ())))
           (first parts))))
-     (List flat-map (fn (_ w) (Str8 split " " w)) (Str8 split "," style)) "30" "42" "")))
+     (List flat-map (fn (_ w) (Str8 split " " w)) (Str8 split "," style)) state)))
+
+; The style of the option NAME laid over STATE, default its own base.
+(def %option-style (fn (_ name state) ((fn (_ s) (if (null? s) state s)) (%style-on state (%option name) state))))
 (def %prefix? (fn (_ p s) (if (<= (Str8 length p) (Str8 length s)) (str=? p (Str8 sub 0 (Str8 length p) s)) #f)))
 
 ; --- files of commands -----------------------------------------------------
@@ -1136,6 +1199,20 @@
           ((on? "l") (%last-pane!))
           ((not (null? (%direction flags))) (done (%beside! (%direction flags))))
           (#t (pane! (fn (_ id) (unless (= id %active) (do (%unzoom!) (%activate! id) (%name-due! %window))))))))
+      ((is? "display-message")
+        ((fn (_ given delay)
+           (def ms (if (null? delay) () (%signed delay)))
+           (match
+             ((if (on? "F") (not (null? args)) #f) "only one of -F or argument must be given")
+             ((if (null? delay) #f (null? ms)) "delay invalid")
+             ((if (null? ms) #f (< ms 0)) "delay too small")
+             (#t
+               (pane!
+                 (fn (_ id)
+                   ((fn (_ text) (if (on? "p") (%show-lines! (list text)) (%show! text ms)))
+                    (if (on? "l") given (%expand given id #t))))))))
+         (match ((not (null? args)) (first args)) ((on? "F") (command-flag flags "F")) (#t %display-template))
+         ((fn (_ d) (if (eq? d #t) () d)) (command-flag flags "d"))))
       ((is? "rename-window") (done (%rename! (first args))))
       ((is? "resize-pane")
         (if (on? "Z") (done (%zoom!))
@@ -1266,7 +1343,7 @@
   (fn (_)
     (%save-window!)
     (set! %windows
-      (List map (fn (_ w) (%laid w (layout-fit (List ref 1 w) %cols (- %rows 1)) (List ref 2 w))) %windows))
+      (List map (fn (_ w) (%laid w (layout-fit (List ref 1 w) %cols (%pane-rows)) (List ref 2 w))) %windows))
     (set! %tree (List ref 1 (%window-at %window)))
     (List for-each %place! %windows)
     (%out (%esc "[0m"))
@@ -1289,14 +1366,16 @@
       (%out (Str8 append (%goto (List ref 1 b) (List ref 2 b))
               ((fn (self i acc) (if (= i 0) acc (self (- i 1) (Str8 append acc (%hbar))))) (List ref 3 b) ""))))))
 
-; The status line, tmux's: a question or a message black on yellow, or
-; in status-style's colours the session and its windows, the shown one underlined,
-; marked * and the last one shown -, and a zoomed one Z.  A question's
-; text scrolls so its cursor shows, the names Tab offers underlined after
-; it.
+; The status line, tmux's: a question or a message in message-style, or
+; status-left, the windows and status-right as their options draw them.
+; A question's text scrolls so its cursor shows, the names Tab offers
+; underlined after it.  With status off a question or a message shows
+; over the panes' bottom row, which is drawn again once it goes.
+(def %overlaid #f)
 (def %draw-status
   (fn (_)
-    (%out (%goto (- %rows 1) 0))
+    (def say (%sgr (%option-style "message-style" %plain)))
+    (def bottom (fn (_ s) (%out (Str8 append (%goto (- %rows 1) 0) s (%esc "[0m")))))
     (match
       ((not (null? %prompt))
         (do (def label ((fn (_ l) (Str8 sub 0 (%min %cols (Str8 length l)) l)) (first %prompt)))
@@ -1305,36 +1384,199 @@
             (def shown (Str8 sub from (%min (- (%byte-len text) from) (%max 0 (- %cols (Str8 length label)))) text))
             (def room (%max 0 (- %cols (+ (Str8 length label) (Str8 length shown)))))
             (def choices (Str8 sub 0 (%min room (Str8 length %choices)) %choices))
-            (%out (Str8 append (%esc "[0;30;43m") label shown (%esc "[4m") choices (%esc "[24m")
-                    (Str8 pad-right (- room (Str8 length choices)) #\space "") (%esc "[0m")))))
-      ((not (null? %message)) (%out (Str8 append (%esc "[0;30;43m") (%fit %message) (%esc "[0m"))))
-      (#t (%out (Str8 append (%esc (Str8 append "[" %status-sgr "m")) (%window-list) (%esc "[0m")))))))
+            (set! %overlaid (not (%status?)))
+            (bottom (Str8 append (%esc (Str8 append "[" say "m")) label shown (%esc "[4m") choices (%esc "[24m")
+                      (Str8 pad-right (- room (Str8 length choices)) #\space "")))))
+      ((not (null? %message))
+        (do (set! %overlaid (not (%status?)))
+            (bottom (Str8 append (%esc (Str8 append "[" say "m")) (%fit %message)))))
+      ((%status?) (bottom (%emit (%status-cells))))
+      (%overlaid (do (set! %overlaid #f) (List for-each (fn (_ id) (%touch-pane! (%pane id))) (%shown)))))))
+
+; Whether the status line shows, and the rows the panes have.
+(def %status? (fn (_) (str=? (%option "status") "on")))
+(def %pane-rows (fn (_) (if (%status?) (- %rows 1) %rows)))
+
+; Pane P's screen, or its copy, to be drawn whole.
+(def %touch-pane!
+  (fn (_ p) (if (null? (%pane-copy p)) (vt-touch! (%pane-screen p)) (copy-touch! (%pane-copy p)))))
 
 ; TEXT cut or padded to the terminal's width.
 (def %fit
   (fn (_ text)
     (if (< %cols (Str8 length text)) (Str8 sub 0 %cols text) (Str8 pad-right %cols #\space text))))
 
-(def %window-list
+; --- the status line's parts ------------------------------------------------
+
+; A part of the status line is a list of cells, each (SGR . CHARACTER).
+; TEXT's characters in STATE's style, each #[STYLE] in it laid over the
+; style, its default BASE.
+(def %cells
+  (fn (_ text state base)
+    (def n (%byte-len text))
+    (def at (fn (_ i) (if (< i n) (%pref (%str->ptr text) i 1) 0)))
+    (def close (fn (self i) (match ((<= n i) -1) ((= (at i) 93) i) (#t (self (+ i 1))))))
+    ((fn (self i st acc)
+       (match
+         ((<= n i) (List reverse acc))
+         ((if (= (at i) 35) (= (at (+ i 1)) 91) #f)
+           ((fn (_ j)
+              (if (< j 0) (List reverse acc)
+                (self (+ j 1) ((fn (_ s) (if (null? s) st s)) (%style-on st (Str8 sub (+ i 2) (- j (+ i 2)) text) base)) acc)))
+            (close (+ i 2))))
+         (#t
+           ((fn (_ k) (self (+ i k) st (pair (pair (%sgr st) (Str8 sub i k text)) acc)))
+            ((fn (_ b) (%min (- n i) (match ((< b 192) 1) ((< b 224) 2) ((< b 240) 3) (#t 4)))) (at i))))))
+     0 state ())))
+(def %blank (fn (_ k sgr) (if (< k 1) () (pair (pair sgr " ") (%blank (- k 1) sgr)))))
+(def %take (fn (_ cells k) (if (if (null? cells) #t (< k 1)) () (pair (first cells) (%take (rest cells) (- k 1))))))
+(def %drop (fn (_ cells k) (if (if (null? cells) #t (< k 1)) cells (%drop (rest cells) (- k 1)))))
+
+; CELLS as the terminal draws them, each run's SGR before it.
+(def %emit
+  (fn (_ cells)
+    ((fn (self cs sgr acc)
+       (if (null? cs) (Str8 join "" (List reverse acc))
+         (self (rest cs) (first (first cs))
+           (pair (rest (first cs))
+             (if (str=? (first (first cs)) sgr) acc (pair (%esc (Str8 append "[" (first (first cs)) "m")) acc))))))
+     cells "" ())))
+
+; What a format's names are for window W and pane ID: the session's, the
+; window's, the pane's, the client's and the machine's, and an option's
+; value by its name.
+(def %host "") (def %host-short "")
+(def %look
+  (fn (_ w id)
+    (def p (%pane id))
+    (def rect (%pane-rect p))
+    (def last? (if (null? %last) #f (= (first w) (first %last))))
+    (def yes (fn (_ b) (if b "1" "0")))
+    (def flags
+      (fn (_)
+        (Str8 append (match ((= (first w) %window) "*") (last? "-") (#t "")) (if (List ref 7 w) "Z" ""))))
+    (def option
+      (fn (_ name)
+        ((fn (_ spec)
+           (match
+             ((null? spec) ())
+             ((eq? (List ref 1 spec) (lit number)) (%num (%option name)))
+             ((eq? (List ref 1 spec) (lit key)) ())
+             (#t (%option name))))
+         (List find (fn (_ s) (str=? (first s) name)) %option-specs))))
+    (fn (_ name)
+      (match
+        ((str=? name "session_name") %name)
+        ((str=? name "session_windows") (%num (List length %windows)))
+        ((str=? name "session_attached") (yes (not (null? %client))))
+        ((str=? name "session_created") (%num %created))
+        ((str=? name "window_index") (%num (first w)))
+        ((str=? name "window_name") (List ref 3 w))
+        ((str=? name "window_flags") (flags))
+        ((str=? name "window_active") (yes (= (first w) %window)))
+        ((str=? name "window_last_flag") (yes last?))
+        ((str=? name "window_zoomed_flag") (yes (List ref 7 w)))
+        ((str=? name "window_panes") (%num (List length (layout-panes (List ref 1 w)))))
+        ((str=? name "window_width") (%num %cols))
+        ((str=? name "window_height") (%num (%pane-rows)))
+        ((str=? name "window_bigger") "0")
+        ((str=? name "window_offset_x") "0")
+        ((str=? name "window_offset_y") "0")
+        ((str=? name "pane_id") (Str8 append "%" (%num id)))
+        ((str=? name "pane_index") (%num (%number id)))
+        ((str=? name "pane_title") %host)
+        ((str=? name "pane_current_command") ((fn (_ c) (if (null? c) "" c)) (%program (%pane-fd p))))
+        ((str=? name "pane_pid") (%num (%pane-pid p)))
+        ((str=? name "pane_width") (%num (List ref 3 rect)))
+        ((str=? name "pane_height") (%num (List ref 2 rect)))
+        ((str=? name "pane_active") (yes (= id (List ref 2 w))))
+        ((str=? name "pane_in_mode") (yes (not (null? (%pane-copy p)))))
+        ((str=? name "client_width") (%num %cols))
+        ((str=? name "client_height") (%num %rows))
+        ((str=? name "client_prefix") (yes %prefix))
+        ((str=? name "host") %host)
+        ((str=? name "host_short") %host-short)
+        ((str=? name "pid") (%num (Sys getpid)))
+        (#t (option name))))))
+
+; TEXT expanded for the shown window and pane ID, the time written in it
+; first when TIME, as tmux writes it.
+(def %expand
+  (fn (_ text id time)
+    (format-expand (if time (format-time text (Date local (Sys now))) text) (%look (%window-at %window) id))))
+(def %format (fn (_ text) (%expand text %active #f)))
+
+; The status line's cells: status-left, the windows, status-right, laid
+; out as tmux lays them for status-justify, the windows cut about the
+; shown one, < and > where they are cut, when there is no room for all.
+(def %status-cells
   (fn (_)
+    (%save-window!)
+    (def base (%option-style "status-style" %plain))
+    (def sgr (%sgr base))
+    (def now (Date local (Sys now)))
+    (def expand (fn (_ name w) (format-expand (format-time (%option name) now) (%look w (List ref 2 w)))))
+    (def side
+      (fn (_ name)
+        ((fn (_ st) (%take (%cells (expand name (%window-at %window)) st st) (%option (Str8 append name "-length"))))
+         (%option-style (Str8 append name "-style") base))))
+    (def style-of
+      (fn (_ w)
+        (def current (%style-on base (%option "window-status-current-style") base))
+        (match
+          ((= (first w) %window)
+            (if (if (null? current) #t (str=? (%option "window-status-current-style") "default"))
+              (%option-style "window-status-style" base) current))
+          ((if (null? %last) #f (= (first w) (first %last)))
+            (%option-style "window-status-last-style" (%option-style "window-status-style" base)))
+          (#t (%option-style "window-status-style" base)))))
     (def entry
       (fn (_ w)
-        (Str8 append (%num (first w)) ":" (List ref 3 w)
-          (match
-            ((= (first w) %window) "*")
-            ((if (null? %last) #f (= (first w) (first %last))) "-")
-            (#t ""))
-          (if (List ref 7 w) "Z" ""))))
-    (def left
-      (Str8 append "[" %name "] "
-        (Str8 join "" (List map (fn (_ w) (Str8 append (entry w) " ")) (List filter (fn (_ w) (< (first w) %window)) %windows)))))
-    (def shown (entry (%window-at %window)))
-    (def right
-      (Str8 join "" (List map (fn (_ w) (Str8 append " " (entry w))) (List filter (fn (_ w) (< %window (first w))) %windows))))
-    (def used (+ (Str8 length left) (Str8 length shown)))
-    (if (< %cols (+ used (Str8 length right)))
-      (%fit (Str8 append left shown right))
-      (Str8 append left (%esc "[4m") shown (%esc "[24m") (Str8 pad-right (- %cols used) #\space right)))))
+        ((fn (_ st)
+           (%cells (expand (if (= (first w) %window) "window-status-current-format" "window-status-format") w) st st))
+         (style-of w))))
+    (def separator (%cells (%option "window-status-separator") base base))
+    ; the windows' cells, and where the shown one's start and end
+    (def laid
+      ((fn (self ws acc focus)
+         (if (null? ws) (pair acc focus)
+           ((fn (_ cells)
+              (def start (List length acc))
+              (def with (List append acc cells (if (null? (rest ws)) () separator)))
+              (self (rest ws) with
+                (if (= (first (first ws)) %window) (pair start (+ start (List length cells))) focus)))
+            (entry (first ws)))))
+       %windows () (pair 0 0)))
+    (def left (side "status-left"))
+    (def right (side "status-right"))
+    (def cells (first laid))
+    (def total (List length cells))
+    ; the list cut first, then the right, then the left
+    (def wl (%max 0 (%min total (- %cols (+ (List length left) (List length right))))))
+    (def right-cut (%take right (%max 0 (- %cols (List length left)))))
+    (def left-cut (%take left %cols))
+    (def lw (List length left-cut))
+    (def rw (List length right-cut))
+    (def shown
+      (if (<= total wl) cells
+        ((fn (_ centre)
+           (def from (%max 0 (%min (- centre (/ wl 2)) (- total wl))))
+           (def l? (if (< 0 from) (< 1 wl) #f))
+           (def from2 (if l? (+ from 1) from))
+           (def w2 (if l? (- wl 1) wl))
+           (def r? (if (< (+ from2 w2) total) (< 1 w2) #f))
+           (def w3 (if r? (- w2 1) w2))
+           (List append (if l? (list (pair sgr "<")) ()) (%take (%drop cells from2) w3) (if r? (list (pair sgr ">")) ())))
+         ((fn (_ f) (+ (first f) (/ (- (rest f) (first f)) 2))) (rest laid)))))
+    (def justify (%option "status-justify"))
+    (def space (- %cols (+ lw rw wl)))
+    (def at
+      (match
+        ((str=? justify "right") (+ lw space))
+        ((str=? justify "centre") (+ lw (/ space 2)))
+        ((str=? justify "absolute-centre") (%max lw (%min (+ lw space) (/ (- %cols wl) 2))))
+        (#t lw)))
+    (List append left-cut (%blank (- at lw) sgr) shown (%blank (- (+ lw space) at) sgr) right-cut)))
 
 ; Each changed row of the shown window's panes, a pane in copy mode its
 ; copy's with the position over its top right, the panes' numbers over
@@ -1819,10 +2061,12 @@
             (set! %conns (List append %conns (list (proto-conn (Socket accept %listen))))))
           (List for-each (fn (_ c) (when (if (%live? c) (%ready? ready (proto-fd c)) #f) (%hear! c))) %conns)
           (%drain! ready)
+          (def tick (%status-tick!))
           (List for-each
             (fn (_ s)
               (when (not (null? (List find (fn (_ x) (eq? x s)) %sessions)))
                 (do (%enter! s)
+                    (when (if tick (if %done #f (not (null? %client))) #f) (do (%draw-status) (set! %touched #t)))
                     (List for-each (fn (_ p) (unless %done (when (%ready-for? ready (%pane-fd p) (lit in)) (%output! p)))) %panes)
                     (when (if (null? %message) #f (< %until (%micros)))
                       (do (set! %message ()) (%draw-status) (set! %touched #t)))

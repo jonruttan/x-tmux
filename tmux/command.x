@@ -75,7 +75,8 @@
 ; many arguments it takes, -1 for no limit.
 (def %commands
   (lit (("bind-key" "nr" "NT" 1 -1) ("command-prompt" "" "Ip" 0 1) ("confirm-before" "" "p" 1 1)
-        ("copy-mode" "eu" "" 0 0) ("detach-client" "" "" 0 0) ("display-panes" "" "" 0 0)
+        ("copy-mode" "eu" "" 0 0) ("detach-client" "" "" 0 0) ("display-message" "aCIlNpv" "cdFt" 0 1)
+        ("display-panes" "" "" 0 0)
         ("kill-pane" "" "t" 0 0) ("kill-session" "" "" 0 0) ("kill-window" "" "t" 0 0)
         ("last-pane" "" "" 0 0) ("last-window" "" "" 0 0) ("new-window" "" "n" 0 0)
         ("next-layout" "" "" 0 0) ("next-window" "" "" 0 0) ("paste-buffer" "p" "" 0 0)

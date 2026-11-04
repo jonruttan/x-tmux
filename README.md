@@ -57,6 +57,7 @@ The prefix is C-b, and after it, as tmux binds its keys:
 A new window takes the lowest free number and starts its shell where the
 session was made.  The status line marks the shown window `*`, underlined,
 and the one shown before it `-`; closing the shown window shows that one.
+The status line's parts and styles are options, below.
 A question on the status line takes `y` for yes and any other key for no.
 A window is named after its active pane's foreground program, `[tmux]`
 while that pane is in copy mode, looked at as its panes write and at most
@@ -76,7 +77,11 @@ select-pane, last-pane, select-window, next-window, previous-window,
 last-window, rename-window, resize-pane, swap-pane, rotate-window,
 select-layout, next-layout, previous-layout, display-panes, copy-mode,
 paste-buffer, send-prefix and detach-client, with command-prompt,
-confirm-before and those of the configuration below.
+confirm-before, display-message and those of the configuration below.
+`display-message [-lp] [-d MS] [-F FORMAT] [FORMAT]` shows a format on
+the status line for display-time, or MS, or until a key for 0; `-p`
+shows it over the pane, `-l` as it is, and with no format tmux's
+`[#{session_name}] #{window_index}:...` line.
 An arrow picks, of the panes across the border that way, the one most
 recently active, wrapping at the window's edges.  A resize moves the
 border beside the pane, taking cells from the panes beyond it, each
@@ -212,12 +217,54 @@ above are tmux's own bindings, which bind and unbind change.  The
 options, with tmux's defaults:
 
     prefix              C-b
-    status-style        bg=green,fg=black
-    display-time        750, milliseconds a message shows
+    display-time        750, milliseconds a message shows; 0 until a key
     display-panes-time  1000, milliseconds C-b q's numbers show
     repeat-time         500, milliseconds a -r key repeats
     history-limit       2000, rows a new pane keeps
     mode-keys           emacs, or vi when VISUAL or EDITOR is vi's
+    message-style       bg=yellow,fg=black
+    status              on, or off: the panes have every row; set
+                        status without a value turns it over
+    status-interval     15, seconds between the status line's drawings
+    status-justify      left, centre, right or absolute-centre
+    status-left         [#{session_name}]
+    status-left-length  10
+    status-left-style   default
+    status-right        tmux's: the pane's title in quotes and the time
+    status-right-length 40
+    status-right-style  default
+    status-style        bg=green,fg=black
+    window-status-format          #I:#W#{?window_flags,#{window_flags}, }
+    window-status-current-format  the same
+    window-status-style           default
+    window-status-current-style   underscore
+    window-status-last-style      default
+    window-status-separator       a space
+
+The status line is tmux's: status-left, then the windows, each in its
+format and style, the shown one in window-status-current-*, the
+separator between them, then status-right at the right end, each side
+cut to its length.  When the windows do not fit they are cut about the
+shown one, `<` and `>` where they are cut.  A style is tmux's: `fg=` and
+`bg=` a colour's name, `bright` name, `colourN` or `#RRGGBB`, or
+`default`; the attributes bold, dim, italics, underscore, blink, reverse,
+hidden and strikethrough, `no` before one taking it away; `none` and
+`default`.  A style option lies over status-style, and `#[STYLE]` in a
+format over the style of its part.
+
+A format is tmux's: `#{NAME}`; `#{?COND,A,B}`; `#{==:A,B}`, `!=`, `<`,
+`>`, `<=`, `>=`, `||` and `&&`; `#{=N:X}` and `#{=-N:X}` cut to N
+characters; `#{l:X}`, `#{b:X}` and `#{d:X}`; the letters `#H #h #D #P
+#T #S #I #W #F`; `##`, `#,` and `#}`.  `#(COMMAND)` is empty.  The
+names: session_name, session_windows, session_attached,
+session_created; window_index, window_name, window_flags,
+window_active, window_last_flag, window_zoomed_flag, window_panes,
+window_width, window_height; pane_id, pane_index, pane_title (the host,
+as tmux gives it), pane_current_command, pane_pid, pane_width,
+pane_height, pane_active, pane_in_mode; client_width, client_height,
+client_prefix; host, host_short, pid; and an option by its name.
+status-left, status-right and display-message write strftime's `%H %M
+%S %d %e %m %y %Y %b %h %B %a %A %I %p %R %T %D %F %j` and `%%` first.
 
 source-file from the prompt shows a file that does not read in the same
 view, and a failing command's message on the status line.
@@ -259,7 +306,8 @@ positions and cursors tmux 3.8 reports for the same keys; `05-command`
 holds the command line's words, names and flags to how tmux 3.8 reads
 them, and its messages to tmux's; `06-keys` holds the keys typed and
 the names bind reads to tmux 3.8's, and a file of commands to how tmux
-3.8 reads its configuration.
+3.8 reads its configuration; `07-format` holds formats to what tmux
+3.8's display-message -p gives for them.
 
     X=/path/to/x sh tests/oracle/panes.sh
 
@@ -270,7 +318,7 @@ layouts, a resize, each pane's size checked by `stty size`; the panes'
 numbers; copy mode;
 windows made, shown, refused, asked about, killed and closed; then
 detaching, `ls`, attaching again, window names and renaming, the command
-prompt, the last
+prompt, the status line's options and display-message, the last
 pane exiting and
 `kill-server`, with tmux's messages; then a configuration's prefix,
 bindings and errors, and source-file.
