@@ -9,6 +9,7 @@
 (provide tmux/base tmux-version tmux-main
   vt-make vt-make-history vt-feed! vt-render! vt-out vt-cursor vt-size vt-origin! vt-touch! vt-carry
   vt-row vt-attrs vt-history vt-history-row vt-history-attrs vt-view
+  vt-style vt-cursor-shown? vt-cursor-keys? vt-bracketed?
   vt-compiled? vt-feed-pure! vt-render-pure! vt-jit! vt-jit-make vt-exercise vt-agree vt-same?
   copy-enter copy-do copy-key copy-view copy-cursor copy-position copy-text copy-marks copy-selecting?
   layout-new layout-rects layout-borders layout-split layout-remove layout-panes layout-resize layout-fit
@@ -19,7 +20,8 @@
 
 (import tmux/vt vt-make vt-make-history vt-feed! vt-render! vt-out vt-cursor vt-size vt-origin! vt-touch!
   vt-carry vt-history vt-history-row vt-history-attrs vt-view
-  vt-row vt-attrs vt-compiled? vt-feed-pure! vt-render-pure!)
+  vt-row vt-attrs vt-compiled? vt-feed-pure! vt-render-pure!
+  vt-style vt-cursor-shown? vt-cursor-keys? vt-bracketed?)
 (import tmux/vt-jit vt-jit! vt-jit-make vt-exercise vt-agree vt-same?)
 (import tmux/copy copy-enter copy-do copy-key copy-view copy-cursor copy-position copy-text copy-marks
   copy-selecting?)

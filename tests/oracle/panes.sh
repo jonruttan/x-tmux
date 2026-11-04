@@ -11,6 +11,8 @@
 #   alt       a program on the alternate screen, its screen gone when it
 #             leaves, the shell's lines back
 #   utf8      wide and combining characters, each in its cells
+#   styles    256 colours, RGB, italics and underscore drawn as tmux draws
+#             them; a program's ?25l hiding the cursor, ?25h showing it
 #   split -h  C-b %: a second pane right of the first, the border between,
 #             each pane's terminal its own size (stty size)
 #   split -v  C-b ": a third pane below the second
@@ -126,6 +128,22 @@ tmux send-keys -t "$s" "printf '\\346\\227\\245\\346\\234\\254|e\\314\\201|\\360
 wait_for '|'
 want=$(printf '\346\227\245\346\234\254|e\314\201|\360\237\230\200|')
 check "utf8 -- wide and combining characters in a pane, as tmux shows them" "$(screen | grep -cxF "$want")" "1"
+tmux send-keys -t "$s" 'clear' Enter
+sleep 1
+
+# styles
+# The letters in octal, so the line typed does not hold what is checked.
+tmux send-keys -t "$s" "printf '\\033[38;5;196m\\120\\033[m\\n\\033[48;2;1;2;3m\\121\\033[m\\n\\033[3;4m\\122\\033[m\\n'" Enter
+wait_for 'R'
+sleep 1
+styled() { tmux capture-pane -e -p -t "$s" | grep -c -- "$1"; }
+check "styles -- 256 colours, RGB, italics and underscore reach the terminal" \
+	"$(styled '38;5;196mP') $(styled '48;2;1;2;3mQ') $(styled '3;4mR')" "1 1 1"
+tmux send-keys -t "$s" "printf '\\033[?25l'; sleep 2; printf '\\033[?25h'" Enter
+sleep 1
+check "styles -- a program's ?25l hides the cursor" "$(tmux display -p -t "$s" '#{cursor_flag}')" "0"
+sleep 3
+check "styles -- and ?25h shows it" "$(tmux display -p -t "$s" '#{cursor_flag}')" "1"
 tmux send-keys -t "$s" 'clear' Enter
 sleep 1
 

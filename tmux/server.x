@@ -65,7 +65,8 @@
 (import x/sys/pty)
 (import x/sys/socket)
 (import x/sys/host)
-(import tmux/vt vt-make vt-make-history vt-feed! vt-render! vt-out vt-cursor vt-size vt-origin! vt-touch! vt-carry)
+(import tmux/vt vt-make vt-make-history vt-feed! vt-render! vt-out vt-cursor vt-size vt-origin! vt-touch! vt-carry
+  vt-cursor-shown? vt-cursor-keys? vt-bracketed?)
 (import tmux/vt-jit vt-jit!)
 (import tmux/copy copy-enter copy-resize copy-view copy-origin! copy-touch! copy-cursor copy-position
   copy-do copy-selecting? copy-text copy-marks copy-vi? copy-key)
@@ -1163,7 +1164,12 @@
       ((is? "copy-mode") (done (do (%copy! (if (on? "u") #t (on? "e"))) (when (on? "u") (%copy-do! (lit page-up))))))
       ((is? "paste-buffer")
         (done (unless (null? %buffers)
-                ((fn (_ t) (%send! (%pane-fd (%pane %active)) (%str->ptr t) (%byte-len t))) (%typed (first %buffers))))))
+                (do (def fd (%pane-fd (%pane %active)))
+                    (def send! (fn (_ t) (%send! fd (%str->ptr t) (%byte-len t))))
+                    (def bracket (if (on? "p") (vt-bracketed? (%pane-screen (%pane %active))) #f))
+                    (when bracket (send! (%esc "[200~")))
+                    (send! (%typed (first %buffers)))
+                    (when bracket (send! (%esc "[201~")))))))
       ((is? "send-prefix")
         (done ((fn (_ b) (%send! (%pane-fd (%pane %active)) (%str->ptr b) (%byte-len b))) (key-bytes (%option "prefix")))))
       ((is? "detach-client") (done (%detach! (Str8 append "[detached (from session " %name ")]"))))
@@ -1333,7 +1339,8 @@
 ; Each changed row of the shown window's panes, a pane in copy mode its
 ; copy's with the position over its top right, the panes' numbers over
 ; them while they show, then the cursor where the active pane has it, or
-; after the question on the status line.
+; after the question on the status line.  The cursor is shown unless the
+; active pane's program hid it, outside copy mode and the prompt.
 (def %render!
   (fn (_)
     (%out (%esc "[?25l"))
@@ -1354,7 +1361,9 @@
             (if (null? %prompt)
               (%goto (+ (first rect) (first c)) (+ (List ref 1 rect) (%min (rest c) (- (List ref 3 rect) 1))))
               (%goto (- %rows 1) (%min (+ (%byte-len (first %prompt)) (- (List ref 2 %prompt) (%scrolled))) (- %cols 1))))
-            (%esc "[?25h")))))
+            (if (if (null? %prompt) (if (null? (%pane-copy p)) (not (vt-cursor-shown? (%pane-screen p))) #f) #f)
+              ""
+              (%esc "[?25h"))))))
 
 ; A copy mode's position, black on yellow at the right of its pane's top
 ; row.
@@ -1539,8 +1548,30 @@
                        ((fn (_ c) (%copy-do! (first c)) (on (rest c))) (copy-key p i n %vi)))
                      ((not (null? (%bound "root" key)))
                        (do (flush!) (set! %touched #t) (%run-all! (List ref 2 (%bound "root" key))) (on (rest k))))
+                     ((%cursor-key? p i (rest k) (vt-cursor-keys? (%pane-screen pane)))
+                       (do (flush!) (%send! fd (%str->ptr (%cursor-key p i (vt-cursor-keys? (%pane-screen pane)))) 3)
+                           (on (rest k))))
                      (#t (self (rest k) from))))))))
      0 0)))
+
+; Whether the key at I to NEXT is an arrow, Home or End as the pane's
+; program does not read it: ESC [ X when it asked for ESC O X (?1h), or
+; ESC O X when it did not.  %cursor-key spells it as it reads it.
+(def %cursor-key?
+  (fn (_ p i next ss3)
+    (if (if (= (- next i) 3) (= (%pref p i 1) 27) #f)
+      (if (not (null? (List find (fn (_ x) (= x (%pref p (+ i 2) 1))) (lit (65 66 67 68 72 70)))))
+        (if ss3 (= (%pref p (+ i 1) 1) 91) (= (%pref p (+ i 1) 1) 79))
+        #f)
+      #f)))
+(def %cursor-key
+  (fn (_ p i ss3)
+    (def s (%make-str 4))
+    (%pset (%str->ptr s) 0 27 1)
+    (%pset (%str->ptr s) 1 (if ss3 79 91) 1)
+    (%pset (%str->ptr s) 2 (%pref p (+ i 2) 1) 1)
+    (%pset (%str->ptr s) 3 0 1)
+    s))
 
 ; --- pane output ----------------------------------------------------------
 
