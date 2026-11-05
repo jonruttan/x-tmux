@@ -100,9 +100,9 @@
     (set! %c-waitpid (%libc "waitpid"))
     (set! %c-kill (%libc "kill"))
     (set! %c-memcpy (%libc "memcpy"))
-    (def buf (%make-str 256))
-    (%call (%libc "gethostname") (%str->ptr buf) 255)
-    (set! %host ((fn (self i) (if (= (%pref (%str->ptr buf) i 1) 0) (Str8 sub 0 i buf) (self (+ i 1)))) 0))
+    (def buf (str-make 256))
+    (ptr-call (%libc "gethostname") (str->ptr buf) 255)
+    (set! %host ((fn (self i) (if (= (ptr-ref (str->ptr buf) i 1) 0) (Str8 sub 0 i buf) (self (+ i 1)))) 0))
     (set! %host-short ((fn (_ parts) (if (null? parts) %host (first parts))) (Str8 split "." %host)))))
 
 (def %esc
@@ -1405,8 +1405,8 @@
 ; style, its default BASE.
 (def %cells
   (fn (_ text state base)
-    (def n (%byte-len text))
-    (def at (fn (_ i) (if (< i n) (%pref (%str->ptr text) i 1) 0)))
+    (def n (str-byte-len text))
+    (def at (fn (_ i) (if (< i n) (ptr-ref (str->ptr text) i 1) 0)))
     (def close (fn (self i) (match ((<= n i) -1) ((= (at i) 93) i) (#t (self (+ i 1))))))
     ((fn (self i st acc)
        (match
