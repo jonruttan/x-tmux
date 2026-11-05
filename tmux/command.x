@@ -87,9 +87,8 @@
         ("swap-pane" "DU" "" 0 0) ("unbind-key" "anq" "T" 0 1))))
 
 (def %char (fn (_ s i) (Str8 sub i 1 s)))
-(def %byte-len (prim-ref (lit str) (lit byte-len)))
-(def %byte-sub (prim-ref (lit str) (lit byte-sub)))
-(def %prefix? (fn (_ p s) (if (<= (%byte-len p) (%byte-len s)) (str=? p (%byte-sub s 0 (%byte-len p))) #f)))
+(import x/core/doors str-byte-len str-byte-sub)
+(def %prefix? (fn (_ p s) (if (<= (str-byte-len p) (str-byte-len s)) (str=? p (str-byte-sub s 0 (str-byte-len p))) #f)))
 (def %has? (fn (_ letters c) (not (null? (List find (fn (_ x) (str=? x c)) (%letters letters))))))
 (def %letters
   (fn (_ s) ((fn (self i) (if (= i (Str8 length s)) () (pair (%char s i) (self (+ i 1))))) 0)))

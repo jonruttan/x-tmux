@@ -29,15 +29,7 @@
 (module tmux/proto)
 
 
-(def %make-str (prim-ref (lit str) (lit make)))
-(def %str->ptr (prim-ref (lit str) (lit ->ptr)))
-(def %ptr->int (prim-ref (lit ptr) (lit ->int)))
-(def %int->ptr (prim-ref (lit int) (lit ->ptr)))
-(def %pref (prim-ref (lit ptr) (lit ref)))
-(def %pset (prim-ref (lit ptr) (lit set!)))
-(def %call (prim-ref (lit ptr) (lit call)))
-(def %byte-len (prim-ref (lit str) (lit byte-len)))
-(def %byte-sub (prim-ref (lit str) (lit byte-sub)))
+(import x/core/doors str-make str->ptr ptr->int int->ptr ptr-ref ptr-set! ptr-call str-byte-len str-byte-sub)
 (def %libc (fn (_ name) ((prim-ref (lit ffi) (lit dlsym)) ((prim-ref (lit ffi) (lit dlopen)) () 1) name)))
 (def %int (fn (_ r) (if (> r 2147483647) (- r 4294967296) r)))
 
@@ -45,26 +37,26 @@
 (def %capacity 262144)
 
 ; A connection: (FD BUFFER FILL), FILL a one-slot list.
-(def proto-conn (fn (_ fd) (list fd (%make-str (+ %capacity 1)) (list 0))))
+(def proto-conn (fn (_ fd) (list fd (str-make (+ %capacity 1)) (list 0))))
 (def proto-fd (fn (_ c) (first c)))
 
 ; N bytes at pointer P sent as a message of TYPE (a character code): the
 ; whole of it, a short write written on.  Answers #f when the peer has gone.
 (def proto-send!
   (fn (_ fd type p n)
-    (def head (%make-str 6))
-    (def at (%str->ptr head))
-    (%pset at 0 type 1)
-    (%pset at 1 (& (>> n 24) 255) 1) (%pset at 2 (& (>> n 16) 255) 1)
-    (%pset at 3 (& (>> n 8) 255) 1) (%pset at 4 (& n 255) 1)
-    (if (%write-all fd (%ptr->int at) 5) (%write-all fd (%ptr->int p) n) #f)))
+    (def head (str-make 6))
+    (def at (str->ptr head))
+    (ptr-set! at 0 type 1)
+    (ptr-set! at 1 (& (>> n 24) 255) 1) (ptr-set! at 2 (& (>> n 16) 255) 1)
+    (ptr-set! at 3 (& (>> n 8) 255) 1) (ptr-set! at 4 (& n 255) 1)
+    (if (%write-all fd (ptr->int at) 5) (%write-all fd (ptr->int p) n) #f)))
 (def %write-all
   (fn (self fd p n)
     (if (= n 0) #t
       ((fn (_ w) (if (< w 1) #f (self fd (+ p w) (- n w))))
-       (%int (%call (%libc "write") fd (%int->ptr p) n))))))
+       (%int (ptr-call (%libc "write") fd (int->ptr p) n))))))
 
-(def proto-send-text! (fn (_ fd type s) (proto-send! fd type (%str->ptr s) (%byte-len s))))
+(def proto-send-text! (fn (_ fd type s) (proto-send! fd type (str->ptr s) (str-byte-len s))))
 
 ; Whatever the socket has read into the connection: answers the count, 0
 ; at the peer's end, below 0 on an error or with the buffer full.
@@ -74,36 +66,36 @@
     (def room (- %capacity fill))
     (if (= room 0) -1
       ((fn (_ got) (if (< 0 got) (%set-first! (List ref 2 c) (+ fill got)) ()) got)
-       (%int (%call (%libc "read") (first c) (%int->ptr (+ (%ptr->int (%str->ptr (List ref 1 c))) fill)) room))))))
+       (%int (ptr-call (%libc "read") (first c) (int->ptr (+ (ptr->int (str->ptr (List ref 1 c))) fill)) room))))))
 
 ; Each whole message the connection holds handed to (F TYPE ADDRESS COUNT),
 ; in order, and dropped; a message read in part is kept.
 (def proto-each!
   (fn (_ c f)
-    (def buf (%str->ptr (List ref 1 c)))
+    (def buf (str->ptr (List ref 1 c)))
     (def fill (first (List ref 2 c)))
     (def used
       ((fn (self at)
          (if (< (- fill at) 5) at
            ((fn (_ n)
               (if (< (- fill at) (+ n 5)) at
-                (do (f (%pref buf at 1) (+ (%ptr->int buf) (+ at 5)) n)
+                (do (f (ptr-ref buf at 1) (+ (ptr->int buf) (+ at 5)) n)
                     (self (+ at (+ n 5))))))
-            (| (<< (%pref buf (+ at 1) 1) 24) (| (<< (%pref buf (+ at 2) 1) 16)
-               (| (<< (%pref buf (+ at 3) 1) 8) (%pref buf (+ at 4) 1)))))))
+            (| (<< (ptr-ref buf (+ at 1) 1) 24) (| (<< (ptr-ref buf (+ at 2) 1) 16)
+               (| (<< (ptr-ref buf (+ at 3) 1) 8) (ptr-ref buf (+ at 4) 1)))))))
        0))
     (if (< 0 used)
-      (do (%call (%libc "memmove") buf (%int->ptr (+ (%ptr->int buf) used)) (- fill used))
+      (do (ptr-call (%libc "memmove") buf (int->ptr (+ (ptr->int buf) used)) (- fill used))
           (%set-first! (List ref 2 c) (- fill used)))
       ())))
 
 ; A payload's bytes as a string, for the payloads that are text.
 (def proto-text
   (fn (_ p n)
-    (def s (%make-str (+ n 1)))
-    (%call (%libc "memcpy") (%str->ptr s) (%int->ptr p) n)
-    (%pset (%str->ptr s) n 0 1)
-    (%byte-sub s 0 n)))
+    (def s (str-make (+ n 1)))
+    (ptr-call (%libc "memcpy") (str->ptr s) (int->ptr p) n)
+    (ptr-set! (str->ptr s) n 0 1)
+    (str-byte-sub s 0 n)))
 
 ; A text payload's fields, split at its tabs.
 (def proto-fields (fn (_ text) (Str8 split "\t" text)))

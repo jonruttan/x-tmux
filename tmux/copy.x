@@ -36,7 +36,7 @@
 (import tmux/vt vt-carry vt-size vt-cursor vt-origin! vt-touch! vt-history vt-view vt-row-length
   vt-line vt-line-length)
 
-(def %pref (prim-ref (lit ptr) (lit ref)))
+(import x/core/doors ptr-ref)
 (def %min (fn (_ a b) (if (< a b) a b)))
 (def %max (fn (_ a b) (if (< a b) b a)))
 
@@ -340,14 +340,14 @@
 ; vi's.
 (def copy-key
   (fn (_ p i n vi)
-    (def b (%pref p i 1))
+    (def b (ptr-ref p i 1))
     (if (= b 27)
       (if (< (+ i 1) n)
         ((fn (_ c)
            (if (if (= c 91) #t (= c 79))
              (%sequence p (+ i 2) n 0)
              (pair (if vi () (%lookup c %meta)) (+ i 2))))
-         (%pref p (+ i 1) 1))
+         (ptr-ref p (+ i 1) 1))
         (pair (if vi (lit clear-selection) (lit cancel)) (+ i 1)))
       (pair (%lookup b (if vi %vi-keys %emacs)) (+ i 1)))))
 ; A CSI or SS3 sequence's command, its parameter's digits read from I.
@@ -361,7 +361,7 @@
            ((= b 126) (pair (%lookup num %tildes) (+ i 1)))
            ((if (< 63 b) (< b 127) #f) (pair (%lookup b %finals) (+ i 1)))
            (#t (pair () (+ i 1)))))
-       (%pref p i 1))
+       (ptr-ref p i 1))
       (pair () i))))
 
 (provide tmux/copy copy-enter copy-resize copy-view copy-origin! copy-touch! copy-cursor copy-position

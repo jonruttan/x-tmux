@@ -79,15 +79,7 @@
 (import tmux/proto proto-conn proto-fd proto-send! proto-send-text! proto-fill! proto-each! proto-text
   proto-fields)
 
-(def %make-str (prim-ref (lit str) (lit make)))
-(def %str->ptr (prim-ref (lit str) (lit ->ptr)))
-(def %ptr->str (prim-ref (lit ptr) (lit ->str)))
-(def %ptr->int (prim-ref (lit ptr) (lit ->int)))
-(def %int->ptr (prim-ref (lit int) (lit ->ptr)))
-(def %pref (prim-ref (lit ptr) (lit ref)))
-(def %pset (prim-ref (lit ptr) (lit set!)))
-(def %call (prim-ref (lit ptr) (lit call)))
-(def %byte-len (prim-ref (lit str) (lit byte-len)))
+(import x/core/doors str-make str->ptr ptr->str ptr->int int->ptr ptr-ref ptr-set! ptr-call str-byte-len)
 (def %num (fn (_ n) ((prim-ref (lit convert) (lit to)) n (Type named STRING) 10)))
 (def %to-int (fn (_ s) ((prim-ref (lit convert) (lit to)) s (Type named INTEGER) 10)))
 (def %int (fn (_ r) (if (> r 2147483647) (- r 4294967296) r)))
@@ -115,8 +107,8 @@
 
 (def %esc
   (fn (_ text)
-    (def e (%make-str 1))
-    (%pset (%str->ptr e) 0 27 1)
+    (def e (str-make 1))
+    (ptr-set! (str->ptr e) 0 27 1)
     (Str8 append e text)))
 
 ; --- output for the client ----------------------------------------------
@@ -126,19 +118,19 @@
 (def %obuf ()) (def %ofill 0)
 (def %ocap 65536)
 
-(def %out (fn (_ s) (%out-bytes (%str->ptr s) (%byte-len s))))
+(def %out (fn (_ s) (%out-bytes (str->ptr s) (str-byte-len s))))
 (def %out-bytes
   (fn (_ p n)
     (when (< (- %ocap %ofill) n) (%flush!))
     (if (< %ocap n)
       (unless (null? %client) (proto-send! (proto-fd %client) 79 p n))
       (when (< 0 n)
-        (do (%call %c-memcpy (%int->ptr (+ (%ptr->int (%str->ptr %obuf)) %ofill)) p n)
+        (do (ptr-call %c-memcpy (int->ptr (+ (ptr->int (str->ptr %obuf)) %ofill)) p n)
             (set! %ofill (+ %ofill n)))))))
 (def %flush!
   (fn (_)
     (when (< 0 %ofill)
-      (do (unless (null? %client) (proto-send! (proto-fd %client) 79 (%str->ptr %obuf) %ofill))
+      (do (unless (null? %client) (proto-send! (proto-fd %client) 79 (str->ptr %obuf) %ofill))
           (set! %ofill 0)))))
 
 ; --- the session being worked on -----------------------------------------
@@ -303,9 +295,9 @@
 (def %remove!
   (fn (_ id)
     (def p (%pane id))
-    (%call %c-kill (%pane-pid p) 1)
+    (ptr-call %c-kill (%pane-pid p) 1)
     (File close (%pane-fd p))
-    (%call %c-waitpid (%pane-pid p) 0 0)
+    (ptr-call %c-waitpid (%pane-pid p) 0 0)
     (set! %pending (List filter (fn (_ w) (not (= (first w) (%pane-fd p)))) %pending))
     (set! %panes (List filter (fn (_ q) (not (= (%pane-id q) id))) %panes))
     (set! %recent (List filter (fn (_ x) (not (= x id))) %recent))
@@ -548,7 +540,7 @@
   (fn (_)
     (List for-each
       (fn (_ p)
-        (%call %c-kill (%pane-pid p) 1) (File close (%pane-fd p)) (%call %c-waitpid (%pane-pid p) 0 0)
+        (ptr-call %c-kill (%pane-pid p) 1) (File close (%pane-fd p)) (ptr-call %c-waitpid (%pane-pid p) 0 0)
         (set! %pending (List filter (fn (_ w) (not (= (first w) (%pane-fd p)))) %pending)))
       %panes)
     (set! %panes ())))
@@ -662,7 +654,7 @@
 ; the kernel's name for its process group's leader, or nil.
 (def %program
   (fn (_ fd)
-    (def pgrp (%int (%call %c-tcgetpgrp fd)))
+    (def pgrp (%int (ptr-call %c-tcgetpgrp fd)))
     (if (< pgrp 1) ()
       ((fn (_ e) (if (null? e) () (rest e)))
        (List find (fn (_ e) (eq? (first e) (lit comm))) (Host process pgrp))))))
@@ -679,8 +671,8 @@
 (def %tv ())
 (def %micros
   (fn (_)
-    (%call %c-gettimeofday (%str->ptr %tv) 0)
-    (+ (* (%pref (%str->ptr %tv) 0 8) 1000000) (%pref (%str->ptr %tv) 8 4))))
+    (ptr-call %c-gettimeofday (str->ptr %tv) 0)
+    (+ (* (ptr-ref (str->ptr %tv) 0 8) 1000000) (ptr-ref (str->ptr %tv) 8 4))))
 
 ; TEXT on the status line for display-time, or until a key, its first
 ; letter a capital, as tmux shows a command's message.
@@ -724,7 +716,7 @@
 (def %ask-for!
   (fn (_ label text yes command)
     (set! %message ())
-    (set! %prompt (list label text (%byte-len text) yes #t command))
+    (set! %prompt (list label text (str-byte-len text) yes #t command))
     (set! %back -1)
     (set! %choices "")
     (%draw-status)))
@@ -764,8 +756,8 @@
     ((fn (self i acc)
        (match
          ((= i n) (if (= n 0) () acc))
-         (((fn (_ c) (if (< 47 c) (< c 58) #f)) (%pref (%str->ptr text) i 1))
-           (self (+ i 1) (+ (* acc 10) (- (%pref (%str->ptr text) i 1) 48))))
+         (((fn (_ c) (if (< 47 c) (< c 58) #f)) (ptr-ref (str->ptr text) i 1))
+           (self (+ i 1) (+ (* acc 10) (- (ptr-ref (str->ptr text) i 1) 48))))
          (#t ())))
      0 0)))
 (def %signed
@@ -1102,8 +1094,8 @@
     (def rect (%pane-rect p))
     (def screen (vt-origin! (vt-make (List ref 2 rect) (List ref 3 rect)) (first rect) (List ref 1 rect)))
     (def text (Str8 join "\r\n" lines))
-    (vt-feed! screen (%str->ptr text) (%byte-len text))
-    (vt-feed! screen (%str->ptr (%esc "[H")) 3)
+    (vt-feed! screen (str->ptr text) (str-byte-len text))
+    (vt-feed! screen (str->ptr (%esc "[H")) 3)
     (%set-pane! (%with-copy p (copy-enter screen #f %vi)))
     (%name-due! %window)
     (set! %touched #t)))
@@ -1242,13 +1234,13 @@
       ((is? "paste-buffer")
         (done (unless (null? %buffers)
                 (do (def fd (%pane-fd (%pane %active)))
-                    (def send! (fn (_ t) (%send! fd (%str->ptr t) (%byte-len t))))
+                    (def send! (fn (_ t) (%send! fd (str->ptr t) (str-byte-len t))))
                     (def bracket (if (on? "p") (vt-bracketed? (%pane-screen (%pane %active))) #f))
                     (when bracket (send! (%esc "[200~")))
                     (send! (%typed (first %buffers)))
                     (when bracket (send! (%esc "[201~")))))))
       ((is? "send-prefix")
-        (done ((fn (_ b) (%send! (%pane-fd (%pane %active)) (%str->ptr b) (%byte-len b))) (key-bytes (%option "prefix")))))
+        (done ((fn (_ b) (%send! (%pane-fd (%pane %active)) (str->ptr b) (str-byte-len b))) (key-bytes (%option "prefix")))))
       ((is? "detach-client") (done (%detach! (Str8 append "[detached (from session " %name ")]"))))
       (#t ()))))
 
@@ -1256,7 +1248,7 @@
 ; as the latest.
 (def %remember!
   (fn (_ line)
-    (unless (if (= (%byte-len line) 0) #t (if (null? %history) #f (str=? line (first %history))))
+    (unless (if (= (str-byte-len line) 0) #t (if (null? %history) #f (str=? line (first %history))))
       (set! %history
         ((fn (self xs k) (if (if (null? xs) #t (= k 0)) () (pair (first xs) (self (rest xs) (- k 1)))))
          (pair line %history) 100)))))
@@ -1275,7 +1267,7 @@
           ((fn (self k) (if (if (< k (Str8 length acc)) (str=? (Str8 sub k 1 acc) (Str8 sub k 1 name)) #f) (self (+ k 1)) (Str8 sub 0 k acc)))
            0))
         (if (null? names) "" (first names)) names))
-    (def after (Str8 sub at (- (%byte-len text) at) text))
+    (def after (Str8 sub at (- (str-byte-len text) at) text))
     (match
       ((if (null? names) #t (not (null? (List find (fn (_ c) (if (str=? c " ") #t (str=? c "\t"))) (%chars word))))) (pair text at))
       ((null? (rest names)) (pair (Str8 append (first names) " " after) (+ (Str8 length (first names)) 1)))
@@ -1288,13 +1280,13 @@
 ; prompt takes Up and Down through its history and Tab to complete.
 (def %edit!
   (fn (_ p i n)
-    (def b (%pref p i 1))
+    (def b (ptr-ref p i 1))
     (def label (first %prompt))
     (def text (List ref 1 %prompt))
     (def at (List ref 2 %prompt))
     (def yes (List ref 3 %prompt))
     (def command (List ref 5 %prompt))
-    (def len (%byte-len text))
+    (def len (str-byte-len text))
     (set! %choices "")
     (def put! (fn (_ t a) (set! %prompt (list label t a yes #t command)) (%draw-status) (set! %touched #t)))
     (def stop! (fn (_) (set! %prompt ()) (%draw-status) (set! %touched #t)))
@@ -1302,7 +1294,7 @@
       (fn (_ k)
         (when (if command (if (< k (List length %history)) (<= -1 k) #f) #f)
           (do (set! %back k)
-              ((fn (_ t) (put! t (%byte-len t))) (if (= k -1) "" (List ref k %history)))))))
+              ((fn (_ t) (put! t (str-byte-len t))) (if (= k -1) "" (List ref k %history)))))))
     (def move!
       (fn (_ k)
         (match
@@ -1355,7 +1347,7 @@
 ; A border: a column of U+2502 or a row of U+2500.
 (def %vbar (fn (_) (Str8 append (%byte 226) (%byte 148) (%byte 130))))
 (def %hbar (fn (_) (Str8 append (%byte 226) (%byte 148) (%byte 128))))
-(def %byte (fn (_ b) ((fn (_ s) (%pset (%str->ptr s) 0 b 1) s) (%make-str 1))))
+(def %byte (fn (_ b) ((fn (_ s) (ptr-set! (str->ptr s) 0 b 1) s) (str-make 1))))
 (def %draw-border
   (fn (_ b)
     (if (eq? (first b) (lit v))
@@ -1381,7 +1373,7 @@
         (do (def label ((fn (_ l) (Str8 sub 0 (%min %cols (Str8 length l)) l)) (first %prompt)))
             (def text (List ref 1 %prompt))
             (def from (%scrolled))
-            (def shown (Str8 sub from (%min (- (%byte-len text) from) (%max 0 (- %cols (Str8 length label)))) text))
+            (def shown (Str8 sub from (%min (- (str-byte-len text) from) (%max 0 (- %cols (Str8 length label)))) text))
             (def room (%max 0 (- %cols (+ (Str8 length label) (Str8 length shown)))))
             (def choices (Str8 sub 0 (%min room (Str8 length %choices)) %choices))
             (set! %overlaid (not (%status?)))
@@ -1602,7 +1594,7 @@
     (%out (Str8 append (%esc "[0m")
             (if (null? %prompt)
               (%goto (+ (first rect) (first c)) (+ (List ref 1 rect) (%min (rest c) (- (List ref 3 rect) 1))))
-              (%goto (- %rows 1) (%min (+ (%byte-len (first %prompt)) (- (List ref 2 %prompt) (%scrolled))) (- %cols 1))))
+              (%goto (- %rows 1) (%min (+ (str-byte-len (first %prompt)) (- (List ref 2 %prompt) (%scrolled))) (- %cols 1))))
             (if (if (null? %prompt) (if (null? (%pane-copy p)) (not (vt-cursor-shown? (%pane-screen p))) #f) #f)
               ""
               (%esc "[?25h"))))))
@@ -1669,7 +1661,7 @@
     (set! %touched #t)
     (def was (%pane-copy p))
     (def text (copy-text was cmd))
-    (unless (if (null? text) #t (= (%byte-len text) 0)) (%keep! text (eq? cmd (lit append))))
+    (unless (if (null? text) #t (= (str-byte-len text) 0)) (%keep! text (eq? cmd (lit append))))
     (def c (copy-do was cmd))
     (%set-pane! (%with-copy p c))
     (if (null? c)
@@ -1694,12 +1686,12 @@
 ; TEXT as a paste types it: each newline a carriage return.
 (def %typed
   (fn (_ text)
-    (def n (%byte-len text))
-    (def s (%make-str (+ n 1)))
-    (def p (%str->ptr s))
-    (%call %c-memcpy p (%str->ptr text) n)
-    (%pset p n 0 1)
-    ((fn (self i) (when (< i n) (do (when (= (%pref p i 1) 10) (%pset p i 13 1)) (self (+ i 1))))) 0)
+    (def n (str-byte-len text))
+    (def s (str-make (+ n 1)))
+    (def p (str->ptr s))
+    (ptr-call %c-memcpy p (str->ptr text) n)
+    (ptr-set! p n 0 1)
+    ((fn (self i) (when (< i n) (do (when (= (ptr-ref p i 1) 10) (ptr-set! p i 13 1)) (self (+ i 1))))) 0)
     s))
 
 ; --- input for the panes ------------------------------------------------
@@ -1718,14 +1710,14 @@
       (%wait! fd p 0 n))))
 (def %wait!
   (fn (_ fd p from n)
-    (def s (%make-str (+ (- n from) 1)))
-    (%call %c-memcpy (%str->ptr s) (%int->ptr (+ (%ptr->int p) from)) (- n from))
+    (def s (str-make (+ (- n from) 1)))
+    (ptr-call %c-memcpy (str->ptr s) (int->ptr (+ (ptr->int p) from)) (- n from))
     (set! %pending (List append %pending (list (list fd s 0 (- n from)))))))
 ; How many of N bytes at P the program on FD takes without waiting.
 (def %put
   (fn (_ fd p n)
     (Sys nonblock! fd)
-    (def k (%int (%call %c-write fd p n)))
+    (def k (%int (ptr-call %c-write fd p n)))
     (Sys nonblock! fd #f)
     (%max k 0)))
 
@@ -1741,7 +1733,7 @@
             ((fn (_ at)
                (if (= at (List ref 3 w)) acc (List append acc (list (list fd (List ref 1 w) at (List ref 3 w))))))
              (+ (List ref 2 w)
-                (%put fd (%int->ptr (+ (%ptr->int (%str->ptr (List ref 1 w))) (List ref 2 w))) (- (List ref 3 w) (List ref 2 w)))))
+                (%put fd (int->ptr (+ (ptr->int (str->ptr (List ref 1 w))) (List ref 2 w))) (- (List ref 3 w) (List ref 2 w)))))
             (List append acc (list w))))
         () %pending))))
 
@@ -1757,10 +1749,10 @@
        (unless (if %done #t (null? %client))
          (do (def pane (%pane %active))
              (def fd (%pane-fd pane))
-             (def flush! (fn (_) (when (< from i) (%send! fd (%int->ptr (+ (%ptr->int p) from)) (- i from)))))
+             (def flush! (fn (_) (when (< from i) (%send! fd (int->ptr (+ (ptr->int p) from)) (- i from)))))
              (if (= i n)
                (flush!)
-               (do (def b (%pref p i 1))
+               (do (def b (ptr-ref p i 1))
                    (def k (key-read p i n))
                    (def key (first k))
                    (def on (fn (_ next) (self next next)))
@@ -1791,7 +1783,7 @@
                      ((not (null? (%bound "root" key)))
                        (do (flush!) (set! %touched #t) (%run-all! (List ref 2 (%bound "root" key))) (on (rest k))))
                      ((%cursor-key? p i (rest k) (vt-cursor-keys? (%pane-screen pane)))
-                       (do (flush!) (%send! fd (%str->ptr (%cursor-key p i (vt-cursor-keys? (%pane-screen pane)))) 3)
+                       (do (flush!) (%send! fd (str->ptr (%cursor-key p i (vt-cursor-keys? (%pane-screen pane)))) 3)
                            (on (rest k))))
                      (#t (self (rest k) from))))))))
      0 0)))
@@ -1801,18 +1793,18 @@
 ; ESC O X when it did not.  %cursor-key spells it as it reads it.
 (def %cursor-key?
   (fn (_ p i next ss3)
-    (if (if (= (- next i) 3) (= (%pref p i 1) 27) #f)
-      (if (not (null? (List find (fn (_ x) (= x (%pref p (+ i 2) 1))) (lit (65 66 67 68 72 70)))))
-        (if ss3 (= (%pref p (+ i 1) 1) 91) (= (%pref p (+ i 1) 1) 79))
+    (if (if (= (- next i) 3) (= (ptr-ref p i 1) 27) #f)
+      (if (not (null? (List find (fn (_ x) (= x (ptr-ref p (+ i 2) 1))) (lit (65 66 67 68 72 70)))))
+        (if ss3 (= (ptr-ref p (+ i 1) 1) 91) (= (ptr-ref p (+ i 1) 1) 79))
         #f)
       #f)))
 (def %cursor-key
   (fn (_ p i ss3)
-    (def s (%make-str 4))
-    (%pset (%str->ptr s) 0 27 1)
-    (%pset (%str->ptr s) 1 (if ss3 79 91) 1)
-    (%pset (%str->ptr s) 2 (%pref p (+ i 2) 1) 1)
-    (%pset (%str->ptr s) 3 0 1)
+    (def s (str-make 4))
+    (ptr-set! (str->ptr s) 0 27 1)
+    (ptr-set! (str->ptr s) 1 (if ss3 79 91) 1)
+    (ptr-set! (str->ptr s) 2 (ptr-ref p (+ i 2) 1) 1)
+    (ptr-set! (str->ptr s) 3 0 1)
     s))
 
 ; --- pane output ----------------------------------------------------------
@@ -1821,10 +1813,10 @@
 ; is shown; its end, or its program's, removes it.
 (def %output!
   (fn (_ p)
-    (def at (%str->ptr %buf))
-    (def got (%int (%call %c-read (%pane-fd p) at 4096)))
+    (def at (str->ptr %buf))
+    (def got (%int (ptr-call %c-read (%pane-fd p) at 4096)))
     (if (< 0 got)
-      (do (%pset at got 0 1) (vt-feed! (%pane-screen p) (%ptr->int at) got) (%moved! got)
+      (do (ptr-set! at got 0 1) (vt-feed! (%pane-screen p) (ptr->int at) got) (%moved! got)
           (when (%holds? %tree (%pane-id p)) (set! %touched #t))
           (%name-due! (first (%window-of (%pane-id p)))))
       (when (if (= got 0) #t (%gone? (%pane-pid p))) (%remove! (%pane-id p))))))
@@ -1840,7 +1832,7 @@
     (when (< %collect-every %fed) (do (Heap collect) (set! %fed 0)))))
 
 ; Whether a pane's program has ended: waitpid with WNOHANG.
-(def %gone? (fn (_ pid) (not (= 0 (%int (%call %c-waitpid pid 0 1))))))
+(def %gone? (fn (_ pid) (not (= 0 (%int (ptr-call %c-waitpid pid 0 1))))))
 
 ; --- sessions and clients ---------------------------------------------------
 
@@ -1898,7 +1890,7 @@
     (%redraw!)
     (%settle!)))
 
-(def %now (fn (_) (%call (%libc "time") 0)))
+(def %now (fn (_) (ptr-call (%libc "time") 0)))
 
 ; A new session: COLS TAB ROWS TAB DETACHED TAB NAME TAB CWD.
 (def %new!
@@ -1949,7 +1941,7 @@
   (fn (_ c)
     (%stash!)
     (def strcmp (%libc "strcmp"))
-    (def before? (fn (_ a b) (< (%int (%call strcmp (%str->ptr (%record-name a)) (%str->ptr (%record-name b)))) 0)))
+    (def before? (fn (_ a b) (< (%int (ptr-call strcmp (str->ptr (%record-name a)) (str->ptr (%record-name b)))) 0)))
     (def sorted
       (List fold
         (fn (_ acc s)
@@ -1966,9 +1958,9 @@
 ; Seconds since the epoch as ctime(3) writes them, without its newline.
 (def %ctime
   (fn (_ t)
-    (def cell (%make-str 9))
-    (%pset (%str->ptr cell) 0 t 8)
-    (def s (%ptr->str (%call (%libc "ctime") (%str->ptr cell))))
+    (def cell (str-make 9))
+    (ptr-set! (str->ptr cell) 0 t 8)
+    (def s (ptr->str (ptr-call (%libc "ctime") (str->ptr cell))))
     (Str8 trim-right s)))
 
 ; Every session ended and the server with them.
@@ -1995,7 +1987,7 @@
              (unless (null? s)
                (do (%enter! s)
                    (if (= type 73)
-                     (%keys! (%int->ptr p) n)
+                     (%keys! (int->ptr p) n)
                      (when (= type 83)
                        ((fn (_ f) (set! %cols (%to-int (first f))) (set! %rows (%to-int (List ref 1 f))) (%redraw!))
                         (proto-fields (proto-text p n)))))
@@ -2088,9 +2080,9 @@
     (vt-jit!)
     (%defaults!)
     (%configure! files)
-    (set! %buf (%make-str 4097))
-    (set! %tv (%make-str 16))
-    (set! %obuf (%make-str (+ %ocap 1)))
+    (set! %buf (str-make 4097))
+    (set! %tv (str-make 16))
+    (set! %obuf (str-make (+ %ocap 1)))
     (set! %listen fd)
     (guard (e ()) (%serve))
     (List for-each (fn (_ s) (%enter! s) (%hang-up!)) %sessions)

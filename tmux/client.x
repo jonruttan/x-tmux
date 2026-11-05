@@ -24,21 +24,16 @@
   proto-fields)
 (import tmux/server tmux-serve)
 
-(def %make-str (prim-ref (lit str) (lit make)))
-(def %str->ptr (prim-ref (lit str) (lit ->ptr)))
-(def %int->ptr (prim-ref (lit int) (lit ->ptr)))
-(def %pset (prim-ref (lit ptr) (lit set!)))
-(def %call (prim-ref (lit ptr) (lit call)))
-(def %byte-len (prim-ref (lit str) (lit byte-len)))
+(import x/core/doors str-make str->ptr int->ptr ptr-set! ptr-call str-byte-len)
 (def %num (fn (_ n) ((prim-ref (lit convert) (lit to)) n (Type named STRING) 10)))
 (def %to-int (fn (_ s) ((prim-ref (lit convert) (lit to)) s (Type named INTEGER) 10)))
 (def %int (fn (_ r) (if (> r 2147483647) (- r 4294967296) r)))
 (def %libc (fn (_ name) ((prim-ref (lit ffi) (lit dlsym)) ((prim-ref (lit ffi) (lit dlopen)) () 1) name)))
-(def %write (fn (_ fd s) (%call (%libc "write") fd (%str->ptr s) (%byte-len s))))
+(def %write (fn (_ fd s) (ptr-call (%libc "write") fd (str->ptr s) (str-byte-len s))))
 (def %esc
   (fn (_ text)
-    (def e (%make-str 1))
-    (%pset (%str->ptr e) 0 27 1)
+    (def e (str-make 1))
+    (ptr-set! (str->ptr e) 0 27 1)
     (Str8 append e text)))
 
 ; A connection to the server at PATH, or nil when none answers.
@@ -56,8 +51,8 @@
     (def fd (Socket unix-listen path))
     (def pid (Sys fork))
     (if (= pid 0)
-      (do (%call (%libc "setsid"))
-          (def null (%int (%call (%libc "open") (%str->ptr "/dev/null") 2)))
+      (do (ptr-call (%libc "setsid"))
+          (def null (%int (ptr-call (%libc "open") (str->ptr "/dev/null") 2)))
           (Sys dup2 null 0) (Sys dup2 null 1) (Sys dup2 null 2)
           (when (< 2 null) (Sys close null))
           (Sys exit (tmux-serve fd path files)))
@@ -85,11 +80,11 @@
     (proto-each! c
       (fn (_ type p n)
         (match
-          ((= type 79) (%call (%libc "write") 1 (%int->ptr p) n))
+          ((= type 79) (ptr-call (%libc "write") 1 (int->ptr p) n))
           ((= type 88)
             ((fn (_ text)
                (def tab (Str8 index-of "\t" text))
-               (%set-first! out (pair (%to-int (Str8 sub 0 tab text)) (Str8 sub (+ tab 1) (- (%byte-len text) (+ tab 1)) text))))
+               (%set-first! out (pair (%to-int (Str8 sub 0 tab text)) (Str8 sub (+ tab 1) (- (str-byte-len text) (+ tab 1)) text))))
              (proto-text p n)))
           (#t ()))))
     (first out)))
@@ -121,9 +116,9 @@
 ; MSG_PEEK.
 (def %first-type
   (fn (_ c)
-    (def b (%make-str 2))
-    (if (< 0 (%int (%call (%libc "recv") (proto-fd c) (%str->ptr b) 1 2)))
-      ((prim-ref (lit ptr) (lit ref)) (%str->ptr b) 0 1)
+    (def b (str-make 2))
+    (if (< 0 (%int (ptr-call (%libc "recv") (proto-fd c) (str->ptr b) 1 2)))
+      ((prim-ref (lit ptr) (lit ref)) (str->ptr b) 0 1)
       0)))
 
 ; Keys to the server, its output to the terminal, a change of size told,
@@ -132,7 +127,7 @@
 ; it is attached.
 (def %relay
   (fn (_ c size)
-    (def buf (%make-str 4097))
+    (def buf (str-make 4097))
     (def fd (proto-fd c))
     (def rounds (list 0))
     ((fn (self size)
@@ -143,8 +138,8 @@
        (def now (%size))
        (unless (if (= (first now) (first size)) (= (rest now) (rest size)) #f)
          (proto-send-text! fd 83 (Str8 append (%num (first now)) "\t" (%num (rest now)))))
-       (def typed (if (null? keys) 1 (%int (%call (%libc "read") 0 (%str->ptr buf) 4096))))
-       (when (if (null? keys) #f (< 0 typed)) (proto-send! fd 73 (%str->ptr buf) typed))
+       (def typed (if (null? keys) 1 (%int (ptr-call (%libc "read") 0 (str->ptr buf) 4096))))
+       (when (if (null? keys) #f (< 0 typed)) (proto-send! fd 73 (str->ptr buf) typed))
        (match
          ((< typed 1) (pair 1 "[lost tty]"))
          ((null? (List find (fn (_ r) (= (first r) fd)) ready)) (self now))

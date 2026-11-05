@@ -15,17 +15,13 @@
 
 (module tmux/keys)
 
-(def %pref (prim-ref (lit ptr) (lit ref)))
-(def %make-str (prim-ref (lit str) (lit make)))
-(def %str->ptr (prim-ref (lit str) (lit ->ptr)))
-(def %pset (prim-ref (lit ptr) (lit set!)))
-(def %byte-len (prim-ref (lit str) (lit byte-len)))
+(import x/core/doors ptr-ref str-make str->ptr ptr-set! str-byte-len)
 (def %num (fn (_ n) ((prim-ref (lit convert) (lit to)) n (Type named STRING) 10)))
 
 (def %byte
   (fn (_ b)
-    (def s (%make-str 1))
-    (%pset (%str->ptr s) 0 b 1)
+    (def s (str-make 1))
+    (ptr-set! (str->ptr s) 0 b 1)
     s))
 
 ; The names of keys with no character, as tmux spells them, then the
@@ -66,8 +62,8 @@
 ; another key is Meta on it.
 (def key-read
   (fn (self p i n)
-    (def b (%pref p i 1))
-    (def at (fn (_ k) (if (< (+ i k) n) (%pref p (+ i k) 1) -1)))
+    (def b (ptr-ref p i 1))
+    (def at (fn (_ k) (if (< (+ i k) n) (ptr-ref p (+ i k) 1) -1)))
     (match
       ((= b 27)
         (match
@@ -82,8 +78,8 @@
       ((= b 32) (pair "Space" (+ i 1)))
       ((= b 127) (pair "BSpace" (+ i 1)))
       ((< b 128) (pair (%byte b) (+ i 1)))
-      (#t ((fn (_ j) (pair ((fn (self k acc) (if (= k j) acc (self (+ k 1) (Str8 append acc (%byte (%pref p k 1)))))) i "") j))
-           ((fn (self j) (if (if (< j n) (= (& (%pref p j 1) 192) 128) #f) (self (+ j 1)) j)) (+ i 1)))))))
+      (#t ((fn (_ j) (pair ((fn (self k acc) (if (= k j) acc (self (+ k 1) (Str8 append acc (%byte (ptr-ref p k 1)))))) i "") j))
+           ((fn (self j) (if (if (< j n) (= (& (ptr-ref p j 1) 192) 128) #f) (self (+ j 1)) j)) (+ i 1)))))))
 
 ; A CSI or SS3 sequence's key, its parameters read from I: NUM the one
 ; being read, BEFORE those before it, the latest first.  The first
@@ -102,7 +98,7 @@
            ((= b 126) (named (%lookup (first ps) %tildes)))
            ((if (< 63 b) (< b 127) #f) (named (%lookup b %finals)))
            (#t (pair "Escape" (+ i 1)))))
-       (%pref p i 1))
+       (ptr-ref p i 1))
       (pair "Escape" i))))
 
 ; NAME as tmux reads a key's name, or nil when it names none.
@@ -132,8 +128,8 @@
     (def named
       (match
         ((= (Str8 length base) 0) ())
-        ((= (%byte-len base) 1)
-          (if (if c ((fn (_ b) (if (< 64 b) (< b 91) #f)) (%pref (%str->ptr base) 0 1)) #f) (Str8 downcase base) base))
+        ((= (str-byte-len base) 1)
+          (if (if c ((fn (_ b) (if (< 64 b) (< b 91) #f)) (ptr-ref (str->ptr base) 0 1)) #f) (Str8 downcase base) base))
         (#t ((fn (_ e)
                (if (null? e)
                  ((fn (_ x) (if (null? x) (%character base) x))
@@ -145,11 +141,11 @@
 ; BASE when it is one UTF-8 character, else nil.
 (def %character
   (fn (_ base)
-    (if (< 127 (%pref (%str->ptr base) 0 1))
+    (if (< 127 (ptr-ref (str->ptr base) 0 1))
       ((fn (_ lead)
          (def len (match ((< 239 lead) 4) ((< 223 lead) 3) (#t 2)))
-         (if (= (%byte-len base) len) base ()))
-       (%pref (%str->ptr base) 0 1))
+         (if (= (str-byte-len base) len) base ()))
+       (ptr-ref (str->ptr base) 0 1))
       ())))
 
 ; The bytes a terminal sends for the key NAME, as send-prefix sends the
@@ -163,7 +159,7 @@
       ((if (< 4 n) (str=? (Str8 sub 0 4 name) "C-M-") #f) (Str8 append (%byte 27) (self (Str8 append "C-" (Str8 sub 4 (- n 4) name)))))
       ((str=? name "C-Space") (%byte 0))
       ((if (= n 3) (str=? (Str8 sub 0 2 name) "C-") #f)
-        ((fn (_ c) (%byte (if (if (< 96 c) (< c 123) #f) (- c 96) (& c 31)))) (%pref (%str->ptr name) 2 1)))
+        ((fn (_ c) (%byte (if (if (< 96 c) (< c 123) #f) (- c 96) (& c 31)))) (ptr-ref (str->ptr name) 2 1)))
       ((str=? name "Space") " ")
       ((str=? name "Tab") (%byte 9))
       ((str=? name "Enter") (%byte 13))

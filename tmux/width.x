@@ -21,11 +21,7 @@
 
 (module tmux/width)
 
-(def %make-str (prim-ref (lit str) (lit make)))
-(def %str->ptr (prim-ref (lit str) (lit ->ptr)))
-(def %pref (prim-ref (lit ptr) (lit ref)))
-(def %pset (prim-ref (lit ptr) (lit set!)))
-(def %quot (prim-ref (lit int) (lit /)))
+(import x/core/doors str-make str->ptr ptr-ref ptr-set! int/)
 
 (def %ranges (list
   768 879 0 1155 1161 0 1425 1469 0 1471 1471 0 1473 1474 0 1476 1477 0
@@ -127,10 +123,10 @@
 
 (def %pack!
   (fn (_)
-    (def n (%quot (List length %ranges) 3))
-    (def s (%make-str (* n 12)))
-    (def p (%str->ptr s))
-    ((fn (self xs at) (unless (null? xs) (do (%pset p at (first xs) 4) (self (rest xs) (+ at 4))))) %ranges 0)
+    (def n (int/ (List length %ranges) 3))
+    (def s (str-make (* n 12)))
+    (def p (str->ptr s))
+    ((fn (self xs at) (unless (null? xs) (do (ptr-set! p at (first xs) 4) (self (rest xs) (+ at 4))))) %ranges 0)
     (set! %count n)
     (set! %table s)))
 
@@ -139,15 +135,15 @@
   (fn (_ cp)
     (if (< cp 128) 1
       (do (when (null? %table) (%pack!))
-          (%search (%str->ptr %table) cp 0 (- %count 1))))))
+          (%search (str->ptr %table) cp 0 (- %count 1))))))
 (def %search
   (fn (self p cp lo hi)
     (if (< hi lo) 1
       ((fn (_ mid)
          (match
-           ((< cp (%pref p (* mid 12) 4)) (self p cp lo (- mid 1)))
-           ((< (%pref p (+ (* mid 12) 4) 4) cp) (self p cp (+ mid 1) hi))
-           (#t (%pref p (+ (* mid 12) 8) 4))))
-       (%quot (+ lo hi) 2)))))
+           ((< cp (ptr-ref p (* mid 12) 4)) (self p cp lo (- mid 1)))
+           ((< (ptr-ref p (+ (* mid 12) 4) 4) cp) (self p cp (+ mid 1) hi))
+           (#t (ptr-ref p (+ (* mid 12) 8) 4))))
+       (int/ (+ lo hi) 2)))))
 
 (provide tmux/width char-width)
