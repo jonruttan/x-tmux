@@ -541,6 +541,8 @@
 ; change to them.
 (def vt-jit-make
   (fn (_)
+    ; the screen's state is laid out in 8-byte words
+    (if (< %word-size 8) (Err raise (lit state) "vt-jit: written for an 8-byte word" ()))
     (jit-group "x-tmux-vt-9" (fn (_) (list (vt-jit-form) (vt-render-form)))
       (fn (_ fns replayed?)
         (def engine (pair (first fns) (first (rest fns))))
