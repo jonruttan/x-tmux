@@ -79,7 +79,7 @@
 (import tmux/proto proto-conn proto-fd proto-send! proto-send-text! proto-fill! proto-each! proto-text
   proto-fields)
 
-(import x/core/doors str-make str->ptr ptr->str ptr->int int->ptr ptr-ref ptr-set! ptr-call str-byte-len)
+(import x/core/doors str-make str->ptr ptr->str ptr->int int->ptr ptr-ref ptr-set! ptr-ref-word ptr-set-word! ptr-call str-byte-len)
 (def %num (fn (_ n) ((prim-ref (lit convert) (lit to)) n (Type named STRING) 10)))
 (def %to-int (fn (_ s) ((prim-ref (lit convert) (lit to)) s (Type named INTEGER) 10)))
 (def %int (fn (_ r) (if (> r 2147483647) (- r 4294967296) r)))
@@ -90,10 +90,9 @@
 ; libc's doors, looked up as the server starts: a handle is a fact of the
 ; process, and a state image is written by another
 (def %c-read ()) (def %c-write ()) (def %c-waitpid ()) (def %c-kill ()) (def %c-memcpy ())
-(def %c-gettimeofday ()) (def %c-tcgetpgrp ())
+(def %c-tcgetpgrp ())
 (def %resolve!
   (fn (_)
-    (set! %c-gettimeofday (%libc "gettimeofday"))
     (set! %c-tcgetpgrp (%libc "tcgetpgrp"))
     (set! %c-read (%libc "read"))
     (set! %c-write (%libc "write"))
@@ -668,11 +667,10 @@
 
 ; --- the status line's messages and questions -----------------------------
 
-(def %tv ())
 (def %micros
   (fn (_)
-    (ptr-call %c-gettimeofday (str->ptr %tv) 0)
-    (+ (* (ptr-ref (str->ptr %tv) 0 8) 1000000) (ptr-ref (str->ptr %tv) 8 4))))
+    (def t (Sys time-of-day))
+    (+ (* (first t) 1000000) (rest t))))
 
 ; TEXT on the status line for display-time, or until a key, its first
 ; letter a capital, as tmux shows a command's message.
@@ -1956,10 +1954,13 @@
     (%leave! c 0 (Str8 join "\n" (List map line sorted)))))
 
 ; Seconds since the epoch as ctime(3) writes them, without its newline.
+; The time_t goes in as 8 bytes, sign-extended: a 4-byte word's musl reads
+; all 8, its glibc the low word.
 (def %ctime
   (fn (_ t)
     (def cell (str-make 9))
-    (ptr-set! (str->ptr cell) 0 t 8)
+    (ptr-set-word! (str->ptr cell) 0 t)
+    (when (< %word-size 8) (ptr-set-word! (str->ptr cell) %word-size (if (< t 0) -1 0)))
     (def s (ptr->str (ptr-call (%libc "ctime") (str->ptr cell))))
     (Str8 trim-right s)))
 
@@ -2081,7 +2082,6 @@
     (%defaults!)
     (%configure! files)
     (set! %buf (str-make 4097))
-    (set! %tv (str-make 16))
     (set! %obuf (str-make (+ %ocap 1)))
     (set! %listen fd)
     (guard (e ()) (%serve))
