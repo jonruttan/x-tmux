@@ -54,7 +54,7 @@
 
 (import tmux/width char-width)
 
-(import x/core/doors str-make str->ptr ptr->int int->ptr ptr-ref ptr-set! ptr-call ffi-dlsym ffi-dlopen int/ int%)
+(import x/core/doors str-make str->ptr ptr->int int->ptr ptr-ref ptr-set! ptr-ref-word ptr-set-word! ptr-call ffi-dlsym ffi-dlopen int/ int%)
 (def %min (fn (_ a b) (if (< a b) a b)))
 (def %max (fn (_ a b) (if (< a b) b a)))
 
@@ -121,9 +121,12 @@
 ; A cell's byte for a character in the extended buffer, and for padding.
 (def %WIDE 128) (def %PAD 129)
 
-(def %w (fn (_ s o) (ptr-ref s o 8)))
-(def %w! (fn (_ s o x) (ptr-set! s o x 8)))
-(def %addr (fn (_ s o) (int->ptr (ptr-ref s o 8))))
+; A slot is 8 bytes, and a word is read and written in it: all of it on an
+; 8-byte word, the low half on a 4-byte one, which holds every value a slot
+; carries.  A ref of 8 on a 4-byte word copies past the word.
+(def %w (fn (_ s o) (ptr-ref-word s o)))
+(def %w! (fn (_ s o x) (ptr-set-word! s o x)))
+(def %addr (fn (_ s o) (int->ptr (ptr-ref-word s o))))
 
 ; The bytes a printable run stops at: every control byte, DEL, and every
 ; byte past ASCII, which the UTF-8 reader takes.
@@ -199,19 +202,19 @@
     (def m (%buffer (* 8 rows) 0))
     ((fn (self i) (if (< i rows) (self (%word-at! (str->ptr m) i)) ())) 0)
     m))
-(def %word-at! (fn (_ p i) (ptr-set! p (* 8 i) i 8) (+ i 1)))
+(def %word-at! (fn (_ p i) (ptr-set-word! p (* 8 i) i) (+ i 1)))
 
 ; Cell (ROW, COL) of the buffer at BASE, %CP or %AP, through the row map.
 ; The lookup is written out in each, as these run for nearly every cell.
 (def %at
   (fn (_ s base row col)
-    (int->ptr (+ (ptr-ref s base 8) (+ (* (ptr-ref (int->ptr (+ (ptr-ref s %MAP 8) (* 8 row))) 0 8) (ptr-ref s %COLS 8)) col)))))
-(def %row (fn (_ s row) (ptr-ref (int->ptr (+ (%w s %MAP) (* 8 row))) 0 8)))
+    (int->ptr (+ (ptr-ref-word s base) (+ (* (ptr-ref-word (int->ptr (+ (ptr-ref-word s %MAP) (* 8 row))) 0) (ptr-ref-word s %COLS)) col)))))
+(def %row (fn (_ s row) (ptr-ref-word (int->ptr (+ (%w s %MAP) (* 8 row))) 0)))
 ; A cell's slot in an extended buffer, BASE %EP.
 (def %slot
   (fn (_ s base row col)
-    (int->ptr (+ (ptr-ref s base 8)
-                  (* 16 (+ (* (ptr-ref (int->ptr (+ (ptr-ref s %MAP 8) (* 8 row))) 0 8) (ptr-ref s %COLS 8)) col))))))
+    (int->ptr (+ (ptr-ref-word s base)
+                  (* 16 (+ (* (ptr-ref-word (int->ptr (+ (ptr-ref-word s %MAP) (* 8 row))) 0) (ptr-ref-word s %COLS)) col))))))
 (def %cell (fn (_ s row col) (ptr-ref (%at s %CP row col) 0 1)))
 (def %cell! (fn (_ s row col b) (ptr-set! (%at s %CP row col) 0 b 1)))
 (def %dirty! (fn (_ s row) (ptr-set! (%addr s %DP) row 1 1)))
@@ -433,7 +436,7 @@
   (fn (_ s)
     (def n (%min (%w s %NP) 16))
     (%w! s %ATTR (%intern! s (if (= n 0) 0 (%sgr-apply s (%style s (%w s %ATTR)) 0 n))))))
-(def %style (fn (_ s i) (ptr-ref (%addr s %STY) (* 8 i) 8)))
+(def %style (fn (_ s i) (ptr-ref-word (%addr s %STY) (* 8 i))))
 
 ; The attribute bits SGR 1 to 9 set, by their parameter; 6 sets none.
 (def %flag (fn (_ p) (List ref (- p 1) (lit (1 2 4 8 16 0 32 64 128)))))
@@ -508,10 +511,10 @@
   (fn (_ s key)
     (def table (%addr s %STY))
     (def n (%w s %NSTY))
-    ((fn (self i) (if (< i n) (if (= (ptr-ref table (* 8 i) 8) key) i (self (+ i 1))) 0)) 1)))
+    ((fn (self i) (if (< i n) (if (= (ptr-ref-word table (* 8 i)) key) i (self (+ i 1))) 0)) 1)))
 (def %put-style!
   (fn (_ s at key)
-    (ptr-set! (%addr s %STY) (* 8 at) key 8)
+    (ptr-set-word! (%addr s %STY) (* 8 at) key)
     (%style-bytes! (+ (%w s %SGRB) (* %SLOT at)) key)
     at))
 
@@ -527,7 +530,7 @@
             (if (not (= 0 (ptr-call %c-memchr (%addr s %AP) i n))) #t
               (if (not (= 0 (ptr-call %c-memchr (%addr s %SAP) i n))) #t
                 (not (= 0 (ptr-call %c-memchr (%addr s %HA) i (* (%w s %HLIM) (%w s %COLS)))))))))))
-    ((fn (self i) (when (< i %STYLES) (do (unless (used? i) (ptr-set! (%addr s %STY) (* 8 i) -1 8)) (self (+ i 1))))) 2)))
+    ((fn (self i) (when (< i %STYLES) (do (unless (used? i) (ptr-set-word! (%addr s %STY) (* 8 i) -1)) (self (+ i 1))))) 2)))
 
 ; KEY's SGR written to the slot at address AT: its length, then ESC [ 0,
 ; each attribute's parameter, the foreground's and the background's, m.
@@ -961,7 +964,7 @@
     (def keep-cols (%min cols (%w s %COLS)))
     ((fn (self r)
        (when (< r keep-rows)
-         (do (def from (* (ptr-ref (int->ptr (+ (%w s map) (* 8 r))) 0 8) (%w s %COLS)))
+         (do (def from (* (ptr-ref-word (int->ptr (+ (%w s map) (* 8 r))) 0) (%w s %COLS)))
              (def to (* r cols))
              (ptr-call %c-memcpy (int->ptr (+ (%w t cells) to)) (int->ptr (+ (%w s cells) from)) keep-cols)
              (ptr-call %c-memcpy (int->ptr (+ (%w t attrs) to)) (int->ptr (+ (%w s attrs) from)) keep-cols)
