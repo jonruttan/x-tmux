@@ -67,11 +67,21 @@ the same keys and files.
 ### the bytes send-prefix sends for a key
 
 ```tmux
-(write (List map (fn (_ k) ((prim-ref (lit str) (lit byte-len)) (key-bytes k))) (list "C-b" "C-a" "M-x" "a" "Space" "F1")))
-(write (List map (fn (_ k) ((prim-ref (lit ptr) (lit ref)) ((prim-ref (lit str) (lit ->ptr)) (key-bytes k)) 0 1)) (list "C-b" "C-a" "M-x" "a" "Space")))
+(write (List map (fn (_ k) (List length (key-bytes k))) (list "C-b" "C-a" "M-x" "a" "Space" "F1" "C-Space")))
+(write (List map (fn (_ k) (first (key-bytes k))) (list "C-b" "C-a" "M-x" "a" "Space" "C-Space")))
 ```
 ---
-    (1 1 2 1 1 0)(2 1 27 97 32)
+    (1 1 2 1 1 3 1)(2 1 27 97 32 0)
+
+### the bytes send-keys sends for a key: CSI, SS3 and xterm's modifiers
+
+```tmux
+(write (List map key-bytes
+  (list "Up" "C-Up" "M-Up" "S-Up" "C-S-Up" "Home" "End" "C-Home" "F1" "F5" "F12" "S-F1" "BTab" "IC" "DC"
+        "PPage" "NPage" "M-a" "C-a" "C-M-a" "Enter" "M-Enter" "C-Space" "M-C-Space" "C-@" "BSpace")))
+```
+---
+    ((27 91 65) (27 91 49 59 53 65) (27 91 49 59 51 65) (27 91 49 59 50 65) (27 91 49 59 54 65) (27 91 49 126) (27 91 52 126) (27 91 49 59 53 72) (27 79 80) (27 91 49 53 126) (27 91 50 52 126) (27 91 49 59 50 80) (27 91 90) (27 91 50 126) (27 91 51 126) (27 91 53 126) (27 91 54 126) (27 97) (1) (27 1) (13) (27 13) (0) (27 0) (0) (127))
 
 ## files of commands
 
@@ -106,3 +116,12 @@ the same keys and files.
 ```
 ---
     ((#t (("split-window" (("h" . #t)) ()) ("split-window" (("v" . #t)) ()))) (#t (("new-window" () ()) ("rename-window" () ("x")))) (#t (("select-pane" (("t" . "1")) ()))))
+
+### a shell's words: one word a word, not a line, and ; between commands
+
+```tmux
+(write (list (command-words (list "send" "-t" "w:1" "echo hi; ls" "Enter" ";" "lsw" "-F" "#I"))
+             (command-words (list "has" "-x"))))
+```
+---
+    ((#t (("send-keys" (("t" . "w:1")) ("echo hi; ls" "Enter")) ("list-windows" (("F" . "#I")) ()))) (#f "command has-session: unknown flag -x"))

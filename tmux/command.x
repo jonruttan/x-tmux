@@ -76,14 +76,16 @@
 (def %commands
   (lit (("bind-key" "nr" "NT" 1 -1) ("command-prompt" "" "Ip" 0 1) ("confirm-before" "" "p" 1 1)
         ("copy-mode" "eu" "" 0 0) ("detach-client" "" "" 0 0) ("display-message" "aCIlNpv" "cdFt" 0 1)
-        ("display-panes" "" "" 0 0)
-        ("kill-pane" "" "t" 0 0) ("kill-session" "" "" 0 0) ("kill-window" "" "t" 0 0)
-        ("last-pane" "" "" 0 0) ("last-window" "" "" 0 0) ("new-window" "" "n" 0 0)
+        ("display-panes" "" "" 0 0) ("has-session" "" "t" 0 0)
+        ("kill-pane" "" "t" 0 0) ("kill-session" "" "t" 0 0) ("kill-window" "" "t" 0 0)
+        ("last-pane" "" "" 0 0) ("last-window" "" "" 0 0) ("list-panes" "as" "Fft" 0 0)
+        ("list-windows" "a" "Fft" 0 0) ("new-window" "d" "nt" 0 0)
         ("next-layout" "" "" 0 0) ("next-window" "" "" 0 0) ("paste-buffer" "p" "" 0 0)
-        ("previous-layout" "" "" 0 0) ("previous-window" "" "" 0 0) ("rename-window" "" "" 1 1)
-        ("resize-pane" "DLRUZ" "" 0 1) ("rotate-window" "DU" "" 0 0) ("select-layout" "np" "" 0 1)
-        ("select-pane" "DLRUl" "t" 0 0) ("select-window" "lnp" "t" 0 0) ("send-prefix" "" "" 0 0)
-        ("set-option" "gqsuw" "" 1 2) ("source-file" "q" "" 1 -1) ("split-window" "hv" "" 0 0)
+        ("previous-layout" "" "" 0 0) ("previous-window" "" "" 0 0) ("rename-session" "" "t" 1 1)
+        ("rename-window" "" "t" 1 1)
+        ("resize-pane" "DLRUZ" "" 0 1) ("rotate-window" "DU" "" 0 0) ("select-layout" "np" "t" 0 1)
+        ("select-pane" "DLRUl" "t" 0 0) ("select-window" "lnp" "t" 0 0) ("send-keys" "Hl" "Nt" 0 -1)
+        ("send-prefix" "" "" 0 0) ("set-option" "gqsuw" "" 1 2) ("show-options" "gqsvw" "t" 0 1) ("source-file" "q" "" 1 -1) ("split-window" "hv" "t" 0 0)
         ("swap-pane" "DU" "" 0 0) ("unbind-key" "anq" "T" 0 1))))
 
 (def %char (fn (_ s i) (Str8 sub i 1 s)))
@@ -271,20 +273,24 @@
 ; ARGS, the words after a key bound to them, read as commands: one word
 ; read as a line, else the words themselves, a `;` word between commands.
 (def command-list
+  (fn (_ args) (if (null? (rest args)) (command-parse (first args)) (command-words args))))
+
+; WORDS, a shell's or a binding's, read as commands, a `;` word between
+; them: (#t ((NAME FLAGS ARGS) ...)), or (#f MESSAGE).
+(def command-words
   (fn (_ args)
-    (if (null? (rest args)) (command-parse (first args))
-      ((fn (self ws words done)
-         (def finish
-           (fn (_ done)
-             ((fn (each cs acc)
-                (if (null? cs) (list #t (List reverse acc))
-                  ((fn (_ c) (if (first c) (each (rest cs) (pair (List ref 1 c) acc)) c)) (%command (first cs)))))
-              (List reverse done) ())))
-         (match
-           ((null? ws) (finish (if (null? words) done (pair (List reverse words) done))))
-           ((str=? (first ws) ";") (self (rest ws) () (if (null? words) done (pair (List reverse words) done))))
-           (#t (self (rest ws) (pair (first ws) words) done))))
-       args () ()))))
+    ((fn (self ws words done)
+       (def finish
+         (fn (_ done)
+           ((fn (each cs acc)
+              (if (null? cs) (list #t (List reverse acc))
+                ((fn (_ c) (if (first c) (each (rest cs) (pair (List ref 1 c) acc)) c)) (%command (first cs)))))
+            (List reverse done) ())))
+       (match
+         ((null? ws) (finish (if (null? words) done (pair (List reverse words) done))))
+         ((str=? (first ws) ";") (self (rest ws) () (if (null? words) done (pair (List reverse words) done))))
+         (#t (self (rest ws) (pair (first ws) words) done))))
+     args () ())))
 
 ; The value of flag LETTER in FLAGS, #t for one that takes none, or nil
 ; when it was not given.
@@ -292,4 +298,5 @@
   (fn (_ flags letter)
     ((fn (_ f) (if (null? f) () (rest f))) (List find (fn (_ f) (str=? (first f) letter)) flags))))
 
-(provide tmux/command command-parse command-read command-list command-find command-matches command-flag)
+(provide tmux/command command-parse command-read command-list command-words command-find command-matches
+  command-flag)

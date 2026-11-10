@@ -76,7 +76,8 @@ above: split-window, new-window, kill-pane, kill-window, kill-session,
 select-pane, last-pane, select-window, next-window, previous-window,
 last-window, rename-window, resize-pane, swap-pane, rotate-window,
 select-layout, next-layout, previous-layout, display-panes, copy-mode,
-paste-buffer, send-prefix and detach-client, with command-prompt,
+paste-buffer, send-prefix and detach-client, those of the shell below,
+with command-prompt,
 confirm-before, display-message and those of the configuration below.
 `display-message [-lp] [-d MS] [-F FORMAT] [FORMAT]` shows a format on
 the status line for display-time, or MS, or until a key for 0; `-p`
@@ -277,6 +278,39 @@ view, and a failing command's message on the status line.
                                          the newest not shown elsewhere
     list-sessions, ls                    the sessions, as tmux lists them
     kill-server                          every session ended, and the server
+    any other command x-tmux runs        sent to the server and run there
+
+Any other command is the prompt's, read from the shell's words as tmux
+reads them, `;` a word of its own between commands, and run in the
+session tmux would run it in: the one holding the pane `$TMUX` and
+`$TMUX_PANE` name, which x-tmux sets in each pane, else the one used
+last.  What it prints goes to standard output, its message to standard
+error, and the status is tmux's.  With no server, `no server running on
+PATH`.  Those that serve scripts:
+
+    has-session, has [-t SESSION]         status 0 when it is there
+    rename-session, rename [-t SESSION] NAME
+    kill-session [-t SESSION]
+    display-message, display -p [-t PANE] [FORMAT]
+    list-windows, lsw [-a] [-F FORMAT] [-f FILTER] [-t SESSION]
+    list-panes, lsp [-as] [-F FORMAT] [-f FILTER] [-t TARGET]
+    send-keys, send [-Hl] [-N COUNT] [-t PANE] KEY ...
+    show-options, show [-gqsvw] [NAME]
+    split-window [-hv] [-t PANE], new-window [-d] [-n NAME] [-t SESSION:INDEX],
+    select-layout [-np] [-t PANE] [LAYOUT], rename-window [-t WINDOW] NAME
+
+A target is tmux's: `SESSION:WINDOW.PANE`, each part left out for the
+current one; `%N` a pane by its id; a session by its name or the
+start of only one, `=` asking for the whole name; a window by its number
+or name; a pane by its number, `+` or `-`; a bare word a pane, else a
+window, else a session.  list-windows and list-panes print tmux's lines,
+the layout as tmux 3.8's JSON; send-keys sends a key's bytes as tmux
+does, xterm's modifiers on the cursor and function keys; show-options
+quotes a value as tmux does.
+x-tmux gives a session made with -d and no client a status line, so its
+panes have 23 rows where tmux's have 24; list-panes has no
+`history_bytes`; send-keys to a pane in copy mode goes to its program;
+a command run from inside a pane is not refused as nesting.
 
 Each may be led by `-L NAME` or `-S PATH` for the server's socket,
 `$TMUX_TMPDIR/x-tmux-UID/NAME` (`/tmp` when `TMUX_TMPDIR` is not set,
@@ -305,8 +339,9 @@ layouts and window sizes, and the pane an arrow picks to tmux's;
 positions and cursors tmux 3.8 reports for the same keys; `05-command`
 holds the command line's words, names and flags to how tmux 3.8 reads
 them, and its messages to tmux's; `06-keys` holds the keys typed and
-the names bind reads to tmux 3.8's, and a file of commands to how tmux
-3.8 reads its configuration; `07-format` holds formats to what tmux
+the names bind reads to tmux 3.8's, the bytes send-keys sends to
+tmux's, and a file of commands and a shell's words to how tmux 3.8
+reads them; `07-format` holds formats to what tmux
 3.8's display-message -p gives for them.
 
     X=/path/to/x sh tests/oracle/panes.sh
@@ -321,7 +356,9 @@ detaching, `ls`, attaching again, window names and renaming, the command
 prompt, the status line's options and display-message, the last
 pane exiting and
 `kill-server`, with tmux's messages; then a configuration's prefix,
-bindings and errors, and source-file.
+bindings and errors, and source-file; then commands from a shell, run
+against x-tmux and against tmux on a socket of its own, their output,
+messages, status and send-keys' bytes the same.
 
 ## Install
 
