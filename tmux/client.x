@@ -181,4 +181,18 @@
       (do (%write 2 (Str8 append "no server running on " path "\n")) 1)
       (%ask c type ""))))
 
-(provide tmux/client tmux-new tmux-attach tmux-ask)
+; Any other command, its WORDS sent to the server with TMUX and
+; TMUX_PANE, which name the pane it is typed in, and read there, as tmux
+; reads them once it has a server: what it writes printed, its message
+; on standard error, and tmux's status answered.
+(def tmux-command
+  (fn (_ path words)
+    (def c (%connect path))
+    (def us (str-make 1))
+    (ptr-set! (str->ptr us) 0 31 1)
+    (def env (fn (_ name) ((fn (_ v) (if (null? v) "" v)) (Sys getenv name))))
+    (if (null? c)
+      (do (%write 2 (Str8 append "no server running on " path "\n")) 1)
+      (%ask c 67 (Str8 join us (pair (env "TMUX") (pair (env "TMUX_PANE") words)))))))
+
+(provide tmux/client tmux-new tmux-attach tmux-ask tmux-command)

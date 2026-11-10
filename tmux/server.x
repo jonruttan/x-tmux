@@ -66,16 +66,16 @@
 (import x/sys/socket)
 (import x/sys/host)
 (import x/sys/date)
-(import tmux/format format-expand format-time)
+(import tmux/format format-expand format-time format-true?)
 (import tmux/vt vt-make vt-make-history vt-feed! vt-render! vt-out vt-cursor vt-size vt-origin! vt-touch! vt-carry
-  vt-cursor-shown? vt-cursor-keys? vt-bracketed?)
+  vt-cursor-shown? vt-cursor-keys? vt-bracketed? vt-history)
 (import tmux/vt-jit vt-jit!)
 (import tmux/copy copy-enter copy-resize copy-view copy-origin! copy-touch! copy-cursor copy-position
   copy-do copy-selecting? copy-text copy-marks copy-vi? copy-key)
 (import tmux/layout layout-new layout-rects layout-borders layout-split layout-remove layout-panes
   layout-resize layout-fit layout-size layout-beside layout-relabel layout-names layout-arrange)
-(import tmux/command command-parse command-read command-list command-matches command-flag)
-(import tmux/keys key-read key-name key-bytes)
+(import tmux/command command-parse command-read command-list command-words command-matches command-flag)
+(import tmux/keys key-read key-name key-bytes key-text-bytes)
 (import tmux/proto proto-conn proto-fd proto-send! proto-send-text! proto-fill! proto-each! proto-text
   proto-fields)
 
@@ -145,20 +145,21 @@
 (def %with-copy
   (fn (_ p c) (list (%pane-id p) (%pane-pid p) (%pane-fd p) (%pane-screen p) (%pane-rect p) c)))
 
-; A window: (INDEX TREE ACTIVE NAME AUTO CHECKED DUE ZOOMED ORDER LAYOUT),
-; its layout, its active pane's id, its name, whether the name follows
-; the active pane's program, when that was last looked at, in
+; A window: (INDEX TREE ACTIVE NAME AUTO CHECKED DUE ZOOMED ORDER LAYOUT
+; ID), its layout, its active pane's id, its name, whether the name
+; follows the active pane's program, when that was last looked at, in
 ; microseconds since the epoch, whether it is to be looked at again,
 ; whether its active pane is zoomed to fill it, its panes' ids in tmux's
-; pane order, which numbers them, and the place in layout-names of the
-; preset layout last given it, -1 for none; the shown window's TREE and
-; ACTIVE are %tree and %active, written back as it is left.
+; pane order, which numbers them, the place in layout-names of the preset
+; layout last given it, -1 for none, and its id, the server's, as a
+; pane's is; the shown window's TREE and ACTIVE are %tree and %active,
+; written back as it is left.
 (def %name "")       ; the session's name
 (def %created 0)     ; when it was made, in seconds since the epoch
 (def %tree ())       ; the shown window's layout
 (def %panes ())      ; every window's panes, by id
 (def %active 0)      ; the shown window's active pane's id
-(def %next 0)        ; the next pane's id
+(def %sid 0)         ; the session's id, the N of $N
 (def %rows 24) (def %cols 80)
 (def %prefix #f)     ; whether C-b has been typed
 (def %client ())     ; the attached client's connection
@@ -182,7 +183,7 @@
     (unless (null? %current)
       (do (%save-window!)
           (%set-first! %current
-            (list %name %created %tree %panes %active %next %rows %cols %prefix %client %done
+            (list %name %created %tree %panes %active %sid %rows %cols %prefix %client %done
               %windows %window %last %cwd %prompt %message %until %recent %repeat %numbers))))))
 (def %enter!
   (fn (_ s)
@@ -190,7 +191,7 @@
       (do (%stash!)
           (def r (first s))
           (set! %name (first r)) (set! %created (List ref 1 r)) (set! %tree (List ref 2 r))
-          (set! %panes (List ref 3 r)) (set! %active (List ref 4 r)) (set! %next (List ref 5 r))
+          (set! %panes (List ref 3 r)) (set! %active (List ref 4 r)) (set! %sid (List ref 5 r))
           (set! %rows (List ref 6 r)) (set! %cols (List ref 7 r)) (set! %prefix (List ref 8 r))
           (set! %client (List ref 9 r)) (set! %done (List ref 10 r))
           (set! %windows (List ref 11 r)) (set! %window (List ref 12 r)) (set! %last (List ref 13 r))
@@ -211,7 +212,10 @@
 (def %sessions ())   ; the sessions, oldest first
 (def %conns ())      ; the clients' connections
 (def %listen -1)     ; the socket listened on
-(def %ids 0)         ; the next unnamed session's name
+(def %ids 0)         ; the next session's id, its name when it is given none
+(def %pane-ids 0)    ; the next pane's id, the N of %N
+(def %window-ids 0)  ; the next window's id, the N of @N
+(def %socket-path "") ; the socket listened on, for a pane's TMUX
 (def %started #f)    ; whether a session has been made
 (def %quit #f)
 (def %buf ())        ; a read's bytes, NUL-terminated
@@ -227,14 +231,19 @@
       (List fold (fn (_ acc s) (List append acc (List map %pane-fd (List ref 3 (first s))))) () %sessions))))
 
 ; SHELL, or /bin/sh, in CWD on a new pseudo-terminal of COLS x ROWS with
-; TERM screen: (PID . MASTER), the master non-blocking, or nil.
+; TERM screen, and TMUX and TMUX_PANE as tmux sets them for pane ID: the
+; socket, the server's pid and the session's id, and the pane's.  Answers
+; (PID . MASTER), the master non-blocking, or nil.
 (def %shell
-  (fn (_ cols rows cwd)
+  (fn (_ cols rows cwd id)
+    (def tmux (Str8 append %socket-path "," (%num (Sys getpid)) "," (%num %sid)))
     (def child (Pty fork cols rows (%inherited)))
     (match
       ((null? child) ())
       ((= (first child) 0)
         (do (Sys setenv "TERM" "screen")
+            (Sys setenv "TMUX" tmux)
+            (Sys setenv "TMUX_PANE" (Str8 append "%" (%num id)))
             (Sys chdir cwd)
             (def shell ((fn (_ s) (if (if (null? s) #t (= (Str8 length s) 0)) "/bin/sh" s)) (Sys getenv "SHELL")))
             (Sys exec shell ())
@@ -245,11 +254,11 @@
 ; history-limit rows of history.
 (def %spawn!
   (fn (_ rect cwd)
-    (def id %next)
-    (set! %next (+ %next 1))
+    (def id %pane-ids)
+    (set! %pane-ids (+ %pane-ids 1))
     (def rows (List ref 2 rect))
     (def cols (List ref 3 rect))
-    (def child (%shell cols rows cwd))
+    (def child (%shell cols rows cwd id))
     (when (null? child) (Err raise 'io "x-tmux: no pseudo-terminal for a pane" ()))
     (def screen (vt-origin! (vt-make-history rows cols (%option "history-limit")) (first rect) (List ref 1 rect)))
     (set! %panes (List append %panes (list (list id (first child) (rest child) screen rect ()))))
@@ -341,9 +350,9 @@
 (def %split!
   (fn (_ direction)
     (%unzoom!)
-    (def tree (layout-split %tree %active direction %next))
+    (def tree (layout-split %tree %active direction %pane-ids))
     (if (null? tree) "no space for new pane"
-      (do (def rect (rest (List find (fn (_ r) (= (first r) %next)) (layout-rects tree 0 0))))
+      (do (def rect (rest (List find (fn (_ r) (= (first r) %pane-ids)) (layout-rects tree 0 0))))
           (def id (%spawn! rect (Sys getcwd)))
           (set! %tree tree)
           (%window-set! %window 8
@@ -584,18 +593,35 @@
           (set! %last (pair %window (List filter (fn (_ x) (not (= x i))) %last)))
           (%show-window! (%window-at i))))))
 
-; A new window, numbered the lowest free, a shell in the session's
-; directory, shown.
+; A new window, numbered AT, or the lowest free when AT is nil, a shell in
+; the session's directory, shown when SHOW.  Answers its number.
 (def %new-window!
-  (fn (_)
-    (def i ((fn (self i) (if (null? (%window-at i)) i (self (+ i 1)))) 0))
+  (fn (_ at show)
+    (def i (if (null? at) ((fn (self i) (if (null? (%window-at i)) i (self (+ i 1)))) 0) at))
     (def id (%spawn! (list 0 0 (%pane-rows) %cols) %cwd))
-    (def w (list i (layout-new id %cols (%pane-rows)) id "x-tmux" #t 0 #f #f (list id) -1))
-    (unless (null? %windows) (do (%save-window!) (set! %last (pair %window %last))))
+    (def w (list i (layout-new id %cols (%pane-rows)) id "x-tmux" #t 0 #f #f (list id) -1 %window-ids))
+    (set! %window-ids (+ %window-ids 1))
+    (when (if show (not (null? %windows)) #f) (do (%save-window!) (set! %last (pair %window %last))))
     (set! %windows
       ((fn (self ws) (match ((null? ws) (list w)) ((< i (first (first ws))) (pair w ws)) (#t (pair (first ws) (self (rest ws))))))
        %windows))
-    (%show-window! w)))
+    (if show (%show-window! w) (do (%place! w) (%draw-status) (set! %touched #t)))
+    i))
+
+; THEN run with window WI shown for it, and the window shown before shown
+; again after: a command aimed at a window that is not the shown one.
+; Answers what THEN answers.
+(def %in-window!
+  (fn (_ wi then)
+    (if (= wi %window) (then)
+      (do (%save-window!)
+          (def back %window)
+          (%show-window! (%window-at wi))
+          (def r (then))
+          (%save-window!)
+          (set! %ofill 0)
+          (%show-window! (%window-at back))
+          r))))
 
 ; The window numbered I, empty now, closed: if it was shown, the last
 ; window shown, or the one before it, or the one after, shown in its
@@ -658,11 +684,11 @@
       ((fn (_ e) (if (null? e) () (rest e)))
        (List find (fn (_ e) (eq? (first e) (lit comm))) (Host process pgrp))))))
 
-; The shown window renamed NAME, its name no longer following its program.
+; Window I renamed NAME, its name no longer following its program.
 (def %rename!
-  (fn (_ name)
-    (%window-set! %window 3 name)
-    (%window-set! %window 4 #f)
+  (fn (_ i name)
+    (%window-set! i 3 name)
+    (%window-set! i 4 #f)
     (%draw-status)))
 
 ; --- the status line's messages and questions -----------------------------
@@ -771,29 +797,150 @@
       (Str8 sub (Str8 length prefix) (- (Str8 length text) (Str8 length prefix)) text)
       text)))
 
-; A target as its messages name it: less a leading : . or =.
-(def %bare (fn (_ target) (%less "=" (%less "." (%less ":" target)))))
+; --- targets ------------------------------------------------------------
 
-; The pane a target names in the shown window, N, .N or :.N its number,
-; + and - the panes after and before the active one; the active pane for
-; none; nil for one not there.
-(def %pane-target
-  (fn (_ target)
-    (def order (%order))
-    (if (null? target) %active
-      ((fn (_ t)
-         (match
-           ((str=? t "+") (%after order %active order))
-           ((str=? t "-") (%after (List reverse order) %active order))
-           (#t ((fn (_ k) (if (if (null? k) #t (<= (List length order) k)) () (List ref k order))) (%count t)))))
-       (%bare target)))))
+; A target read as tmux reads one, for a session, a window or a pane
+; (KIND): SESSION:WINDOW.PANE, each part left out for the current one;
+; %N a pane by its id; and a bare word a pane's number in the current
+; window, else a window, else a session, as KIND allows.  A session is
+; named whole or by the start of its name, when only one starts so; a
+; window by its number or its name; a pane by its number, or + and - for
+; the one after and before the active one.  A leading = asks for the
+; whole name.  BASE is the current session.  Answers (SESSION WINDOW
+; PANE), the session entered, or tmux's message.
+(def %find
+  (fn (_ kind target base)
+    (%stash!)
+    (def missing (fn (_ what text) (Str8 append "can't find " what ": " text)))
+    (def at (fn (_ c) (Str8 index-of c target)))
+    (def before (fn (_ i) (Str8 sub 0 i target)))
+    (def after (fn (_ i) (Str8 sub (+ i 1) (- (Str8 length target) (+ i 1)) target)))
+    ; in session S, window WT ("" for the current one), pane PT (nil for
+    ; the window's active one)
+    (def in
+      (fn (_ s wt pt)
+        (if (null? s) "no current session"
+          (do (%enter! s)
+              (%save-window!)
+              (def wi (if (= (Str8 length wt) 0) %window (%window-named wt)))
+              (match
+                ((null? wi) (missing "window" (%less "=" wt)))
+                ((null? pt) (list s wi (List ref 2 (%window-at wi))))
+                (#t ((fn (_ id) (if (null? id) (missing "pane" pt) (list s wi id))) (%pane-in wi pt))))))))
+    (def window-dot
+      (fn (_ s text)
+        ((fn (_ dot) (if (null? dot) (in s text ()) (in s (Str8 sub 0 dot text) (Str8 sub (+ dot 1) (- (Str8 length text) (+ dot 1)) text))))
+         (Str8 index-of "." text))))
+    (match
+      ((null? target) (in base "" ()))
+      ((%prefix? "%" target)
+        ((fn (_ id)
+           ((fn (_ s)
+              (if (null? s) (missing "pane" target)
+                (do (%enter! s) (%save-window!) (list s (first (%window-of id)) id))))
+            (if (null? id) () (List find (fn (_ s) (not (null? (List find (fn (_ p) (= (%pane-id p) id)) (List ref 3 (first s)))))) %sessions))))
+         (%count (Str8 sub 1 (- (Str8 length target) 1) target))))
+      ((not (null? (at ":")))
+        ((fn (_ part)
+           (def s (if (= (Str8 length part) 0) base (%session-named part)))
+           (if (null? s) (missing "session" part) (window-dot s (after (at ":")))))
+         (before (at ":"))))
+      ((not (null? (at "."))) (window-dot base target))
+      ((eq? kind (lit session))
+        ((fn (_ s) (if (null? s) (missing "session" target) (in s "" ()))) (%session-named target)))
+      (#t
+        (do (unless (null? base) (do (%enter! base) (%save-window!)))
+            (def id (if (if (null? base) #t (not (eq? kind (lit pane)))) () (%pane-in %window target)))
+            (def wi (if (null? base) () (%window-named target)))
+            (def s (%session-named target))
+            (match
+              ((not (null? id)) (list base %window id))
+              ((not (null? wi)) (in base target ()))
+              ((not (null? s)) (in s "" ()))
+              (#t (missing (symbol->str kind) target))))))))
 
-; The window a target names, N, :N or :=N its number; the shown one for
-; none; nil for one not there.
-(def %window-target
-  (fn (_ target)
-    (if (null? target) %window
-      ((fn (_ k) (if (if (null? k) #t (null? (%window-at k))) () k)) (%count (%bare target))))))
+; Where new-window's TARGET puts a window, as tmux reads it:
+; SESSION:INDEX, either part left out for the current session and the
+; lowest free number; a bare word a number, else a window's name, else a
+; session.  A window named answers its number, which is in use.  BASE is
+; the current session.  Answers (SESSION . INDEX), INDEX nil for the
+; lowest free, the session entered, or tmux's message.
+(def %find-index
+  (fn (_ target base)
+    (def place
+      (fn (_ s text)
+        (if (null? s) "no current session"
+          (do (%enter! s)
+              (%save-window!)
+              (match
+                ((= (Str8 length text) 0) (pair s ()))
+                ((not (null? (%count text))) (pair s (%count text)))
+                (#t ((fn (_ wi) (if (null? wi) (Str8 append "can't find window: " text) (pair s wi)))
+                     (%window-named text))))))))
+    (def colon (if (null? target) () (Str8 index-of ":" target)))
+    (match
+      ((null? target) (place base ""))
+      ((not (null? colon))
+        ((fn (_ part wt)
+           ((fn (_ s) (if (null? s) (Str8 append "can't find session: " part) (place s wt)))
+            (if (= (Str8 length part) 0) base (%session-named part))))
+         (Str8 sub 0 colon target) (Str8 sub (+ colon 1) (- (Str8 length target) (+ colon 1)) target)))
+      (#t
+        ((fn (_ r s) (if (if (str? r) (not (null? s)) #f) (place s "") r))
+         (place base target) (%session-named target))))))
+
+; The session TEXT names: by its whole name, else the one whose name it
+; starts, when only one does; with a leading =, by its whole name only.
+(def %session-named
+  (fn (_ text)
+    (if (%prefix? "=" text) (%named (%less "=" text))
+      ((fn (_ s)
+         (if (not (null? s)) s
+           ((fn (_ ms) (if (if (null? ms) #f (null? (rest ms))) (first ms) ()))
+            (List filter (fn (_ s) (%prefix? text (%record-name s))) %sessions))))
+       (%named text)))))
+
+; The window TEXT names in the session entered, its index: its number, or
+; its name; nil for none.
+(def %window-named
+  (fn (_ text)
+    (def t (%less "=" text))
+    ((fn (_ k)
+       (if (if (null? k) #f (not (null? (%window-at k)))) k
+         ((fn (_ w) (if (null? w) () (first w))) (List find (fn (_ w) (str=? (List ref 3 w) t)) %windows))))
+     (%count t))))
+
+; The pane TEXT names in window WI of the session entered, its id: its
+; number, + or - the one after or before the active one; nil for none.
+(def %pane-in
+  (fn (_ wi text)
+    (def w (%window-at wi))
+    (def order (List ref 8 w))
+    (def active (List ref 2 w))
+    (match
+      ((str=? text "+") (%after order active order))
+      ((str=? text "-") (%after (List reverse order) active order))
+      (#t ((fn (_ k) (if (if (null? k) #t (<= (List length order) k)) () (List ref k order))) (%count text))))))
+
+; The session a command from the shell is run in: the one holding the
+; pane its TMUX and TMUX_PANE name, when TMUX is this server's, else the
+; one used last, as tmux finds it.
+(def %best
+  (fn (_ tmux pane)
+    (%stash!)
+    (def fields (Str8 split "," tmux))
+    (def mine (if (< 2 (List length fields)) (str=? (List ref 1 fields) (%num (Sys getpid))) #f))
+    (def id (if (if mine (%prefix? "%" pane) #f) (%count (Str8 sub 1 (- (Str8 length pane) 1) pane)) ()))
+    (def holder
+      (if (null? id) ()
+        (List find (fn (_ s) (not (null? (List find (fn (_ p) (= (%pane-id p) id)) (List ref 3 (first s)))))) %sessions)))
+    (match
+      ((not (null? holder)) holder)
+      ((null? %sessions) ())
+      (#t (List ref (- (List length %sessions) 1) %sessions)))))
+
+; Session S made the one used last.
+(def %used! (fn (_ s) (set! %sessions (List append (List filter (fn (_ x) (not (eq? x s))) %sessions) (list s)))))
 
 ; The directions of the flags D L R U, as layout-beside names them.
 (def %direction
@@ -1113,14 +1260,23 @@
     (def target (fn (_) ((fn (_ t) (if (eq? t #t) () t)) (command-flag flags "t"))))
     (def is? (fn (_ n) (str=? name n)))
     (def table (fn (_) (if (on? "n") "root" ((fn (_ t) (if (null? t) "prefix" t)) (command-flag flags "T")))))
-    (def pane!
+    ; the target found, its session entered, and THEN run on it: answers
+    ; the message of what went wrong, or THEN's when it is one
+    (def found
+      (fn (_ kind then)
+        ((fn (_ r) (if (str? r) r ((fn (_ x) (if (str? x) x ())) (then (List ref 1 r) (List ref 2 r)))))
+         (%find kind (target) %current))))
+    (def pane! (fn (_ then) (found (lit pane) (fn (_ wi id) (then id wi)))))
+    (def window! (fn (_ then) (found (lit window) (fn (_ wi id) (then wi)))))
+    (def session! (fn (_ then) (found (lit session) (fn (_ wi id) (then)))))
+    ; the target pane's window shown for THEN, given the pane; answers
+    ; what THEN answers
+    (def in-window!
       (fn (_ then)
-        ((fn (_ id) (if (null? id) (Str8 append "can't find pane: " (%bare (target))) (do (then id) ())))
-         (%pane-target (target)))))
-    (def window!
-      (fn (_ then)
-        ((fn (_ i) (if (null? i) (Str8 append "can't find window: " (%bare (target))) (do (then i) ())))
-         (%window-target (target)))))
+        ((fn (_ r) (if (str? r) r (%in-window! (List ref 1 r) (fn (_) (then (List ref 2 r))))))
+         (%find (lit pane) (target) %current))))
+    (def format (fn (_ given) ((fn (_ f) (if (eq? f #t) given f)) (if (on? "F") (command-flag flags "F") given))))
+    (def filter (fn (_ wi id) (if (on? "f") (format-true? (%expand (command-flag flags "f") wi id #f)) #t)))
     (def done (fn (_ x) ()))
     (unless (null? %current) (%save-window!))
     (match
@@ -1166,14 +1322,76 @@
         (done (%ask! (if (on? "p") (Str8 append (%format (command-flag flags "p")) " ")
                        (Str8 append "Confirm '" (first args) "'? (y/n) "))
                 (fn (_) (%run-text! (first args))))))
-      ((is? "split-window") (%split! (if (on? "h") (lit h) (lit v))))
+      ((is? "split-window")
+        (in-window! (fn (_ id) (unless (= id %active) (%activate! id)) (%split! (if (on? "h") (lit h) (lit v))))))
       ((is? "new-window")
-        (done (do (%new-window!) (unless (null? (command-flag flags "n")) (%rename! (command-flag flags "n"))))))
-      ((is? "kill-pane") (pane! %remove!))
+        ((fn (_ r)
+           (match
+             ((str? r) r)
+             ((if (null? (rest r)) #f (not (null? (%window-at (rest r)))))
+               (Str8 append "create window failed: index " (%num (rest r)) " in use"))
+             (#t ((fn (_ i) (done (unless (null? (command-flag flags "n")) (%rename! i (command-flag flags "n")))))
+                  (%new-window! (rest r) (not (on? "d")))))))
+         (%find-index (target) %current)))
+      ((is? "kill-pane") (pane! (fn (_ id wi) (%remove! id))))
       ((is? "kill-window")
         (window! (fn (_ i) (List for-each %remove! (layout-panes (if (= i %window) %tree (List ref 1 (%window-at i))))))))
       ((is? "kill-session")
-        (done (List for-each (fn (_ w) (List for-each %remove! (layout-panes (List ref 1 w)))) %windows)))
+        (session! (fn (_) (List for-each (fn (_ w) (List for-each %remove! (layout-panes (List ref 1 w)))) %windows))))
+      ((is? "has-session") (session! (fn (_) ())))
+      ((is? "rename-session")
+        (session!
+          (fn (_)
+            (if (not (null? (%named (first args)))) (Str8 append "duplicate session: " (first args))
+              (do (set! %name (first args)) (%stash!) (%draw-status) (set! %touched #t))))))
+      ((is? "list-windows")
+        (do (def line
+              (fn (_ wi)
+                (when (filter wi (List ref 2 (%window-at wi)))
+                  (%said! (%expand (format (if (on? "a") %list-windows-all %list-windows-format)) wi
+                            (List ref 2 (%window-at wi)) #f)))))
+            (if (on? "a")
+              (done (%each-session! (fn (_) (List for-each (fn (_ w) (line (first w))) %windows))))
+              (session! (fn (_) (List for-each (fn (_ w) (line (first w))) %windows))))))
+      ((is? "list-panes")
+        (do (def lines
+              (fn (_ wi template)
+                (List for-each
+                  (fn (_ id) (when (filter wi id) (%said! (%expand (format template) wi id #f))))
+                  (List ref 8 (%window-at wi)))))
+            (match
+              ((on? "a")
+                (done (%each-session! (fn (_) (List for-each (fn (_ w) (lines (first w) %list-panes-all)) %windows)))))
+              ((on? "s") (session! (fn (_) (List for-each (fn (_ w) (lines (first w) %list-panes-session)) %windows))))
+              (#t (window! (fn (_ wi) (lines wi %list-panes-format)))))))
+      ((is? "send-keys")
+        ((fn (_ times)
+           (match
+             ((null? times) "repeat count invalid")
+             ((< times 1) "repeat count too small")
+             (#t
+               (pane!
+                 (fn (_ id wi)
+                   (def p (%pane id))
+                   (def ss3 (vt-cursor-keys? (%pane-screen p)))
+                   (def bytes (List map (fn (_ b) (%cursor-mode b ss3)) (%key-words args (on? "l") (on? "H"))))
+                   ((fn (self k)
+                      (when (< 0 k)
+                        (do (List for-each (fn (_ bs) (%send-bytes! (%pane-fd p) bs)) bytes)
+                            (self (- k 1)))))
+                    times))))))
+         ((fn (_ n) (if (null? n) 1 (%count n))) (command-flag flags "N"))))
+      ((is? "show-options")
+        (if (null? args)
+          (done (when (on? "g")
+                  (List for-each (fn (_ s) (%said! (%option-line (first s) (on? "v"))))
+                    (%sorted-options (if (on? "w") (lit window) (if (on? "s") (lit server) (lit session)))))))
+          ((fn (_ spec)
+             (match
+               ((null? spec) (if (on? "q") () (Str8 append "invalid option: " (first args))))
+               ((on? "g") (done (%said! (%option-line (first args) (on? "v")))))
+               (#t ())))
+           (List find (fn (_ s) (str=? (first s) (first args))) %option-specs))))
       ((is? "last-pane") (%last-pane!))
       ((is? "last-window") (if (null? %last) "no last window" (done (%select! (first %last)))))
       ((is? "next-window") (if (null? (%beside #f)) "no next window" (done (%step! #f ""))))
@@ -1188,7 +1406,8 @@
         (match
           ((on? "l") (%last-pane!))
           ((not (null? (%direction flags))) (done (%beside! (%direction flags))))
-          (#t (pane! (fn (_ id) (unless (= id %active) (do (%unzoom!) (%activate! id) (%name-due! %window))))))))
+          (#t (pane! (fn (_ id wi) (if (= wi %window) (unless (= id %active) (do (%unzoom!) (%activate! id) (%name-due! %window)))
+                                     (%activate-in! wi id)))))))
       ((is? "display-message")
         ((fn (_ given delay)
            (def ms (if (null? delay) () (%signed delay)))
@@ -1196,14 +1415,26 @@
              ((if (on? "F") (not (null? args)) #f) "only one of -F or argument must be given")
              ((if (null? delay) #f (null? ms)) "delay invalid")
              ((if (null? ms) #f (< ms 0)) "delay too small")
+             ; a target not there is the current pane, as tmux has it; from
+             ; the shell, which has none, no session at all
              (#t
-               (pane!
-                 (fn (_ id)
-                   ((fn (_ text) (if (on? "p") (%show-lines! (list text)) (%show! text ms)))
-                    (if (on? "l") given (%expand given id #t))))))))
+               ((fn (_ r)
+                  (if (str? r) r
+                    ((fn (_ text)
+                       (match
+                         ((not (on? "p")) (%show! text ms))
+                         (%asked (%said! text))
+                         (#t (%show-lines! (list text))))
+                       ())
+                     (match
+                       ((on? "l") given)
+                       ((null? r) (format-expand (format-time given (Date local (Sys now))) (%look () ())))
+                       (#t (%expand given (List ref 1 r) (List ref 2 r) #t))))))
+                ((fn (_ r) (match ((not (str? r)) r) (%asked ()) (#t (%find (lit pane) () %current))))
+                 (%find (lit pane) (target) %current))))))
          (match ((not (null? args)) (first args)) ((on? "F") (command-flag flags "F")) (#t %display-template))
          ((fn (_ d) (if (eq? d #t) () d)) (command-flag flags "d"))))
-      ((is? "rename-window") (done (%rename! (first args))))
+      ((is? "rename-window") (window! (fn (_ wi) (%rename! wi (first args)))))
       ((is? "resize-pane")
         (if (on? "Z") (done (%zoom!))
           ((fn (_ n)
@@ -1215,16 +1446,18 @@
       ((is? "swap-pane") (done (%swap! (on? "D"))))
       ((is? "rotate-window") (done (%rotate! (on? "D"))))
       ((is? "select-layout")
-        (match
-          ((on? "n") (done (%next-layout!)))
-          ((on? "p") (done (%previous-layout!)))
-          ((null? args) (done (%arrange! (%max 0 (List ref 9 (%window-at %window))))))
-          (#t ((fn (self names k)
-                 (match
-                   ((null? names) (Str8 append "malformed layout header: " (first args)))
-                   ((str=? (symbol->str (first names)) (first args)) (done (%arrange! k)))
-                   (#t (self (rest names) (+ k 1)))))
-               layout-names 0))))
+        (in-window!
+          (fn (_ id)
+            (match
+              ((on? "n") (done (%next-layout!)))
+              ((on? "p") (done (%previous-layout!)))
+              ((null? args) (done (%arrange! (%max 0 (List ref 9 (%window-at %window))))))
+              (#t ((fn (self names k)
+                     (match
+                       ((null? names) (Str8 append "malformed layout header: " (first args)))
+                       ((str=? (symbol->str (first names)) (first args)) (done (%arrange! k)))
+                       (#t (self (rest names) (+ k 1)))))
+                   layout-names 0))))))
       ((is? "next-layout") (done (%next-layout!)))
       ((is? "previous-layout") (done (%previous-layout!)))
       ((is? "display-panes") (done (%show-numbers!)))
@@ -1238,7 +1471,7 @@
                     (send! (%typed (first %buffers)))
                     (when bracket (send! (%esc "[201~")))))))
       ((is? "send-prefix")
-        (done ((fn (_ b) (%send! (%pane-fd (%pane %active)) (str->ptr b) (str-byte-len b))) (key-bytes (%option "prefix")))))
+        (done (%send-bytes! (%pane-fd (%pane %active)) (key-bytes (%option "prefix")))))
       ((is? "detach-client") (done (%detach! (Str8 append "[detached (from session " %name ")]"))))
       (#t ()))))
 
@@ -1434,13 +1667,15 @@
 
 ; What a format's names are for window W and pane ID: the session's, the
 ; window's, the pane's, the client's and the machine's, and an option's
-; value by its name.
+; value by its name.  With W nil, there is no session: only the
+; machine's and the options'.
 (def %host "") (def %host-short "")
 (def %look
   (fn (_ w id)
-    (def p (%pane id))
-    (def rect (%pane-rect p))
-    (def last? (if (null? %last) #f (= (first w) (first %last))))
+    (def p (if (null? w) () (%pane id)))
+    (def rect (if (null? w) () (%pane-rect p)))
+    (def last? (if (if (null? w) #t (null? %last)) #f (= (first w) (first %last))))
+    (def server? (fn (_ name) (List any? (fn (_ n) (str=? n name)) (list "host" "host_short" "pid"))))
     (def yes (fn (_ b) (if b "1" "0")))
     (def flags
       (fn (_)
@@ -1456,10 +1691,20 @@
          (List find (fn (_ s) (str=? (first s) name)) %option-specs))))
     (fn (_ name)
       (match
+        ((if (null? w) (not (server? name)) #f) (option name))
         ((str=? name "session_name") %name)
         ((str=? name "session_windows") (%num (List length %windows)))
         ((str=? name "session_attached") (yes (not (null? %client))))
         ((str=? name "session_created") (%num %created))
+        ((str=? name "session_id") (Str8 append "$" (%num %sid)))
+        ((str=? name "window_id") (Str8 append "@" (%num (List ref 10 w))))
+        ((str=? name "window_raw_flags") (flags))
+        ((str=? name "window_layout") (%layout-json w (List ref 1 w)))
+        ((str=? name "window_visible_layout")
+          (%layout-json w (if (List ref 7 w) (layout-new (List ref 2 w) %cols (%pane-rows)) (List ref 1 w))))
+        ((str=? name "history_size") (%num (vt-history (%pane-screen p))))
+        ((str=? name "history_limit") (%num (%option "history-limit")))
+        ((str=? name "pane_dead") "0")
         ((str=? name "window_index") (%num (first w)))
         ((str=? name "window_name") (List ref 3 w))
         ((str=? name "window_flags") (flags))
@@ -1473,7 +1718,7 @@
         ((str=? name "window_offset_x") "0")
         ((str=? name "window_offset_y") "0")
         ((str=? name "pane_id") (Str8 append "%" (%num id)))
-        ((str=? name "pane_index") (%num (%number id)))
+        ((str=? name "pane_index") (%num (%index-of id (List ref 8 w))))
         ((str=? name "pane_title") %host)
         ((str=? name "pane_current_command") ((fn (_ c) (if (null? c) "" c)) (%program (%pane-fd p))))
         ((str=? name "pane_pid") (%num (%pane-pid p)))
@@ -1489,12 +1734,12 @@
         ((str=? name "pid") (%num (Sys getpid)))
         (#t (option name))))))
 
-; TEXT expanded for the shown window and pane ID, the time written in it
-; first when TIME, as tmux writes it.
+; TEXT expanded for window WI and pane ID of the session entered, the time
+; written in it first when TIME, as tmux writes it.
 (def %expand
-  (fn (_ text id time)
-    (format-expand (if time (format-time text (Date local (Sys now))) text) (%look (%window-at %window) id))))
-(def %format (fn (_ text) (%expand text %active #f)))
+  (fn (_ text wi id time)
+    (format-expand (if time (format-time text (Date local (Sys now))) text) (%look (%window-at wi) id))))
+(def %format (fn (_ text) (%expand text %window %active #f)))
 
 ; The status line's cells: status-left, the windows, status-right, laid
 ; out as tmux lays them for status-justify, the windows cut about the
@@ -1638,9 +1883,11 @@
 
 ; Pane ID's number in the shown window, tmux's pane index: its place in
 ; the window's pane order, from 0.
-(def %number
-  (fn (_ id)
-    ((fn (self xs i) (if (= (first xs) id) i (self (rest xs) (+ i 1)))) (%order) 0)))
+(def %number (fn (_ id) (%index-of id (%order))))
+; The place of ID in ORDER, from 0.
+(def %index-of
+  (fn (_ id order)
+    ((fn (self xs i) (if (= (first xs) id) i (self (rest xs) (+ i 1)))) order 0)))
 
 ; The active pane into copy mode, EXIT as tmux/copy's copy-enter, unless
 ; it is in it.
@@ -1832,6 +2079,218 @@
 ; Whether a pane's program has ended: waitpid with WNOHANG.
 (def %gone? (fn (_ pid) (not (= 0 (%int (ptr-call %c-waitpid pid 0 1))))))
 
+; --- commands from the shell ------------------------------------------------
+
+; Whether the command running came from the shell, and the lines it has
+; for the shell's standard output, the latest first.
+(def %asked #f)
+(def %said ())
+(def %said! (fn (_ line) (set! %said (pair line %said))))
+
+; list-windows' and list-panes' lines, tmux's.
+(def %list-windows-format
+  "#{window_index}: #{window_name}#{window_raw_flags} (#{window_panes} panes) [#{window_width}x#{window_height}] [layout #{window_layout}] #{window_id}#{?window_active, (active),}")
+(def %list-windows-all
+  "#{session_name}:#{window_index}: #{window_name}#{window_raw_flags} (#{window_panes} panes) [#{window_width}x#{window_height}] ")
+(def %pane-line
+  "[#{pane_width}x#{pane_height}] [history #{history_size}/#{history_limit}, #{history_bytes} bytes] #{pane_id}#{?pane_active, (active),}#{?pane_dead, (dead),}")
+(def %list-panes-format (Str8 append "#{pane_index}: " %pane-line))
+(def %list-panes-session (Str8 append "#{window_index}.#{pane_index}: " %pane-line))
+(def %list-panes-all (Str8 append "#{session_name}:#{window_index}.#{pane_index}: " %pane-line))
+
+; The sessions in name order, as tmux sorts them.
+(def %by-name
+  (fn (_)
+    (%stash!)
+    (def strcmp (%libc "strcmp"))
+    (def before? (fn (_ a b) (< (%int (ptr-call strcmp (str->ptr (%record-name a)) (str->ptr (%record-name b)))) 0)))
+    (List fold
+      (fn (_ acc s)
+        ((fn (self xs) (match ((null? xs) (list s)) ((before? s (first xs)) (pair s xs)) (#t (pair (first xs) (self (rest xs))))))
+         acc))
+      () %sessions)))
+
+; F run in each session, entered, in name order.
+(def %each-session! (fn (_ f) (List for-each (fn (_ s) (%enter! s) (%save-window!) (f)) (%by-name))))
+
+; Pane ID made window WI's active pane, the window not shown: put back
+; from a zoom first, as tmux's select-pane does.
+(def %activate-in!
+  (fn (_ wi id)
+    (def w (%window-at wi))
+    (unless (= id (List ref 2 w))
+      (do (%window-set! wi 2 id)
+          (set! %recent (pair id (List filter (fn (_ x) (not (= x id))) %recent)))
+          (when (List ref 7 w) (do (%window-set! wi 7 #f) (%place! (%window-at wi))))
+          (%name-due! wi)))))
+
+; send-keys' arguments as bytes for a pane, as tmux reads them, each a
+; list of numbers: a key's name for its bytes, else its text; with
+; LITERAL, each its text; with HEX, each a byte in hexadecimal, one that
+; is not passed over.
+(def %key-words
+  (fn (_ args literal hex)
+    (List map
+      (fn (_ a)
+        (match
+          (hex ((fn (_ k) (if (if (null? k) #t (< 255 k)) () (list k))) (%hex a)))
+          (literal (key-text-bytes a))
+          (#t ((fn (_ k) (if (null? k) (key-text-bytes a) (key-bytes k))) (key-name a)))))
+      args)))
+
+; TEXT's hexadecimal digits, a leading 0x let be, as a number; nil when it
+; holds another character or none.
+(def %hex
+  (fn (_ text)
+    (def t (if (%prefix? "0x" text) (Str8 sub 2 (- (Str8 length text) 2) text) text))
+    (def n (str-byte-len t))
+    ((fn (self i acc)
+       (if (= i n) (if (= n 0) () acc)
+         ((fn (_ c)
+            (match
+              ((if (< 47 c) (< c 58) #f) (self (+ i 1) (+ (* acc 16) (- c 48))))
+              ((if (< 96 c) (< c 103) #f) (self (+ i 1) (+ (* acc 16) (- c 87))))
+              ((if (< 64 c) (< c 71) #f) (self (+ i 1) (+ (* acc 16) (- c 55))))
+              (#t ())))
+          (ptr-ref (str->ptr t) i 1))))
+     0 0)))
+
+; A key's BYTES as the pane's program reads an arrow, Home or End: SS3
+; when it asked for them so (?1h), as a typed one is sent.
+(def %cursor-mode
+  (fn (_ bytes ss3)
+    (if (if (= (List length bytes) 3)
+          (if (= (first bytes) 27)
+            (if (= (List ref 1 bytes) (if ss3 91 79)) (List any? (fn (_ x) (= x (List ref 2 bytes))) (lit (65 66 67 68 72 70))) #f)
+            #f)
+          #f)
+      (list 27 (if ss3 79 91) (List ref 2 bytes))
+      bytes)))
+
+; BYTES, a list of numbers, sent to the program on FD, a NUL as any other.
+(def %send-bytes!
+  (fn (_ fd bytes)
+    (def n (List length bytes))
+    (def s (str-make (+ n 1)))
+    ((fn (self i bs) (unless (null? bs) (do (ptr-set! (str->ptr s) i (first bs) 1) (self (+ i 1) (rest bs))))) 0 bytes)
+    (%send! fd (str->ptr s) n)))
+
+; The options of SCOPE, session, window or server, in name order: x-tmux's
+; window options are mode-keys and window-status-*'s, and it has no
+; server's.
+(def %sorted-options
+  (fn (_ scope)
+    (def window? (fn (_ name) (if (str=? name "mode-keys") #t (%prefix? "window-status" name))))
+    (List filter
+      (fn (_ s)
+        (match
+          ((eq? scope (lit window)) (window? (first s)))
+          ((eq? scope (lit session)) (not (window? (first s))))
+          (#t #f)))
+      %option-specs)))
+
+; Option NAME's line as show-options writes it: its name and its value,
+; quoted as tmux quotes a word; with BARE, its value alone, as it is.
+(def %option-line
+  (fn (_ name bare)
+    (def v ((fn (_ x) (if (str? x) x (%num x))) (%option name)))
+    (if bare v (Str8 append name " " (%quote-word v)))))
+
+; TEXT as a word tmux reads back as TEXT: '' for none; in "..." when it
+; holds a space or one of # ' ; $ { } %, in '...' when it holds a ", with
+; \ before a " or $ inside "...", and a lone such character or a leading ~
+; after a backslash; a backslash doubled, a tab \t, a newline \n and
+; another control character \ and its octal.
+(def %quote-word
+  (fn (_ text)
+    (def n (str-byte-len text))
+    (def at (fn (_ i) (ptr-ref (str->ptr text) i 1)))
+    (def holds? (fn (_ cs) ((fn (self i) (if (= i n) #f (if (List any? (fn (_ c) (= c (at i))) cs) #t (self (+ i 1))))) 0)))
+    (def mark (match ((holds? (lit (32 35 39 59 36 123 125 37))) "\"") ((holds? (lit (34))) "'") (#t "")))
+    (def tilde (if (< 0 n) (= (at 0) 126) #f))
+    (def escaped
+      ((fn (self i acc)
+         (if (= i n) (Str8 join "" (List reverse acc))
+           ((fn (_ c)
+              (self (+ i 1)
+                (pair
+                  (match
+                    ((= c 92) "\\\\")
+                    ((= c 9) "\\t")
+                    ((= c 10) "\\n")
+                    ((if (str=? mark "\"") (if (= c 34) #t (= c 36)) #f) (Str8 append "\\" (%byte c)))
+                    ((if (< c 32) #t (= c 127)) (Str8 append "\\" (%octal c)))
+                    (#t (%byte c)))
+                  acc)))
+            (at i))))
+       0 ()))
+    (match
+      ((= n 0) "''")
+      ((if (= n 1) (if (not (= (at 0) 32)) (if tilde #t (< 0 (Str8 length mark))) #f) #f) (Str8 append "\\" text))
+      (#t (Str8 append mark (if tilde "\\" "") escaped mark)))))
+(def %octal
+  (fn (_ c) (Str8 append (%num (>> c 6)) (%num (& (>> c 3) 7)) (%num (& c 7)))))
+
+; Window W's layout as tmux 3.8 writes window_layout: TREE's cells as
+; JSON, each its type (h, v or p), size and place; a container its cells;
+; a pane whether it is the active one, else its place among the panes
+; active before it, its number and its id.
+(def %layout-json
+  (fn (_ w tree)
+    (def active (List ref 2 w))
+    (def order (List ref 8 w))
+    (def before (List filter (fn (_ x) (if (= x active) #f (not (null? (List find (fn (_ y) (= x y)) order))))) %recent))
+    (def cell
+      (fn (self t row col)
+        (def shape (first t))
+        (def head
+          (Str8 append "{\"t\":\"" (if (eq? shape (lit pane)) "p" (symbol->str shape)) "\",\"w\":" (%num (List ref 1 t))
+            ",\"h\":" (%num (List ref 2 t)) ",\"x\":" (%num col) ",\"y\":" (%num row)))
+        (if (eq? shape (lit pane))
+          ((fn (_ id)
+             (def l ((fn (self xs i) (match ((null? xs) ()) ((= (first xs) id) i) (#t (self (rest xs) (+ i 1))))) before 0))
+             (Str8 append head (match ((= id active) ",\"a\":true") ((null? l) "") (#t (Str8 append ",\"l\":" (%num l))))
+               ",\"i\":" (%num (%index-of id order)) ",\"I\":\"%" (%num id) "\"}"))
+           (List ref 3 t))
+          (Str8 append head ",\"c\":["
+            (Str8 join ","
+              (List reverse
+                (rest
+                  (List fold
+                    (fn (_ acc c)
+                      (def at (first acc))
+                      (pair (+ at (+ (if (eq? shape (lit h)) (List ref 1 c) (List ref 2 c)) 1))
+                            (pair (if (eq? shape (lit h)) (self c row at) (self c at col)) (rest acc))))
+                    (pair (if (eq? shape (lit h)) col row) ()) (List ref 3 t)))))
+            "]}"))))
+    (Str8 append "{\"V\":2,\"L\":" (cell tree 0 0) "}")))
+
+; A command line from the shell: TMUX, TMUX_PANE and the command's words,
+; split at ASCII's unit separator, as tmux/client sends them.  Run in the
+; session tmux would find for it, its lines written for the shell's
+; output, and the client sent away with tmux's status and message.
+(def %shell-command!
+  (fn (_ c text)
+    (def fields (Str8 split (%byte 31) text))
+    (def parsed (command-words (rest (rest fields))))
+    (def base (%best (first fields) (List ref 1 fields)))
+    (match
+      ((not (first parsed)) (%leave! c 1 (List ref 1 parsed)))
+      ((null? base) (%leave! c 1 "no current session"))
+      (#t
+        (do (%enter! base)
+            (set! %asked #t)
+            (set! %said ())
+            (def wrong
+              ((fn (self cs) (if (null? cs) () ((fn (_ w) (if (null? w) (self (rest cs)) w)) (%run! (first cs)))))
+               (List ref 1 parsed)))
+            (set! %asked #f)
+            (unless (null? %said)
+              (proto-send-text! (proto-fd c) 79 (Str8 append (Str8 join "\n" (List reverse %said)) "\n")))
+            (set! %said ())
+            (%leave! c (if (null? wrong) 0 1) (if (null? wrong) "" wrong))
+            (unless (null? %current) (%settle!)))))))
+
 ; --- sessions and clients ---------------------------------------------------
 
 ; The session entered brought up to date: ended when its last pane has
@@ -1883,6 +2342,7 @@
 (def %attach!
   (fn (_ c cols rows)
     (unless (eq? %client c) (%detach! (Str8 append "[detached (from session " %name ")]")))
+    (%used! %current)
     (set! %client c)
     (set! %cols cols) (set! %rows rows)
     (%redraw!)
@@ -1896,19 +2356,19 @@
     (def name (if (= (Str8 length (List ref 3 f)) 0) (%num %ids) (List ref 3 f)))
     (if (not (null? (%named name)))
       (%leave! c 1 (Str8 append "duplicate session: " name))
-      (do (when (= (Str8 length (List ref 3 f)) 0) (set! %ids (+ %ids 1)))
-          (%stash!)
+      (do (%stash!)
           (def s (list ()))
           (set! %current s)
           (set! %name name) (set! %created (%now)) (set! %tree ()) (set! %panes ()) (set! %active 0)
-          (set! %next 0) (set! %cols (%to-int (first f))) (set! %rows (%to-int (List ref 1 f)))
+          (set! %sid %ids) (set! %ids (+ %ids 1))
+          (set! %cols (%to-int (first f))) (set! %rows (%to-int (List ref 1 f)))
           (set! %prefix #f) (set! %client ()) (set! %done #f)
           (set! %windows ()) (set! %window 0) (set! %last ()) (set! %cwd (List ref 4 f))
           (set! %prompt ()) (set! %message ()) (set! %until 0) (set! %recent ()) (set! %repeat 0)
           (set! %numbers 0)
           (set! %sessions (List append %sessions (list s)))
           (set! %started #t)
-          (%new-window!)
+          (%new-window! () #t)
           (unless (null? %config-errors) (do (%show-lines! %config-errors) (set! %config-errors ())))
           (set! %ofill 0)
           (%stash!)
@@ -1937,15 +2397,7 @@
 ; The sessions, a line each in name order, tmux's.
 (def %list
   (fn (_ c)
-    (%stash!)
-    (def strcmp (%libc "strcmp"))
-    (def before? (fn (_ a b) (< (%int (ptr-call strcmp (str->ptr (%record-name a)) (str->ptr (%record-name b)))) 0)))
-    (def sorted
-      (List fold
-        (fn (_ acc s)
-          ((fn (self xs) (match ((null? xs) (list s)) ((before? s (first xs)) (pair s xs)) (#t (pair (first xs) (self (rest xs))))))
-           acc))
-        () %sessions))
+    (def sorted (%by-name))
     (def line
       (fn (_ s)
         (def r (first s))
@@ -1983,12 +2435,13 @@
         ((= type 65) (%attach-to! c (proto-fields (proto-text p n))))
         ((= type 76) (%list c))
         ((= type 75) (%kill! c))
+        ((= type 67) (%shell-command! c (proto-text p n)))
         (#t
           ((fn (_ s)
              (unless (null? s)
                (do (%enter! s)
                    (if (= type 73)
-                     (%keys! (int->ptr p) n)
+                     (do (%used! s) (%keys! (int->ptr p) n))
                      (when (= type 83)
                        ((fn (_ f) (set! %cols (%to-int (first f))) (set! %rows (%to-int (List ref 1 f))) (%redraw!))
                         (proto-fields (proto-text p n)))))
@@ -2084,6 +2537,7 @@
     (set! %buf (str-make 4097))
     (set! %obuf (str-make (+ %ocap 1)))
     (set! %listen fd)
+    (set! %socket-path path)
     (guard (e ()) (%serve))
     (List for-each (fn (_ s) (%enter! s) (%hang-up!)) %sessions)
     (guard (e ()) (File unlink path))

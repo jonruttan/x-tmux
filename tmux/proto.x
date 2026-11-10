@@ -16,6 +16,8 @@
 ;                                      client not on a terminal
 ;                      L list sessions
 ;                      K kill the server
+;                      C a command     TMUX US TMUX_PANE US WORD US WORD ...,
+;                                      US ASCII's unit separator, 31
 ;                      I input         the keys typed
 ;                      S size          COLS TAB ROWS
 ;   server to client   O output        bytes for the terminal

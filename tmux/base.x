@@ -14,8 +14,8 @@
   copy-enter copy-do copy-key copy-view copy-cursor copy-position copy-text copy-marks copy-selecting?
   layout-new layout-rects layout-borders layout-split layout-remove layout-panes layout-resize layout-fit
   layout-size layout-beside layout-relabel layout-names layout-arrange
-  command-parse command-read command-list command-find command-matches command-flag key-read key-name key-bytes
-  format-expand format-time format-true?)
+  command-parse command-read command-list command-words command-find command-matches command-flag
+  key-read key-name key-bytes format-expand format-time format-true?)
 
 (def tmux-version "0.1.0")
 
@@ -28,7 +28,8 @@
   copy-selecting?)
 (import tmux/layout layout-new layout-rects layout-borders layout-split layout-remove layout-panes
   layout-resize layout-fit layout-size layout-beside layout-relabel layout-names layout-arrange)
-(import tmux/command command-parse command-read command-list command-find command-matches command-flag)
+(import tmux/command command-parse command-read command-list command-words command-find command-matches
+  command-flag)
 (import tmux/keys key-read key-name key-bytes)
 (import tmux/format format-expand format-time format-true?)
 (import tmux/cli tmux-main)

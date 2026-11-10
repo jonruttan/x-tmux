@@ -13,6 +13,7 @@
 ;   attach-session, attach, a [-t NAME]  a session shown here
 ;   list-sessions, ls                    the sessions
 ;   kill-server                          every session ended, and the server
+;   any other command x-tmux runs        sent to the server and run there
 ;
 ; each led by the socket, as tmux's: -S PATH, or -L NAME for
 ; $TMUX_TMPDIR/x-tmux-UID/NAME, $TMUX_TMPDIR /tmp when it is not set and
@@ -35,7 +36,7 @@
 (import tmux/vt vt-make vt-feed! vt-render! vt-row vt-cursor vt-feed-pure! vt-render-pure!
   vt-feed-compiled! vt-render-compiled! vt-adopt!)
 (import tmux/vt-jit vt-jit-make vt-exercise vt-same?)
-(import tmux/client tmux-new tmux-attach tmux-ask)
+(import tmux/client tmux-new tmux-attach tmux-ask tmux-command)
 
 (def %clock (prim-ref (lit sys) (lit clock)))
 (import x/core/doors str-make str->ptr ptr->int ptr-set! ptr-call str-byte-len)
@@ -123,8 +124,7 @@
 
 (def %usage
   (fn (_)
-    (%write 2 (Str8 append "usage: x -l tmux -- [-L NAME | -S PATH] [-f FILE] new-session [-d] [-s NAME] |"
-                " attach-session [-t NAME] | list-sessions | kill-server\n"
+    (%write 2 (Str8 append "usage: x -l tmux -- [-L NAME | -S PATH] [-f FILE] [COMMAND [FLAGS] [ARGUMENTS]]\n"
                 "       x -l tmux -- vt check|bench|dump FILE | vt exercise SEED N\n"))
     2))
 
@@ -157,7 +157,7 @@
         (tmux-attach path (%or-empty (%flag ops "-t" #t))))
       ((%one-of? cmd (list "list-sessions" "ls")) (tmux-ask path 76))
       ((str=? cmd "kill-server") (tmux-ask path 75))
-      (#t (%usage)))))
+      (#t (tmux-command path ops)))))
 
 ; The files a server reads as it starts, each (PATH . QUIET), as tmux's:
 ; -f FILE's, else those of tmux's own places that are there.

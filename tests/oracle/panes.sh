@@ -68,6 +68,12 @@
 #             -n, a block over lines; source-file from the prompt, a file
 #             not there refused, one that does not read shown and not run;
 #             each line's error at start shown over the first pane
+#   shell     commands from a shell, run against x-tmux and against tmux
+#             on a socket of its own, their output and status the same:
+#             has-session, display -p, targets, split-window, new-window
+#             and select-layout -t, list-windows and list-panes in their
+#             forms, show-options, rename-session, send-keys' bytes,
+#             kill-session, and the errors of each
 #
 # x-tmux runs from a shell in the tmux pane, on a socket of its own, -f
 # /dev/null keeping the tester's own tmux.conf out of it.
@@ -82,7 +88,8 @@ mkdir -p "$fx/langs"
 ln -s "$BUNDLE" "$fx/langs/x-tmux"
 s=xtmux-oracle-$$
 c=/tmp/xtc$$
-trap 'tmux kill-session -t $s 2>/dev/null; X_LANG_DIR=$fx/langs/ TMUX_TMPDIR=$fx $X -l tmux -- -L oracle kill-server 2>/dev/null; rm -f "$c"; rm -rf "$fx"' EXIT
+r=xtmux-oracle-sh-$$
+trap 'tmux kill-session -t $s 2>/dev/null; X_LANG_DIR=$fx/langs/ TMUX_TMPDIR=$fx $X -l tmux -- -L oracle kill-server 2>/dev/null; tmux -L $r kill-server 2>/dev/null; X_LANG_DIR=$fx/langs/ TMUX_TMPDIR=$fx $X -l tmux -- -L oracle-sh kill-server 2>/dev/null; rm -f "$c"; rm -rf "$fx"' EXIT
 failed=0
 
 screen() { tmux capture-pane -p -t "$s" | sed 's/ *$//'; }
@@ -100,8 +107,10 @@ check() {
 	if [ "$2" = "$3" ]; then echo "ok: $1"; else echo "FAIL: $1 -- got '$2', want '$3'" >&2; screen >&2; failed=1; fi
 }
 
+# The pane gets the tester's PATH: the shell tmux starts it with may put
+# another x first.
 tmux new-session -d -s "$s" -x 80 -y 24 \
-	"env SHELL=/bin/sh PS1='$ ' VISUAL= EDITOR= X_LANG_DIR=$fx/langs/ TMUX_TMPDIR=$fx /bin/sh"
+	"env PATH='$PATH' SHELL=/bin/sh PS1='$ ' VISUAL= EDITOR= X_LANG_DIR=$fx/langs/ TMUX_TMPDIR=$fx /bin/sh"
 xt="$X -l tmux -- -L oracle -f /dev/null"
 # The name tmux gives a window whose program is /bin/sh, which x-tmux's
 # panes run: x-tmux names its windows as tmux does.
@@ -578,5 +587,84 @@ tmux send-keys -t "$s" q
 sleep 1
 tmux send-keys -t "$s" C-d
 wait_for 'BAD 0'
+
+
+# shell
+# tmux's sessions are made 80x23: x-tmux gives a detached session's
+# status line its row, where tmux gives a window with no client all 24.
+# x-tmux has no history_bytes, so the size list-panes gives is left out,
+# and so is history_size: a shell's prompt reaches tmux's history or not by
+# when it is drawn against the split.
+real() { env -u TMUX -u TMUX_PANE SHELL=/bin/sh tmux -L "$r" -f /dev/null "$@"; }
+mine() { env -u TMUX -u TMUX_PANE SHELL=/bin/sh X_LANG_DIR=$fx/langs/ TMUX_TMPDIR=$fx $X -l tmux -- -L oracle-sh -f /dev/null "$@"; }
+said() { "$@" 2>&1; echo "rc $?"; }
+both() { check "shell -- $1" "$($2 mine)" "$($2 real)"; }
+sized() { if [ "$1" = real ]; then echo "-x 80 -y 23"; fi; }
+made() {
+	$1 new -d -s work $(sized $1); $1 renamew -t work:0 main; $1 neww -d -t work -n ed; $1 new -d -s play $(sized $1); $1 renamew -t play:0 game
+	said $1 has -t work; said $1 has -t wo; said $1 has -t nope
+}
+both "has-session by name, by the start of one, and none" made
+shown() {
+	said $1 display -p '#S'
+	said $1 display -p -t work:1 '#S #I.#P #{pane_id} #{window_id} #{session_id}'
+	said $1 display -p -t nope:0 'still #S'
+}
+both "display -p in the newest session, at a target, and at none" shown
+split() {
+	said $1 split-window -h -t work:0; said $1 split-window -v -t work:0.1
+	said $1 display -p -t work '#I.#P'
+	said $1 lsp -t work:0 -F '#{pane_index} #{pane_active} #{pane_width}x#{pane_height}'
+}
+both "split-window -t in a window not shown" split
+windows() {
+	said $1 neww -d -t work:5 -n five; said $1 neww -d -t work:1; said $1 neww -d -t zz:1; said $1 neww -d -t ed
+	said $1 lsw -t work; said $1 lsw -a; said $1 lsw -t work -F '#I' -f '#{==:#W,ed}'
+}
+both "new-window -t and list-windows' forms" windows
+panes() {
+	said $1 lsp -t work:0 | sed 's/history [0-9]*\//history N\//; s/[0-9]* bytes]/ bytes]/'
+	said $1 lsp -s -t work | sed 's/history [0-9]*\//history N\//; s/[0-9]* bytes]/ bytes]/'
+	said $1 lsp -a | sed 's/history [0-9]*\//history N\//; s/[0-9]* bytes]/ bytes]/'
+	said $1 lsp -t work:0 -F '#P' -f '#{pane_active}'
+}
+both "list-panes' forms" panes
+layout() {
+	said $1 select-layout -t work:0 even-vertical; said $1 select-layout -t work:0 bogus
+	said $1 lsp -t work:0 -F '#P #{pane_width}x#{pane_height}'
+	said $1 lsw -t work -F '#{window_layout}' -f '#{==:#I,0}'
+}
+both "select-layout -t" layout
+options() {
+	said $1 show -g status; said $1 show -gv status-left; said $1 show -g status-left
+	said $1 show -g status-right; said $1 show -gw mode-keys
+	said $1 show -g nosuch; said $1 show -gq nosuch; said $1 show status
+}
+both "show-options, its quoting and its refusals" options
+names() {
+	said $1 rename -t play work; said $1 rename -t play games; said $1 has -t =games
+	said $1 renamew -t work:9 x; said $1 renamew -t work:5 fifth; said $1 lsw -t work -F '#I #W' -f '#{==:#I,5}'
+}
+both "rename-session and rename-window -t" names
+keys() {
+	f=$fx/keys.$1
+	$1 send -t work:1 "stty raw -echo; head -c 47 >$f; stty sane" Enter
+	sleep 2
+	said $1 send -t work:1 Up C-Up M-a F1 F5 BTab S-F1 C-Home Home DC C-Space
+	said $1 send -N 2 -t work:1 x
+	said $1 send -H -t work:1 41 zz 7a
+	i=0
+	while [ "$(wc -c <"$f" 2>/dev/null | tr -d ' ')" != 47 ] && [ $i -lt 60 ]; do i=$((i + 1)); sleep 0.5; done
+	od -An -tu1 "$f"
+}
+both "send-keys' bytes for keys, -N and -H" keys
+wrong() {
+	said $1 frob; said $1 has -x; said $1 send -N 0 -t work q; said $1 send -N x -t work q
+	said $1 send -t work:0.7 a; said $1 send -t nope a; said $1 kill-session -t games; said $1 kill-session -t games
+	said $1 has -t games
+}
+both "errors, and kill-session" wrong
+mine kill-server
+real kill-server
 
 exit $failed

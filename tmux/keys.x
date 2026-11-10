@@ -148,24 +148,75 @@
        (ptr-ref (str->ptr base) 0 1))
       ())))
 
-; The bytes a terminal sends for the key NAME, as send-prefix sends the
-; prefix: a character, C- one as its control byte, M- led by ESC; "" for
-; a key with no bytes here.
+; The bytes tmux sends a pane's program for the key NAME, as key-name
+; spells it: a character, C- one as its control byte, M- led by ESC; an
+; arrow, Home or End as CSI and its final, F1 to F4 as SS3, the others as
+; CSI N ~; a modified one with xterm's parameter, 1 + Shift 1 + Meta 2 +
+; Ctrl 4, as CSI 1;M and the final or CSI N;M ~.  The bytes are a list
+; of numbers, a NUL among them: C-Space's is one.  Empty for a key with
+; no bytes.
 (def key-bytes
+  (fn (_ name)
+    (def n (Str8 length name))
+    ; the modifiers' bits, the name after them from AT
+    ((fn (self bits at)
+       (def led? (fn (_ s) (if (< (+ at 2) n) (str=? (Str8 sub at 2 name) s) #f)))
+       (match
+         ((led? "C-") (self (| bits 4) (+ at 2)))
+         ((led? "M-") (self (| bits 2) (+ at 2)))
+         ((led? "S-") (self (| bits 1) (+ at 2)))
+         (#t
+           (do (def base (Str8 sub at (- n at) name))
+               (def csi (fn (_ text) (pair 27 (pair 91 (key-text-bytes text)))))
+               (def m (%num (+ bits 1)))
+               (def final (%named-lookup base %cursor-finals))
+               (def fn-key (%named-lookup base %function-finals))
+               (def tilde (%named-lookup base %tilde-numbers))
+               (match
+                 ((not (null? final))
+                   (match
+                     ((< 0 bits) (csi (Str8 append "1;" m final)))
+                     ((str=? base "Home") (csi "1~"))
+                     ((str=? base "End") (csi "4~"))
+                     (#t (csi final))))
+                 ((not (null? fn-key)) (if (< 0 bits) (csi (Str8 append "1;" m fn-key)) (pair 27 (pair 79 (key-text-bytes fn-key)))))
+                 ((not (null? tilde)) (csi (Str8 append tilde (if (< 0 bits) (Str8 append ";" m) "") "~")))
+                 ((str=? base "BTab") (csi "Z"))
+                 (#t (%character-bytes (Str8 append (if (< 0 (& bits 4)) "C-" "") (if (< 0 (& bits 2)) "M-" "") base))))))))
+     0 0)))
+
+; TEXT's bytes, a list of numbers: send-keys -l's for its text.
+(def key-text-bytes
+  (fn (_ text)
+    (def n (str-byte-len text))
+    ((fn (self i) (if (= i n) () (pair (ptr-ref (str->ptr text) i 1) (self (+ i 1))))) 0)))
+
+; The finals of the keys CSI sends, by name.
+(def %cursor-finals (lit (("Up" . "A") ("Down" . "B") ("Right" . "C") ("Left" . "D") ("Home" . "H") ("End" . "F"))))
+(def %function-finals (lit (("F1" . "P") ("F2" . "Q") ("F3" . "R") ("F4" . "S"))))
+(def %tilde-numbers
+  (lit (("IC" . "2") ("DC" . "3") ("PPage" . "5") ("NPage" . "6") ("F5" . "15") ("F6" . "17") ("F7" . "18")
+        ("F8" . "19") ("F9" . "20") ("F10" . "21") ("F11" . "23") ("F12" . "24"))))
+(def %named-lookup
+  (fn (_ name table) ((fn (_ e) (if (null? e) () (rest e))) (List find (fn (_ e) (str=? (first e) name)) table))))
+
+; A character key's bytes, with its modifiers: M- led by ESC, C- as the
+; control byte.
+(def %character-bytes
   (fn (self name)
     (def n (Str8 length name))
     (match
-      ((if (< 2 n) (str=? (Str8 sub 0 2 name) "M-") #f) (Str8 append (%byte 27) (self (Str8 sub 2 (- n 2) name))))
-      ((if (< 4 n) (str=? (Str8 sub 0 4 name) "C-M-") #f) (Str8 append (%byte 27) (self (Str8 append "C-" (Str8 sub 4 (- n 4) name)))))
-      ((str=? name "C-Space") (%byte 0))
+      ((if (< 2 n) (str=? (Str8 sub 0 2 name) "M-") #f) (pair 27 (self (Str8 sub 2 (- n 2) name))))
+      ((if (< 4 n) (str=? (Str8 sub 0 4 name) "C-M-") #f) (pair 27 (self (Str8 append "C-" (Str8 sub 4 (- n 4) name)))))
+      ((str=? name "C-Space") (list 0))
       ((if (= n 3) (str=? (Str8 sub 0 2 name) "C-") #f)
-        ((fn (_ c) (%byte (if (if (< 96 c) (< c 123) #f) (- c 96) (& c 31)))) (ptr-ref (str->ptr name) 2 1)))
-      ((str=? name "Space") " ")
-      ((str=? name "Tab") (%byte 9))
-      ((str=? name "Enter") (%byte 13))
-      ((str=? name "Escape") (%byte 27))
-      ((str=? name "BSpace") (%byte 127))
-      ((null? (List find (fn (_ k) (str=? k name)) %named)) name)
-      (#t ""))))
+        ((fn (_ c) (list (if (if (< 96 c) (< c 123) #f) (- c 96) (& c 31)))) (ptr-ref (str->ptr name) 2 1)))
+      ((str=? name "Space") (list 32))
+      ((str=? name "Tab") (list 9))
+      ((str=? name "Enter") (list 13))
+      ((str=? name "Escape") (list 27))
+      ((str=? name "BSpace") (list 127))
+      ((null? (List find (fn (_ k) (str=? k name)) %named)) (key-text-bytes name))
+      (#t ()))))
 
-(provide tmux/keys key-read key-name key-bytes)
+(provide tmux/keys key-read key-name key-bytes key-text-bytes)
