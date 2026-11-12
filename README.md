@@ -1,8 +1,23 @@
 # x-tmux
 
-A terminal multiplexer on x-lang, after tmux, as a lang bundle.
+A terminal multiplexer written in
+[x-lang](https://github.com/jonruttan/x-lang), after tmux, loaded as a
+lang.
 
     x -l tmux -- [COMMAND [ARGS]]
+
+    x -l tmux -- new        # a session; C-b d detaches
+    x -l tmux -- ls         # the sessions the server keeps
+    x -l tmux -- attach     # back into one
+
+## Install
+
+It needs x-lang at the release `lang.xon` declares.
+
+    make install    copies the bundle to <share>/langs/tmux and writes
+                    its boot image
+
+## Sessions
 
 `new-session` (or `new`) makes a session and shows it on the terminal it
 runs in: numbered windows of panes, each a shell on a pseudo-terminal,
@@ -146,7 +161,7 @@ pane, each newline a carriage return.  Keys and pastes a pane's program
 does not take at once wait for it, in order.
 
 Not yet: rectangles, a row the terminal wrapped copied as one line,
-bracketed paste, the buffer commands (`#`, `=`, `-`), searching, and the
+the buffer commands (`#`, `=`, `-`), searching, and the
 time a row entered the history, which tmux shows beside the position.
 
 ## The screen
@@ -360,11 +375,6 @@ bindings and errors, and source-file; then commands from a shell, run
 against x-tmux and against tmux on a socket of its own, their output,
 messages, status and send-keys' bytes the same.
 
-## Install
-
-    make install    copies the bundle to <share>/langs/tmux and writes
-                    its boot image
-
 ## Licence
 
-MIT No Attribution: see LICENSE.
+MIT No Attribution (MIT-0). See [LICENSE](LICENSE).
