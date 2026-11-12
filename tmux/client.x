@@ -16,6 +16,7 @@
 (module tmux/client)
 
 (import x/sys/posix)
+(import x/sys/proc)
 (import x/repl/term)
 (import x/sys/file)
 (import x/sys/socket)
@@ -51,10 +52,8 @@
     (def fd (Socket unix-listen path))
     (def pid (Sys fork))
     (if (= pid 0)
-      (do (ptr-call (%libc "setsid"))
-          (def null (%int (ptr-call (%libc "open") (str->ptr "/dev/null") 2)))
-          (Sys dup2 null 0) (Sys dup2 null 1) (Sys dup2 null 2)
-          (when (< 2 null) (Sys close null))
+      (do (Sys setsid)
+          (Proc quiet!)
           (Sys exit (tmux-serve fd path files)))
       (Socket close fd))))
 
