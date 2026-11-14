@@ -313,6 +313,9 @@ PATH`.  Those that serve scripts:
     show-options, show [-gqsvw] [NAME]
     split-window [-hv] [-t PANE], new-window [-d] [-n NAME] [-t SESSION:INDEX],
     select-layout [-np] [-t PANE] [LAYOUT], rename-window [-t WINDOW] NAME
+    capture-pane [-aCepq] [-S START] [-E END] [-t PANE]
+    pipe-pane [-IOo] [-t PANE] [COMMAND]
+    wait-for [-L | -S | -U] CHANNEL
 
 A target is tmux's: `SESSION:WINDOW.PANE`, each part left out for the
 current one; `%N` a pane by its id; a session by its name or the
@@ -326,6 +329,22 @@ x-tmux gives a session made with -d and no client a status line, so its
 panes have 23 rows where tmux's have 24; list-panes has no
 `history_bytes`; send-keys to a pane in copy mode goes to its program;
 a command run from inside a pane is not refused as nesting.
+
+capture-pane writes a pane's lines as tmux does: 0 the screen's top
+row, a negative line the history's, `-` its oldest or the screen's last;
+with -e each change of style as tmux's SGR; with -C a backslash twice
+and ESC as `\033`; with -a the screen under the alternate one; without
+-p the lines kept as a paste buffer.  It takes no -J or -N, as the
+screen keeps neither which rows wrapped nor how far a row was written;
+a tab is captured as the spaces it moved over; a curly underscore is
+written 4, and an underscore's colour is not kept; there is no -b, -T,
+-P or -M.  wait-for waits for a signal on a channel, one sent with no
+one waiting kept for the next; -L and -U lock and unlock it, the lock
+given to the next to wait; kill-server lets every waiter go.  pipe-pane
+runs COMMAND with `sh -c`, the pane's output to its standard input
+(-O), its standard output to the pane (-I), or both; no COMMAND closes
+the pane's pipe, -o only opens one when there is none, and
+`#{pane_pipe}` says whether one is open.
 
 Each may be led by `-L NAME` or `-S PATH` for the server's socket,
 `$TMUX_TMPDIR/x-tmux-UID/NAME` (`/tmp` when `TMUX_TMPDIR` is not set,
@@ -357,7 +376,9 @@ them, and its messages to tmux's; `06-keys` holds the keys typed and
 the names bind reads to tmux 3.8's, the bytes send-keys sends to
 tmux's, and a file of commands and a shell's words to how tmux 3.8
 reads them; `07-format` holds formats to what tmux
-3.8's display-message -p gives for them.
+3.8's display-message -p gives for them; `08-capture` holds the lines
+capture-pane names and writes, plain, with -e and with -C, to tmux
+3.8's.
 
     X=/path/to/x sh tests/oracle/panes.sh
 
@@ -373,7 +394,8 @@ pane exiting and
 `kill-server`, with tmux's messages; then a configuration's prefix,
 bindings and errors, and source-file; then commands from a shell, run
 against x-tmux and against tmux on a socket of its own, their output,
-messages, status and send-keys' bytes the same.
+messages, status and send-keys' bytes the same, and capture-pane,
+wait-for and pipe-pane's.
 
 ## Licence
 
