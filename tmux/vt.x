@@ -1089,6 +1089,39 @@
     (def cells (first (%line (rest h) line)))
     ((fn (loop c) (if (if (< 0 c) (= (ptr-ref (int->ptr cells) (- c 1) 1) 32) #f) (loop (- c 1)) c))
      (%w (rest h) %COLS))))
+; Cell C of line LINE: its byte, 128 for a character in the extended
+; buffer, 129 for padding; and its attribute, its style's number.
+(def vt-line-cell (fn (_ h line c) (ptr-ref (int->ptr (first (%line (rest h) line))) c 1)))
+(def vt-line-attr
+  (fn (_ h line c)
+    (def s (rest h))
+    (def count (%w s %HCOUNT))
+    (def cols (%w s %COLS))
+    (ptr-ref (int->ptr (if (< line count) (+ (%w s %HA) (* cols (%history-slot s line)))
+                         (+ (%w s %AP) (* cols (%row s (- line count))))))
+      c 1)))
+; Style I's word: its attribute bits, foreground from bit 8 and background
+; from bit 34.
+(def vt-style-word (fn (_ h i) (%style (rest h) i)))
+
+; The main screen the alternate screen hides, as a screen of H's size with
+; no history; nil when the alternate screen is not up.
+(def vt-alternate
+  (fn (_ h)
+    (def s (rest h))
+    (if (= (%w s %ALT) 0) ()
+      (do (def rows (%w s %ROWS))
+          (def cols (%w s %COLS))
+          (def v (vt-make-history rows cols 0))
+          (def t (rest v))
+          (def saved (fn (_ r) (ptr-ref-word (int->ptr (+ (%w s %SMAP) (* 8 r))) 0)))
+          ((fn (self r)
+             (when (< r rows)
+               (do (%copy-row! t r %CP %AP %EP (%w s %SCP) (%w s %SAP) (%w s %SEP) (* (saved r) cols) cols)
+                   (self (+ r 1)))))
+           0)
+          (%carry-styles! s t)
+          v))))
 
 ; A screen the size of H showing its rows OFF up from the bottom: history
 ; row COUNT - OFF on, then the screen's rows, COUNT the history's rows it
@@ -1151,6 +1184,6 @@
 
 (provide tmux/vt vt-make vt-make-history vt-feed! vt-render! vt-out vt-cursor vt-size vt-origin!
   vt-touch! vt-carry vt-row vt-row-length vt-attrs vt-history vt-history-row vt-history-attrs
-  vt-history-same? vt-view vt-line vt-line-length
+  vt-history-same? vt-view vt-line vt-line-length vt-line-cell vt-line-attr vt-style-word vt-alternate
   vt-feed-pure! vt-render-pure! vt-feed-compiled! vt-render-compiled! vt-adopt!
   vt-compiled? vt-style vt-cursor-shown? vt-cursor-keys? vt-bracketed?)

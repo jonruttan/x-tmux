@@ -73,7 +73,8 @@
 #             has-session, display -p, targets, split-window, new-window
 #             and select-layout -t, list-windows and list-panes in their
 #             forms, show-options, rename-session, send-keys' bytes,
-#             kill-session, and the errors of each
+#             kill-session, capture-pane, wait-for and pipe-pane, and the
+#             errors of each
 #
 # x-tmux runs from a shell in the tmux pane, on a socket of its own, -f
 # /dev/null keeping the tester's own tmux.conf out of it.
@@ -664,7 +665,48 @@ wrong() {
 	said $1 has -t games
 }
 both "errors, and kill-session" wrong
-mine kill-server
-real kill-server
+captured() {
+	$1 new -d -s cap $(sized $1)
+	# the screen cleared by the printf, so its rows are 0 to 2 whatever
+	# the prompt
+	$1 send -t cap "printf '\\033[H\\033[2Ja\\033[1mb\\033[0m  c\\n\\033[44m  \\033[m\\nx\\\\\\\\y\\n'" Enter
+	sleep 2
+	said $1 capture-pane -p -t cap -S 0 -E 2; said $1 capture-pane -pe -t cap -S 0 -E 1
+	said $1 capture-pane -pC -t cap -S 2 -E 2; said $1 capture-pane -p -t cap -S 2 -E 1
+	said $1 capture-pane -t cap -S 0 -E 0
+	said $1 capture-pane -pa -t cap; said $1 capture-pane -paq -t cap
+	said $1 capture-pane -p -t nope
+}
+both "capture-pane's lines, -e, -C, a buffer, -a and a pane not there" captured
+waited() {
+	said $1 wait-for; said $1 wait-for -U ch; said $1 wait-for -S ch; said $1 wait-for ch
+	(sleep 1; $1 wait-for -S go) &
+	said $1 wait-for go
+	said $1 wait-for -L lk; (sleep 1; $1 wait-for -U lk) &
+	said $1 wait-for -L lk; said $1 wait-for -U lk
+	wait
+}
+both "wait-for's signals and locks, and its errors" waited
+piped() {
+	f=$fx/pipe.$1
+	said $1 pipe-pane -t cap "cat >$f"; said $1 display -p -t cap '#{pane_pipe}'
+	$1 send -t cap "echo piped-$1" Enter
+	sleep 2
+	said $1 pipe-pane -o -t cap 'cat >/dev/null'; said $1 display -p -t cap '#{pane_pipe}'
+	said $1 pipe-pane -o -t cap 'cat >/dev/null'; said $1 display -p -t cap '#{pane_pipe}'
+	said $1 pipe-pane -t cap; said $1 display -p -t cap '#{pane_pipe}'
+	grep -c "^piped-$1" "$f"
+	said $1 pipe-pane -I -t cap "echo echo from-$1"
+	sleep 2
+	$1 capture-pane -p -t cap | grep -c "^from-$1"
+	said $1 pipe-pane -t cap:7 true
+}
+both "pipe-pane's output to a command, -o, closing, -I and a window not there" piped
+released() {
+	(sleep 1; $1 kill-server) &
+	said $1 wait-for never
+	wait
+}
+both "kill-server lets a waiter go" released
 
 exit $failed
