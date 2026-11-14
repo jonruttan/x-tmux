@@ -74,19 +74,21 @@
 ; of its flags, those of its flags that take a value, and how few and how
 ; many arguments it takes, -1 for no limit.
 (def %commands
-  (lit (("bind-key" "nr" "NT" 1 -1) ("command-prompt" "" "Ip" 0 1) ("confirm-before" "" "p" 1 1)
+  (lit (("bind-key" "nr" "NT" 1 -1) ("capture-pane" "aCepq" "ESt" 0 0) ("command-prompt" "" "Ip" 0 1)
+        ("confirm-before" "" "p" 1 1)
         ("copy-mode" "eu" "" 0 0) ("detach-client" "" "" 0 0) ("display-message" "aCIlNpv" "cdFt" 0 1)
         ("display-panes" "" "" 0 0) ("has-session" "" "t" 0 0)
         ("kill-pane" "" "t" 0 0) ("kill-session" "" "t" 0 0) ("kill-window" "" "t" 0 0)
         ("last-pane" "" "" 0 0) ("last-window" "" "" 0 0) ("list-panes" "as" "Fft" 0 0)
         ("list-windows" "a" "Fft" 0 0) ("new-window" "d" "nt" 0 0)
         ("next-layout" "" "" 0 0) ("next-window" "" "" 0 0) ("paste-buffer" "p" "" 0 0)
-        ("previous-layout" "" "" 0 0) ("previous-window" "" "" 0 0) ("rename-session" "" "t" 1 1)
+        ("pipe-pane" "IOo" "t" 0 1) ("previous-layout" "" "" 0 0) ("previous-window" "" "" 0 0)
+        ("rename-session" "" "t" 1 1)
         ("rename-window" "" "t" 1 1)
         ("resize-pane" "DLRUZ" "" 0 1) ("rotate-window" "DU" "" 0 0) ("select-layout" "np" "t" 0 1)
         ("select-pane" "DLRUl" "t" 0 0) ("select-window" "lnp" "t" 0 0) ("send-keys" "Hl" "Nt" 0 -1)
         ("send-prefix" "" "" 0 0) ("set-option" "gqsuw" "" 1 2) ("show-options" "gqsvw" "t" 0 1) ("source-file" "q" "" 1 -1) ("split-window" "hv" "t" 0 0)
-        ("swap-pane" "DU" "" 0 0) ("unbind-key" "anq" "T" 0 1))))
+        ("swap-pane" "DU" "" 0 0) ("unbind-key" "anq" "T" 0 1) ("wait-for" "LSU" "" 1 1))))
 
 (def %char (fn (_ s i) (Str8 sub i 1 s)))
 (import x/core/doors str-byte-len str-byte-sub)

@@ -68,7 +68,8 @@
 (import x/sys/date)
 (import tmux/format format-expand format-time format-true?)
 (import tmux/vt vt-make vt-make-history vt-feed! vt-render! vt-out vt-cursor vt-size vt-origin! vt-touch! vt-carry
-  vt-cursor-shown? vt-cursor-keys? vt-bracketed? vt-history)
+  vt-cursor-shown? vt-cursor-keys? vt-bracketed? vt-history vt-alternate)
+(import tmux/capture capture-range capture-lines)
 (import tmux/vt-jit vt-jit!)
 (import tmux/copy copy-enter copy-resize copy-view copy-origin! copy-touch! copy-cursor copy-position
   copy-do copy-selecting? copy-text copy-marks copy-vi? copy-key)
@@ -223,12 +224,13 @@
 ; --- panes --------------------------------------------------------------
 
 ; Every descriptor a pane's program must not keep: the socket, the
-; clients', every pane's master.
+; clients', every pane's master, every pipe's ends.
 (def %inherited
   (fn (_)
     (%stash!)
     (List append (list %listen) (List map proto-fd %conns)
-      (List fold (fn (_ acc s) (List append acc (List map %pane-fd (List ref 3 (first s))))) () %sessions))))
+      (List fold (fn (_ acc s) (List append acc (List map %pane-fd (List ref 3 (first s))))) () %sessions)
+      (%pipe-fds))))
 
 ; SHELL, or /bin/sh, in CWD on a new pseudo-terminal of COLS x ROWS with
 ; TERM screen, and TMUX and TMUX_PANE as tmux sets them for pane ID: the
@@ -303,6 +305,7 @@
 (def %remove!
   (fn (_ id)
     (def p (%pane id))
+    (%unpipe! id)
     (ptr-call %c-kill (%pane-pid p) 1)
     (File close (%pane-fd p))
     (ptr-call %c-waitpid (%pane-pid p) 0 0)
@@ -548,6 +551,7 @@
   (fn (_)
     (List for-each
       (fn (_ p)
+        (%unpipe! (%pane-id p))
         (ptr-call %c-kill (%pane-pid p) 1) (File close (%pane-fd p)) (ptr-call %c-waitpid (%pane-pid p) 0 0)
         (set! %pending (List filter (fn (_ w) (not (= (first w) (%pane-fd p)))) %pending)))
       %panes)
@@ -767,10 +771,7 @@
 
 ; COMMANDS run in turn, a command that fails stopping the ones after it,
 ; its message said.
-(def %run-all!
-  (fn (self commands)
-    (unless (if (null? commands) #t %done)
-      ((fn (_ wrong) (if (null? wrong) (self (rest commands)) (%say! wrong))) (%run! (first commands))))))
+(def %run-all! (fn (_ commands) (%run-for! () %current commands)))
 
 ; TEXT's digits as a number, or nil when it is empty or holds another
 ; character; with SIGNED, a leading - too.
@@ -1315,6 +1316,7 @@
                   (#t (rest (List ref (- (List length (rest r)) 1) (rest r))))))
               (%source (%home (first paths))))))
          args))
+      ((is? "wait-for") (%wait-for (first args) (on? "S") (on? "L") (on? "U")))
       ((null? %current) "no current session")
       ((is? "command-prompt")
         (done (%command-prompt! (command-flag flags "p") (command-flag flags "I") (if (null? args) () (first args)))))
@@ -1470,6 +1472,30 @@
                     (when bracket (send! (%esc "[200~")))
                     (send! (%typed (first %buffers)))
                     (when bracket (send! (%esc "[201~")))))))
+      ((is? "capture-pane")
+        (pane!
+          (fn (_ id wi)
+            (def screen (%pane-screen (%pane id)))
+            (def h (if (on? "a") (vt-alternate screen) screen))
+            (def value (fn (_ letter) ((fn (_ v) (if (null? v) () (%expand v wi id #f))) (command-flag flags letter))))
+            ; with -q and no alternate screen, an empty capture: a line
+            ; with -p, no buffer without
+            (if (if (null? h) (not (on? "q")) #f) "no alternate screen"
+              ((fn (_ lines)
+                 (match
+                   ((not (on? "p")) (unless (null? h) (%keep! (Str8 append (Str8 join "\n" lines) "\n") #f)))
+                   (%asked (List for-each %said! lines))
+                   (#t (%show-lines! lines)))
+                 ())
+               (if (null? h) (list "") (capture-lines h (capture-range h (value "S") (value "E")) (on? "e") (on? "C"))))))))
+      ((is? "pipe-pane")
+        (pane!
+          (fn (_ id wi)
+            (match
+              ((if (on? "o") (not (null? (%pipe-of id))) #f) (do (%unpipe! id) ()))
+              (#t (do (%unpipe! id)
+                      (if (null? args) ()
+                        (%pipe! id (%expand (first args) wi id #f) (on? "I") (if (on? "O") #t (not (on? "I")))))))))))
       ((is? "send-prefix")
         (done (%send-bytes! (%pane-fd (%pane %active)) (key-bytes (%option "prefix")))))
       ((is? "detach-client") (done (%detach! (Str8 append "[detached (from session " %name ")]"))))
@@ -1705,6 +1731,7 @@
         ((str=? name "history_size") (%num (vt-history (%pane-screen p))))
         ((str=? name "history_limit") (%num (%option "history-limit")))
         ((str=? name "pane_dead") "0")
+        ((str=? name "pane_pipe") (yes (not (null? (%pipe-of id)))))
         ((str=? name "window_index") (%num (first w)))
         ((str=? name "window_name") (List ref 3 w))
         ((str=? name "window_flags") (flags))
@@ -2062,6 +2089,7 @@
     (def got (%int (ptr-call %c-read (%pane-fd p) at 4096)))
     (if (< 0 got)
       (do (ptr-set! at got 0 1) (vt-feed! (%pane-screen p) (ptr->int at) got) (%moved! got)
+          (%pipe-out! (%pane-id p) at got)
           (when (%holds? %tree (%pane-id p)) (set! %touched #t))
           (%name-due! (first (%window-of (%pane-id p)))))
       (when (if (= got 0) #t (%gone? (%pane-pid p))) (%remove! (%pane-id p))))))
@@ -2078,6 +2106,116 @@
 
 ; Whether a pane's program has ended: waitpid with WNOHANG.
 (def %gone? (fn (_ pid) (not (= 0 (%int (ptr-call %c-waitpid pid 0 1))))))
+
+; --- pipe-pane's pipes -----------------------------------------------------
+
+; Each pane's pipe: (ID PID WRITE READ), WRITE taking the pane's output to
+; its command, READ the command's output to the pane, -1 an end not asked
+; for.  A command let go is reaped from %reaping as it ends.
+(def %pipes ())
+(def %reaping ())
+
+(def %pipe-of (fn (_ id) (List find (fn (_ x) (= (first x) id)) %pipes)))
+
+; The ends of every pipe, -1 left out.
+(def %pipe-fds
+  (fn (_)
+    (List fold (fn (_ acc x) (List append acc (List filter (fn (_ fd) (< -1 fd)) (list (List ref 2 x) (List ref 3 x)))))
+      () %pipes)))
+
+; Pane ID's pipe closed, its command let go.
+(def %unpipe!
+  (fn (_ id)
+    (def x (%pipe-of id))
+    (unless (null? x)
+      (do (List for-each (fn (_ fd) (when (< -1 fd) (File close fd))) (list (List ref 2 x) (List ref 3 x)))
+          (set! %pending (List filter (fn (_ w) (not (= (first w) (List ref 2 x)))) %pending))
+          (set! %reaping (pair (List ref 1 x) %reaping))
+          (set! %pipes (List filter (fn (_ y) (not (eq? y x))) %pipes))))))
+
+; COMMAND run by /bin/sh for pane ID: the pane's output to its standard
+; input when OUT, its standard output to the pane when IN, /dev/null for
+; the rest.  Answers nil, or what went wrong.
+(def %pipe!
+  (fn (_ id command in out)
+    (def down (if out (Sys pipe) ()))
+    (def up (if in (Sys pipe) ()))
+    (def ends (List append (if out (list (first down) (rest down)) ()) (if in (list (first up) (rest up)) ())))
+    (def keep (%inherited))
+    (def pid (Sys fork))
+    (match
+      ((= pid 0)
+        (do (guard (e (Sys exit 125))
+              (do (def null (File open "/dev/null" (lit rdwr)))
+                  (Sys dup2 (if out (first down) null) 0)
+                  (Sys dup2 (if in (rest up) null) 1)
+                  (Sys dup2 null 2)
+                  (List for-each (fn (_ fd) (when (< 2 fd) (Sys close fd))) (List append keep ends (list null)))
+                  (Sys exec "/bin/sh" (list "-c" command))))
+            (Sys exit 127)))
+      ((< pid 0) (do (List for-each (fn (_ fd) (Sys close fd)) ends) "fork failed"))
+      (#t
+        (do (when out (do (Sys close (first down)) (Sys nonblock! (rest down))))
+            (when in (do (Sys close (rest up)) (Sys nonblock! (first up))))
+            (set! %pipes (pair (list id pid (if out (rest down) -1) (if in (first up) -1)) %pipes))
+            ())))))
+
+; Pane ID's N output bytes at P to its pipe's command, what it does not take
+; now waiting for a poll; the pipe closed when the command no longer reads.
+(def %pipe-out!
+  (fn (_ id p n)
+    (def x (%pipe-of id))
+    (unless (if (null? x) #t (< (List ref 2 x) 0))
+      ((fn (_ fd)
+         (if (not (null? (List find (fn (_ w) (= (first w) fd)) %pending))) (%wait! fd p 0 n)
+           (do (Sys nonblock! fd)
+               ((fn (_ k)
+                  (match
+                    ((< k 0) (if (= (Err errno-of k) 32) (%unpipe! id) (%wait! fd p 0 n)))
+                    ((< k n) (%wait! fd p k n))
+                    (#t ())))
+                (%int (ptr-call %c-write fd p n))))))
+       (List ref 2 x)))))
+
+; Pane ID's master, whichever session holds it; nil when it is gone.
+(def %master-of
+  (fn (_ id)
+    (%stash!)
+    ((fn (_ p) (if (null? p) () (%pane-fd p)))
+     (List find (fn (_ p) (= (%pane-id p) id))
+       (List fold (fn (_ acc s) (List append acc (List ref 3 (first s)))) () %sessions)))))
+
+; What each pipe's command wrote, READY says, sent to its pane; a pipe
+; whose command has ended or stopped writing closed; the commands let go
+; reaped as they end.
+(def %pipes-heard!
+  (fn (_ ready)
+    (List for-each
+      (fn (_ x)
+        (def id (first x))
+        (def fd (List ref 3 x))
+        (match
+          ((if (< -1 fd) (%ready-for? ready fd (lit in)) #f)
+            ((fn (_ got master)
+               (if (if (< 0 got) (not (null? master)) #f) (%send! master (str->ptr %buf) got) (%unpipe! id)))
+             (%int (ptr-call %c-read fd (str->ptr %buf) 4096)) (%master-of id)))
+          ((< fd 0) (when (%gone? (List ref 1 x)) (do (%unpipe! id) (set! %reaping (List filter (fn (_ q) (not (= q (List ref 1 x)))) %reaping)))))
+          (#t ())))
+      %pipes)
+    (set! %reaping (List filter (fn (_ pid) (not (%gone? pid))) %reaping))))
+
+; What the pipes are polled for: a command's output, and room for what
+; waits for a command.
+(def %pipe-polls
+  (fn (_)
+    (List fold
+      (fn (_ acc x)
+        (def w (List ref 2 x))
+        (def r (List ref 3 x))
+        (List append acc
+          (if (< r 0) () (list (pair r (list (lit in)))))
+          (if (if (< w 0) #t (null? (List find (fn (_ v) (= (first v) w)) %pending))) () (list (pair w (list (lit out)))))))
+      () %pipes)))
 
 ; --- commands from the shell ------------------------------------------------
 
@@ -2277,19 +2415,110 @@
     (match
       ((not (first parsed)) (%leave! c 1 (List ref 1 parsed)))
       ((null? base) (%leave! c 1 "no current session"))
+      (#t (%run-for! c base (List ref 1 parsed))))))
+
+; COMMANDS run for the client C, or for a key, the prompt or a file when C
+; is nil, each in the session BASE: what each prints written for C, and C
+; sent away with tmux's status and the first command's message that went
+; wrong, or for nil, that message on the status line.  A command that
+; waits on a channel (wait-for) parks C and the commands after it.
+(def %run-for!
+  (fn (self c base commands)
+    (def live (if (null? base) #f (not (null? (List find (fn (_ s) (eq? s base)) %sessions)))))
+    (when live (%enter! base))
+    (set! %asked (not (null? c)))
+    (match
+      ((if (null? commands) #t (if (null? c) %done #f)) (%finish! c ()))
       (#t
-        (do (%enter! base)
-            (set! %asked #t)
-            (set! %said ())
-            (def wrong
-              ((fn (self cs) (if (null? cs) () ((fn (_ w) (if (null? w) (self (rest cs)) w)) (%run! (first cs)))))
-               (List ref 1 parsed)))
-            (set! %asked #f)
-            (unless (null? %said)
-              (proto-send-text! (proto-fd c) 79 (Str8 append (Str8 join "\n" (List reverse %said)) "\n")))
-            (set! %said ())
-            (%leave! c (if (null? wrong) 0 1) (if (null? wrong) "" wrong))
-            (unless (null? %current) (%settle!)))))))
+        ((fn (_ w)
+           (match
+             ((null? w) (self c base (rest commands)))
+             ((str? w) (%finish! c w))
+             (#t (%park! (List ref 1 w) (List ref 2 w) (list c base (rest commands))))))
+         (%run! (first commands)))))))
+(def %finish!
+  (fn (_ c wrong)
+    (set! %asked #f)
+    (if (null? c)
+      (unless (null? wrong) (%say! wrong))
+      (do (%tell! c)
+          (when (%live? c) (%leave! c (if (null? wrong) 0 1) (if (null? wrong) "" wrong)))
+          (unless (null? %current) (%settle!))))))
+; What the commands run for C have printed, sent to it.
+(def %tell!
+  (fn (_ c)
+    (unless (if (null? %said) #t (not (%live? c)))
+      (proto-send-text! (proto-fd c) 79 (Str8 append (Str8 join "\n" (List reverse %said)) "\n")))
+    (set! %said ())))
+
+; --- wait-for's channels ----------------------------------------------------
+
+; A run parked is (CLIENT BASE COMMANDS), as %run-for! takes it.
+(def %woken ())    ; the channels signalled while none waited
+(def %waiting ())  ; the runs waiting on a channel, each (CHANNEL . RUN)
+(def %locks ())    ; the channels locked, each (CHANNEL . RUNS), the runs waiting to lock it in turn
+(def %due ())      ; the runs woken, to go on once the loop has heard its clients
+
+; RUN parked on CHANNEL, to lock it when LOCK: what it has printed so far
+; sent to its client.
+(def %park!
+  (fn (_ channel lock run)
+    (unless (null? (first run)) (%tell! (first run)))
+    (set! %asked #f)
+    (if lock
+      (set! %locks (List map (fn (_ l) (if (str=? (first l) channel) (pair channel (List append (rest l) (list run))) l)) %locks))
+      (set! %waiting (List append %waiting (list (pair channel run)))))))
+
+; wait-for, as tmux runs it: -S wakes the runs waiting on CHANNEL, or
+; keeps the signal for the next when none waits; -L locks it, or waits
+; for it; -U hands it to the next run waiting to lock it, or unlocks it;
+; and with none, waits for -S.  Answers nil, tmux's message, or (wait
+; CHANNEL LOCK) for a run to wait.
+(def %wait-for
+  (fn (_ channel signal lock unlock)
+    (def named (fn (_ x) (str=? (first x) channel)))
+    (def held (List find named %locks))
+    (match
+      (signal
+        ((fn (_ woken)
+           (if (null? woken)
+             (when (null? (List find (fn (_ x) (str=? x channel)) %woken)) (set! %woken (pair channel %woken)))
+             (do (set! %waiting (List filter (fn (_ x) (not (named x))) %waiting))
+                 (set! %due (List append %due (List map rest woken)))))
+           ())
+         (List filter named %waiting)))
+      (unlock
+        (match
+          ((null? held) (Str8 append "channel " channel " not locked"))
+          ((null? (rest held)) (do (set! %locks (List filter (fn (_ x) (not (named x))) %locks)) ()))
+          (#t (do (set! %locks (List map (fn (_ l) (if (named l) (pair channel (rest (rest l))) l)) %locks))
+                  (set! %due (List append %due (list (first (rest held)))))
+                  ()))))
+      (lock (if (null? held) (do (set! %locks (pair (list channel) %locks)) ()) (list (lit wait) channel #t)))
+      ((not (null? (List find (fn (_ x) (str=? x channel)) %woken)))
+        (do (set! %woken (List filter (fn (_ x) (not (str=? x channel))) %woken)) ()))
+      (#t (list (lit wait) channel #f)))))
+
+; The runs woken, gone on with; a client that has left is passed over.
+(def %go-on!
+  (fn (self)
+    (unless (null? %due)
+      ((fn (_ run)
+         (set! %due (rest %due))
+         (when (if (null? (first run)) #t (%live? (first run)))
+           (guard (e (unless (null? (first run)) (when (%live? (first run)) (%leave! (first run) 1 (Str8 append "x-tmux: " (%error-text e))))))
+             (%run-for! (first run) (List ref 1 run) (List ref 2 run))))
+         (self))
+       (first %due)))))
+
+; Every run's client parked or due sent away, as the server goes: tmux's
+; status 0.
+(def %release!
+  (fn (_)
+    (List for-each
+      (fn (_ run) (unless (null? (first run)) (when (%live? (first run)) (%leave! (first run) 0 ""))))
+      (List append %due (List map rest %waiting) (List fold (fn (_ acc l) (List append acc (rest l))) () %locks)))
+    (set! %due ()) (set! %waiting ()) (set! %locks ())))
 
 ; --- sessions and clients ---------------------------------------------------
 
@@ -2420,6 +2649,7 @@
 (def %kill!
   (fn (_ c)
     (List for-each (fn (_ s) (%enter! s) (%detach! "[server exited]") (%hang-up!)) %sessions)
+    (%release!)
     (set! %sessions ())
     (set! %current ())
     (set! %client ())
@@ -2490,7 +2720,8 @@
             (List append (list (pair %listen (list (lit in))))
               (List map (fn (_ c) (pair (proto-fd c) (list (lit in)))) %conns)
               (List map %wants
-                (List fold (fn (_ acc s) (List append acc (List map %pane-fd (List ref 3 (first s))))) () %sessions))))
+                (List fold (fn (_ acc s) (List append acc (List map %pane-fd (List ref 3 (first s))))) () %sessions))
+              (%pipe-polls)))
           ; a message or the panes' numbers to take down or a name to look at
           ; keeps the poll short
           (def saying
@@ -2506,7 +2737,9 @@
           (when (%ready? ready %listen)
             (set! %conns (List append %conns (list (proto-conn (Socket accept %listen))))))
           (List for-each (fn (_ c) (when (if (%live? c) (%ready? ready (proto-fd c)) #f) (%hear! c))) %conns)
+          (%go-on!)
           (%drain! ready)
+          (%pipes-heard! ready)
           (def tick (%status-tick!))
           (List for-each
             (fn (_ s)
@@ -2520,7 +2753,7 @@
                     (unless %done (List for-each (fn (_ w) (when (List ref 6 w) (%name-due! (first w)))) %windows))
                     (%settle!))))
             %sessions)
-          (when (if %started (null? %sessions) #f) (set! %quit #t))
+          (when (if %started (null? %sessions) #f) (do (%release!) (set! %quit #t)))
           (%moved! 1024)
           (self)))))
 
