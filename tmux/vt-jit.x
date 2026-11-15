@@ -28,7 +28,7 @@
 (module tmux/vt-jit)
 
 (import tmux/vt vt-make vt-make-history vt-origin! vt-row vt-attrs vt-history-same? vt-cursor vt-out
-  vt-feed-pure! vt-render-pure! vt-feed-compiled! vt-render-compiled! vt-adopt!)
+  vt-feed-pure! vt-render-pure! vt-feed-compiled! vt-render-compiled! vt-adopt! vt-marks-same?)
 (import x/tool/jit-group jit-group)
 (import x/sys/gc)
 
@@ -46,7 +46,8 @@
         (pair 'EXT 10) (pair 'UNEED 63) (pair 'RX 65) (pair 'RN 66)
         (pair 'MAP 67) (pair 'RT 70) (pair 'RE 71) (pair 'RH 72) (pair 'RB 73)
         (pair 'HC 74) (pair 'HA 75) (pair 'HX 76) (pair 'HLIM 77) (pair 'HHEAD 78) (pair 'HCOUNT 79)
-        (pair 'HD 80) (pair 'SGRB 82) (pair 'COLON 85)))
+        (pair 'HD 80) (pair 'STY 81) (pair 'SGRB 82) (pair 'COLON 85)
+        (pair 'LINES 86) (pair 'HL 88) (pair 'LE 89) (pair 'RZ 90)))
 (def %vj-params 20)
 
 ; A cell's extended slot copied with it when the cell holds a character
@@ -77,7 +78,12 @@
 (def %vj-expand
   (fn (self e)
     (if (symbol? e)
-      ((fn (_ w) (if (null? w) e (list '%mem-ref-at 'a (rest w)))) (%vj-word e))
+      (match
+        ; whether the cursor's style has a background, and the word of a
+        ; line emptied in it
+        ((eq? e 'BG?) (self '(not (= (>> (%mem-ref-at STY ATTR) 34) 0))))
+        ((eq? e 'EMPTIED) (self '(if BG? (* COLS 32768) 0)))
+        (#t ((fn (_ w) (if (null? w) e (list '%mem-ref-at 'a (rest w)))) (%vj-word e))))
       (if (not (pair? e)) e
         (match
           ((eq? (first e) 'set)
@@ -103,16 +109,66 @@
                     '(%mem-byte-set-at! DIRTY ROW 1) '(set NMODE 0) '(set MODE 1))))
           ((eq? (first e) 'SCROLL-UP)
             ; rows TOP..BOT up N: the map turned, a freed row blanked a turn
+            ; and given the line word LE, emptied in the cursor's background
             (self (list 'do (list 'set 'X (list 'MIN (List ref 3 e) (list '+ (list '- (List ref 2 e) (List ref 1 e)) 1)))
-                    (list 'set 'K (List ref 1 e)) (list 'set 'RE (List ref 2 e)) '(set J 0) '(set MODE 11))))
+                    (list 'set 'K (List ref 1 e)) (list 'set 'RE (List ref 2 e)) '(set J 0) '(set LE EMPTIED)
+                    '(set MODE 11))))
           ((eq? (first e) 'SCROLL-DOWN)
             (self (list 'do (list 'set 'X (list 'MIN (List ref 3 e) (list '+ (list '- (List ref 2 e) (List ref 1 e)) 1)))
-                    (list 'set 'K (List ref 1 e)) (list 'set 'RE (List ref 2 e)) '(set J 0) '(set MODE 12))))
+                    (list 'set 'K (List ref 1 e)) (list 'set 'RE (List ref 2 e)) '(set J 0) '(set LE EMPTIED)
+                    '(set MODE 12))))
           ((eq? (first e) 'MIN)
             (self (list 'if (list '< (List ref 1 e) (List ref 2 e)) (List ref 1 e) (List ref 2 e))))
+          ((eq? (first e) 'MAX)
+            (self (list 'if (list '< (List ref 1 e) (List ref 2 e)) (List ref 2 e) (List ref 1 e))))
+          ; a line's word, tmux/vt's: the cells written (bits 0 to 14), held
+          ; (15 to 29), and wrapped (bit 30); (LW ROW) a screen row's
+          ((eq? (first e) 'LW) (self (list '%mem-ref-at 'LINES (list 'ROWAT (List ref 1 e)))))
+          ((eq? (first e) 'LW!) (self (list '%mem-set-at! 'LINES (list 'ROWAT (List ref 1 e)) (List ref 2 e))))
+          ((eq? (first e) 'GROWN)
+            ; the cells a line holding SIZE holds once it is to hold WANT
+            (self (list 'if (list '< (List ref 1 e) (List ref 2 e))
+                    (list 'if (list '< (List ref 2 e) '(>> COLS 2)) '(>> COLS 2)
+                      (list 'if (list '< (List ref 2 e) '(>> COLS 1)) '(>> COLS 1) 'COLS))
+                    (List ref 1 e))))
+          ((eq? (first e) 'WRITTEN)
+            (self (list 'LW! (List ref 1 e)
+                    (list '+ (list '& (list 'LW (List ref 1 e)) 1073741824)
+                      (list '+ (list '* (list 'GROWN (list '& (list '>> (list 'LW (List ref 1 e)) 15) 32767) (List ref 2 e)) 32768)
+                        (list 'MAX (list '& (list 'LW (List ref 1 e)) 32767) (List ref 2 e)))))))
+          ((eq? (first e) 'MOVED)
+            ; row R holding every cell, written to cell B-1
+            (self (list 'LW! (List ref 1 e)
+                    (list '+ (list '& (list 'LW (List ref 1 e)) 1073741824)
+                      (list '+ '(* COLS 32768) (list 'MAX (list '& (list 'LW (List ref 1 e)) 32767) (List ref 2 e)))))))
+          ((eq? (first e) 'UNWRAP)
+            ; a screen row unwrapped, or for -1 the history's newest
+            (self (list 'if (list '> (List ref 1 e) -1)
+                    (list 'LW! (List ref 1 e) (list '& (list 'LW (List ref 1 e)) 1073741823))
+                    '(if (> HCOUNT 0)
+                       (if (< (+ HHEAD (- HCOUNT 1)) HLIM)
+                         (%mem-set-at! HL (+ HHEAD (- HCOUNT 1)) (& (%mem-ref-at HL (+ HHEAD (- HCOUNT 1))) 1073741823))
+                         (%mem-set-at! HL (- (+ HHEAD (- HCOUNT 1)) HLIM)
+                           (& (%mem-ref-at HL (- (+ HHEAD (- HCOUNT 1)) HLIM)) 1073741823)))
+                       0))))
+          ((eq? (first e) 'CLEARED-ROW)
+            (self (list 'do (list 'LW! (List ref 1 e) 'EMPTIED) (list 'UNWRAP (list '- (List ref 1 e) 1)))))
+          ((eq? (first e) 'CLEARED)
+            ; cells A..B-1 of row R erased, as tmux/vt's %cleared!
+            (self (list 'if (list 'and (list '= (List ref 2 e) 0) (list '= (List ref 3 e) 'COLS))
+                    (list 'CLEARED-ROW (List ref 1 e))
+                    (list 'if 'BG?
+                      (list 'LW! (List ref 1 e)
+                        (list '+ (list '& (list 'LW (List ref 1 e)) 1073741824)
+                          (list '+ (list '* (list 'GROWN (list '& (list '>> (list 'LW (List ref 1 e)) 15) 32767) (List ref 3 e)) 32768)
+                            (list '& (list 'LW (List ref 1 e)) 32767))))
+                      0))))
+          ((eq? (first e) 'ERASED-ROW)
+            (self (list 'if (list 'and (list '= (list '& (list '>> (list 'LW (List ref 1 e)) 15) 32767) 0) '(not BG?))
+                    0 (list 'CLEARED-ROW (List ref 1 e)))))
           ((eq? (first e) 'LF)
             (self '(if (= ROW BOT)
-                     (if (and (= ALT 0) (> HLIM 0)) (KEEP-AND-SCROLL) (SCROLL-UP TOP BOT 1))
+                     (if (and (= ALT 0) (> HLIM 0)) (KEEP-AND-SCROLL) (do (UNWRAP (- TOP 1)) (SCROLL-UP TOP BOT 1)))
                      (if (< ROW (- ROWS 1)) (set ROW (+ ROW 1)) 0))))
           ((eq? (first e) 'KEEP-AND-SCROLL)
             ; the region up one, as tmux/vt's %scroll-up!: its top row copied
@@ -121,6 +177,7 @@
             (self '(do (SCROLL-UP TOP BOT 1) (set NMODE 11) (set NK K) (set NJ 0)
                        (set HD (+ HHEAD HCOUNT))
                        (if (< HD HLIM) 0 (set HD (- HD HLIM)))
+                       (%mem-set-at! HL HD (LW TOP))
                        (set HD (* HD COLS))
                        (if (< HCOUNT HLIM) (set HCOUNT (+ HCOUNT 1))
                          (set HHEAD (if (< (+ HHEAD 1) HLIM) (+ HHEAD 1) 0)))
@@ -161,7 +218,8 @@
       (list 'if (if up '(< RT RE) '(> RT K))
         (list 'do (list '%mem-set-at! 'MAP 'RT (list 'ROWAT from)) '(%mem-byte-set-at! DIRTY RT 1)
               (list 'set 'RT from))
-        (list 'do (list '%mem-set-at! 'MAP far 'RH) (list '%mem-byte-set-at! 'DIRTY far 1) '(set X (- X 1))
+        (list 'do (list '%mem-set-at! 'MAP far 'RH) (list '%mem-byte-set-at! 'DIRTY far 1)
+              '(%mem-set-at! LINES RH LE) '(set X (- X 1))
               (list 'set 'NMODE (list 'if '(> X 0) (if up 11 12) 0)) '(set NK K) '(set NJ 0)
               '(set K (* RH COLS)) '(set J (+ K COLS)) '(set MODE 1))))))
 
@@ -210,8 +268,13 @@
     '(#t (set MODE 0))))
 
 ; A printable byte at the cursor.  A cursor past the last column wraps
-; first, and the byte is read again once the wrap's scroll is done.  A
-; wide character the byte takes half of has its other half blanked.
+; first, the row marked wrapped and the row scrolled in emptied in no
+; background, and the byte is read again once the wrap's scroll is done.
+; A wide character the byte takes half of has its other half blanked.  A
+; byte past the cells the row has written writes them to it, the cells the
+; row holds grown from what it held when the run began, as tmux/vt grows
+; them for a run written at once: RZ is that, plus one, and 0 out of a
+; run, which a read, a control byte and a wrap each end.
 (def %vj-print
   '(if (< COL COLS)
      (do (set X (CELL ROW COL))
@@ -220,12 +283,17 @@
          (%mem-byte-set-at! CELLS X B)
          (%mem-byte-set-at! ATTRS X ATTR)
          (%mem-byte-set-at! DIRTY ROW 1)
+         (if (> (+ COL 1) (& (LW ROW) 32767))
+           (do (if (= RZ 0) (set RZ (+ (& (>> (LW ROW) 15) 32767) 1)) 0)
+               (LW! ROW (+ (& (LW ROW) 1073741824) (+ (* (GROWN (- RZ 1) (+ COL 1)) 32768) (+ COL 1)))))
+           0)
          (set COL (+ COL 1))
          (set POS (+ POS 1)))
-     (do (set COL 0) (LF))))
+     (do (LW! ROW (+ (& (LW ROW) 1073741823) 1073741824)) (set COL 0) (set RZ 0) (LF) (set LE 0))))
 
 (def %vj-control
   '(do (set POS (+ POS 1))
+       (set RZ 0)
        (match
          ((= B 27) (set STATE 1))
          ((= B 10) (LF))
@@ -245,7 +313,8 @@
      ((= B 35) (set STATE 4))
      ((= B 55) (do (set SROW ROW) (set SCOL COL) (set STATE 0)))
      ((= B 56) (do (GOTO SROW SCOL) (set STATE 0)))
-     ((= B 77) (do (set STATE 0) (if (= ROW TOP) (SCROLL-DOWN TOP BOT 1) (GOTO (- ROW 1) COL))))
+     ((= B 77) (do (set STATE 0)
+                   (if (= ROW TOP) (do (UNWRAP TOP) (UNWRAP (- TOP 1)) (SCROLL-DOWN TOP BOT 1)) (GOTO (- ROW 1) COL))))
      ((= B 68) (do (set STATE 0) (LF)))
      ((= B 69) (do (set STATE 0) (set COL 0) (LF)))
      (#t (set STATE 0))))
@@ -260,19 +329,38 @@
      ((= B 68) (GOTO ROW (- COL (ARG 0 1))))
      ((= B 71) (GOTO ROW (- (ARG 0 1) 1)))
      ((= B 100) (GOTO (- (ARG 0 1) 1) COL))
+     ; EL, ECH, DCH and ICH mark the row as tmux/vt's %erase-line!, %cleared!,
+     ; %delete-chars! and %insert-chars! do
      ((= B 75)
-       (match ((= (ARG 0 0) 0) (BLANK-IN-ROW (MIN COL COLS) COLS))
-              ((= (ARG 0 0) 1) (BLANK-IN-ROW 0 (MIN (+ COL 1) COLS)))
-              (#t (BLANK-IN-ROW 0 COLS))))
+       (match ((= (ARG 0 0) 0)
+                (do (if (= COL 0) (ERASED-ROW ROW)
+                      (if (< COL (if BG? COLS (MIN COLS (& (>> (LW ROW) 15) 32767)))) (CLEARED ROW COL COLS) 0))
+                    (BLANK-IN-ROW (MIN COL COLS) COLS)))
+              ((= (ARG 0 0) 1)
+                (do (if (< COL (- COLS 1)) (CLEARED ROW 0 (+ COL 1)) (ERASED-ROW ROW))
+                    (BLANK-IN-ROW 0 (MIN (+ COL 1) COLS))))
+              (#t (do (ERASED-ROW ROW) (BLANK-IN-ROW 0 COLS)))))
      ((= B 114)
        (if (and (< (ARG 0 1) (ARG 1 ROWS)) (< (ARG 1 ROWS) (+ ROWS 1)))
          (do (set TOP (- (ARG 0 1) 1)) (set BOT (- (ARG 1 ROWS) 1)) (GOTO 0 0))
          0))
-     ((= B 76) (if (and (< (- TOP 1) ROW) (< ROW (+ BOT 1))) (SCROLL-DOWN ROW BOT (ARG 0 1)) 0))
-     ((= B 77) (if (and (< (- TOP 1) ROW) (< ROW (+ BOT 1))) (SCROLL-UP ROW BOT (ARG 0 1)) 0))
-     ((= B 88) (BLANK-IN-ROW (MIN COL COLS) (MIN COLS (+ COL (ARG 0 1)))))
+     ((= B 76)
+       (if (and (< (- TOP 1) ROW) (< ROW (+ BOT 1)))
+         (do (UNWRAP (- (+ ROW (MIN (ARG 0 1) (+ (- BOT ROW) 1))) 1)) (UNWRAP (- ROW 1))
+             (SCROLL-DOWN ROW BOT (ARG 0 1)))
+         0))
+     ((= B 77)
+       (if (and (< (- TOP 1) ROW) (< ROW (+ BOT 1)))
+         (do (UNWRAP (- ROW 1)) (UNWRAP BOT) (SCROLL-UP ROW BOT (ARG 0 1)))
+         0))
+     ((= B 88)
+       (do (if (< COL COLS) (CLEARED ROW COL (MIN COLS (+ COL (ARG 0 1)))) 0)
+           (BLANK-IN-ROW (MIN COL COLS) (MIN COLS (+ COL (ARG 0 1))))))
      ((= B 80)
        (do (set X (MIN (ARG 0 1) (- COLS COL)))
+           (if (< COL COLS)
+             (do (if (> (- (- COLS COL) X) 0) (MOVED ROW (- COLS X)) 0) (CLEARED ROW (- COLS X) COLS))
+             0)
            (set K (CELL ROW COL)) (set J (+ (CELL ROW COL) X))
            (set NK (- (CELL ROW COLS) X)) (set NJ (CELL ROW COLS))
            (set X (- (- COLS COL) X))
@@ -280,6 +368,9 @@
            (set NMODE 1) (set MODE 2)))
      ((= B 64)
        (do (set X (MIN (ARG 0 1) (- COLS COL)))
+           (if (> COL (- COLS 2))
+             (if (< COL COLS) (CLEARED ROW COL (+ COL 1)) 0)
+             (if (> (- (- COLS COL) X) 0) (MOVED ROW COLS) 0))
            (set NK (CELL ROW COL)) (set NJ (+ (CELL ROW COL) X))
            (set K (- (CELL ROW COLS) 1)) (set J (- (- (CELL ROW COLS) 1) X))
            (set X (- (- COLS COL) X))
@@ -485,11 +576,11 @@
 ; --- agreement -----------------------------------------------------------
 
 ; Two screens the same: every row's cells and attributes, the history's,
-; and the cursor.
+; every line's marks, and the cursor.
 (def vt-same?
   (fn (_ a b)
     (def rows-same
-      (if (vt-history-same? a b) (%rows-same? a b) #f))
+      (if (vt-history-same? a b) (if (%rows-same? a b) (vt-marks-same? a b) #f) #f))
     (if rows-same
       (if (= (first (vt-cursor a)) (first (vt-cursor b))) (= (rest (vt-cursor a)) (rest (vt-cursor b))) #f)
       #f)))
@@ -543,7 +634,7 @@
   (fn (_)
     ; the screen's state is laid out in 8-byte words
     (if (< %word-size 8) (Err raise (lit state) "vt-jit: written for an 8-byte word" ()))
-    (jit-group "x-tmux-vt-9" (fn (_) (list (vt-jit-form) (vt-render-form)))
+    (jit-group "x-tmux-vt-11" (fn (_) (list (vt-jit-form) (vt-render-form)))
       (fn (_ fns replayed?)
         (def engine (pair (first fns) (first (rest fns))))
         (unless replayed?

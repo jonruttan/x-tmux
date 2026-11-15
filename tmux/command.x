@@ -74,7 +74,7 @@
 ; of its flags, those of its flags that take a value, and how few and how
 ; many arguments it takes, -1 for no limit.
 (def %commands
-  (lit (("bind-key" "nr" "NT" 1 -1) ("capture-pane" "aCepq" "ESt" 0 0) ("command-prompt" "" "Ip" 0 1)
+  (lit (("bind-key" "nr" "NT" 1 -1) ("capture-pane" "aCeJNpq" "ESt" 0 0) ("command-prompt" "" "Ip" 0 1)
         ("confirm-before" "" "p" 1 1)
         ("copy-mode" "eu" "" 0 0) ("detach-client" "" "" 0 0) ("display-message" "aCIlNpv" "cdFt" 0 1)
         ("display-panes" "" "" 0 0) ("has-session" "" "t" 0 0)
