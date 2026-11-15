@@ -90,7 +90,9 @@
 ; rows it holds.  Word 80 is the compiled engine's.  Words 81 to 83 are the
 ; styles': the table's address, its SGRs', and how many entries it uses.
 ; Word 84 holds the modes a program sets, 85 which parameters followed a
-; colon.
+; colon.  Words 86 to 88 are the lines' marks: the screen's, the saved
+; screen's and the history's buffers of them; words 89 and 90 are the
+; compiled engine's.
 (def %ROWS 0) (def %COLS 8) (def %CP 16) (def %AP 24) (def %DP 32) (def %SP 40)
 (def %OP 48) (def %ONE 56) (def %ROW 64) (def %COL 72) (def %EP 80) (def %ATTR 88)
 (def %STATE 96) (def %NUM 104) (def %NP 112) (def %PRIVATE 120) (def %TOP 128)
@@ -103,7 +105,8 @@
 (def %MAP 536) (def %SMAP 544) (def %TMAP 552)
 (def %HC 592) (def %HA 600) (def %HX 608) (def %HLIM 616) (def %HHEAD 624) (def %HCOUNT 632)
 (def %STY 648) (def %SGRB 656) (def %NSTY 664) (def %MODES 672) (def %COLON 680)
-(def %WORDS 86)
+(def %LP 688) (def %SLP 696) (def %HL 704) (def %RZ 720)
+(def %WORDS 91)
 
 ; The styles a screen keeps, and the bytes a style's SGR slot holds: its
 ; length, then the SGR.
@@ -177,6 +180,11 @@
     (def history-cells (%buffer (* limit cols) 32))
     (def history-attrs (%buffer (* limit cols) 1))
     (def history-ext (%buffer (* 16 (* limit cols)) 0))
+    (def lines (%buffer (* 8 rows) 0))
+    (def saved-lines (%buffer (* 8 rows) 0))
+    (def history-lines (%buffer (* 8 limit) 0))
+    (%w! s %LP (ptr->int (str->ptr lines))) (%w! s %SLP (ptr->int (str->ptr saved-lines)))
+    (%w! s %HL (ptr->int (str->ptr history-lines)))
     (%w! s %HC (ptr->int (str->ptr history-cells))) (%w! s %HA (ptr->int (str->ptr history-attrs)))
     (%w! s %HX (ptr->int (str->ptr history-ext))) (%w! s %HLIM limit)
     (%w! s %MAP (ptr->int (str->ptr map))) (%w! s %SMAP (ptr->int (str->ptr saved-map)))
@@ -193,7 +201,8 @@
     (%style-bytes! (+ (%w s %SGRB) %SLOT) 0)
     (%w! s %ATTR 1) (%w! s %NUM -1) (%w! s %BOTTOM (- rows 1))
     (pair (list words cells attrs dirty stop out one saved-cells saved-attrs ext saved-ext marks
-            map saved-map scratch history-cells history-attrs history-ext styles sgrs)
+            map saved-map scratch history-cells history-attrs history-ext styles sgrs
+            lines saved-lines history-lines)
           s)))
 
 ; A row map in order: row I in buffer row I.
@@ -234,16 +243,19 @@
 (def %blank-row! (fn (_ s r) (%blank-run! s r 0 (%w s %COLS)) (+ r 1)))
 
 ; Rows TOP..BOTTOM moved up N (down when N is negative), the freed rows
-; blanked: the region's part of the map turned by N, the buffer rows that
-; leave one end coming back at the other.
+; blanked and given the line word WORD: the region's part of the map
+; turned by N, the buffer rows that leave one end coming back at the
+; other, their marks with them.
 (def %scroll!
-  (fn (_ s top bottom n)
+  (fn (_ s top bottom n word)
     (def k (%min (if (< n 0) (- 0 n) n) (+ (- bottom top) 1)))
     (def keep (- (+ (- bottom top) 1) k))
     (if (< n 0)
       (%turn! s (+ top keep) top (+ top k) top k keep)
       (%turn! s top (+ top k) top (+ top keep) k keep))
-    (if (< n 0) (%blank-rows! s top (+ top k)) (%blank-rows! s (+ (- bottom k) 1) (+ bottom 1)))
+    (if (< n 0)
+      (do (%blank-rows! s top (+ top k)) (%marks! s top (+ top k) word))
+      (do (%blank-rows! s (+ (- bottom k) 1) (+ bottom 1)) (%marks! s (+ (- bottom k) 1) (+ bottom 1) word)))
     (%dirty-rows! s top bottom)))
 ; The map's K entries at OUT set aside, its KEEP entries at FROM moved to
 ; TO, and the K put back at IN.
@@ -254,16 +266,23 @@
     (ptr-call %c-memcpy (%map-at s in) (%addr s %TMAP) (* 8 k))))
 (def %map-at (fn (_ s row) (int->ptr (+ (%w s %MAP) (* 8 row)))))
 
-(def %linefeed!
-  (fn (_ s)
+; A line feed: a row scrolled in at the region's bottom is emptied in the
+; cursor's background, and in none after a wrap, as tmux's is.
+(def %linefeed! (fn (_ s) (%feed! s (%emptied s (%bg? s)))))
+(def %feed!
+  (fn (_ s word)
     (def row (%w s %ROW))
     (if (= row (%w s %BOTTOM))
-      (%scroll-up! s (%w s %TOP) row)
+      (%scroll-up! s (%w s %TOP) row word)
       (if (< row (- (%w s %ROWS) 1)) (%w! s %ROW (+ row 1)) ()))))
+; The region up one: its top row kept in the history, or, where there is
+; none to keep it, the line above unwrapped.
 (def %scroll-up!
-  (fn (_ s top bottom)
-    (if (%keeps? s) (%keep-row! s top) ())
-    (%scroll! s top bottom 1)))
+  (fn (_ s top bottom word)
+    (if (%keeps? s) (%keep-row! s top) (%unwrap! s (- top 1)))
+    (%scroll! s top bottom 1 word)))
+; The cursor's row wrapped to the next.
+(def %wrap! (fn (_ s) (%wrapped! s (%w s %ROW)) (%w! s %COL 0) (%feed! s 0)))
 
 ; Whether the screen keeps what scrolls off: the main screen, with a
 ; history.
@@ -279,6 +298,7 @@
     (ptr-call %c-memcpy (int->ptr (+ (%w s %HC) to)) (int->ptr (+ (%w s %CP) from)) cols)
     (ptr-call %c-memcpy (int->ptr (+ (%w s %HA) to)) (int->ptr (+ (%w s %AP) from)) cols)
     (ptr-call %c-memcpy (int->ptr (+ (%w s %HX) (* 16 to))) (int->ptr (+ (%w s %EP) (* 16 from))) (* 16 cols))
+    (ptr-set-word! (%hw-at s count) 0 (%lw s r))
     (if (< count (%w s %HLIM))
       (%w! s %HCOUNT (+ count 1))
       (%w! s %HHEAD (%history-slot s 1)))
@@ -288,6 +308,70 @@
   (fn (_ s i)
     (def j (+ (%w s %HHEAD) i))
     (if (< j (%w s %HLIM)) j (- j (%w s %HLIM)))))
+
+; --- the lines' marks --------------------------------------------------------
+
+; Each line has a word, as tmux's grid keeps a line: the cells written, to
+; the last one (bits 0 to 14); the cells it holds, written or erased (bits
+; 15 to 29), which grow to a quarter of the width, then half, then all of
+; it; and whether its text went on into the next line, wrapped (bit 30).
+; The screen's words go by the buffers' rows, so a scroll moves them with
+; their rows; a line kept in the history keeps its word.  An erase of a
+; whole line empties it, holding no cells, or all of them in a background
+; colour, and unwraps the line above it, the history's newest above the
+; screen's top row.  capture-pane's -J and -N read them.
+(def %USED 32767) (def %SIZE 32768) (def %WRAP 1073741824) (def %UNWRAP 1073741823)
+
+(def %lw-at (fn (_ s r) (int->ptr (+ (%w s %LP) (* 8 (%row s r))))))
+(def %lw (fn (_ s r) (ptr-ref-word (%lw-at s r) 0)))
+(def %lw! (fn (_ s r x) (ptr-set-word! (%lw-at s r) 0 x)))
+; History row I's word, 0 the oldest.
+(def %hw-at (fn (_ s i) (int->ptr (+ (%w s %HL) (* 8 (%history-slot s i))))))
+(def %line-word (fn (_ used size wrap) (+ used (+ (* size %SIZE) wrap))))
+; Rows A..B-1 given the word X.
+(def %marks!
+  (fn (self s a b x) (when (< a b) (do (%lw! s a x) (self s (+ a 1) b x)))))
+
+; The cells a line holding SIZE holds once it is to hold WANT, of COLS.
+(def %grown
+  (fn (_ size want cols)
+    (if (< size want)
+      (if (< want (>> cols 2)) (>> cols 2) (if (< want (>> cols 1)) (>> cols 1) cols))
+      size)))
+; Row R written to cell B-1.
+(def %written!
+  (fn (_ s r b)
+    (def x (%lw s r))
+    (%lw! s r (%line-word (%max (& x %USED) b) (%grown (& (>> x 15) %USED) b (%w s %COLS)) (& x %WRAP)))))
+(def %wrapped! (fn (_ s r) (%lw! s r (+ (& (%lw s r) %UNWRAP) %WRAP))))
+; Whether the cursor's style has a background, which an erase leaves.
+(def %bg? (fn (_ s) (not (= 0 (>> (%style s (%w s %ATTR)) 34)))))
+; An emptied line's word, in a background BG or none.
+(def %emptied (fn (_ s bg) (if bg (* (%w s %COLS) %SIZE) 0)))
+; Line R unwrapped: a row of the screen, or for -1 the history's newest.
+(def %unwrap!
+  (fn (_ s r)
+    (match
+      ((< -1 r) (%lw! s r (& (%lw s r) %UNWRAP)))
+      ((< 0 (%w s %HCOUNT))
+        ((fn (_ p) (ptr-set-word! p 0 (& (ptr-ref-word p 0) %UNWRAP))) (%hw-at s (- (%w s %HCOUNT) 1))))
+      (#t ()))))
+; Row R erased whole.
+(def %cleared-row! (fn (_ s r) (%lw! s r (%emptied s (%bg? s))) (%unwrap! s (- r 1))))
+; Cells A..B-1 of row R erased: the whole row, or in a background the row
+; grown to hold them; in none, the row holds what it held.
+(def %cleared!
+  (fn (_ s r a b)
+    (def cols (%w s %COLS))
+    (match
+      ((if (= a 0) (= b cols) #f) (%cleared-row! s r))
+      ((%bg? s)
+        ((fn (_ x) (%lw! s r (%line-word (& x %USED) (%grown (& (>> x 15) %USED) b cols) (& x %WRAP)))) (%lw s r)))
+      (#t ()))))
+; An EL of row R whole: nothing where the row holds no cells and there is
+; no background, as tmux's clear of a line.
+(def %erased-row!
+  (fn (_ s r) (if (if (= 0 (& (>> (%lw s r) 15) %USED)) (not (%bg? s)) #f) () (%cleared-row! s r))))
 
 (def %newline! (fn (_ s) (%w! s %COL 0) (%linefeed! s)))
 
@@ -302,13 +386,14 @@
 (def %place!
   (fn (_ s p n)
     (def cols (%w s %COLS))
-    (if (< (%w s %COL) cols) () (%newline! s))
+    (if (< (%w s %COL) cols) () (%wrap! s))
     (def row (%w s %ROW))
     (def col (%w s %COL))
     (def k (%min n (- cols col)))
     (%unpair! s row col (+ col (- k 1)))
     (ptr-call %c-memcpy (%at s %CP row col) (int->ptr p) k)
     (ptr-call %c-memset (%at s %AP row col) (%w s %ATTR) k)
+    (%written! s row (+ col k))
     (%dirty! s row)
     (%w! s %COL (+ col k))
     k))
@@ -368,10 +453,11 @@
     #t))
 (def %put-char!
   (fn (_ s cp w)
-    (if (< (%w s %COLS) (+ (%w s %COL) w)) (%newline! s) ())
+    (if (< (%w s %COLS) (+ (%w s %COL) w)) (%wrap! s) ())
     (def row (%w s %ROW))
     (def col (%w s %COL))
     (%unpair! s row col (+ col (- w 1)))
+    (%written! s row (+ col w))
     (def slot (%slot s %EP row col))
     (ptr-set! slot 14 (%encode! slot cp) 1)
     (ptr-set! slot 15 w 1)
@@ -415,6 +501,7 @@
 (def %widen!
   (fn (_ s row c slot)
     (%unpair! s row (+ c 1) (+ c 1))
+    (%written! s row (+ c 2))
     (ptr-set! slot 15 2 1)
     (%pad! s row (+ c 1) (ptr-ref (%at s %AP row c) 0 1))
     (%w! s %COL (+ c 2))))
@@ -579,15 +666,16 @@
       ((= f 75) (%erase-line! s (%p s 0) row col cols))
       ((= f 74) (%erase-screen! s (%p s 0) row col rows cols))
       ((= f 114) (%region! s (- (%arg s 0 1) 1) (- (%arg s 1 rows) 1)))
-      ((= f 76) (if (%in-region? s row) (%scroll! s row (%w s %BOTTOM) (- 0 (%arg s 0 1))) ()))
-      ((= f 77) (if (%in-region? s row) (%scroll! s row (%w s %BOTTOM) (%arg s 0 1)) ()))
-      ((= f 88) (%blank! s row col (%min (- cols 1) (- (+ col (%arg s 0 1)) 1))))
+      ((= f 76) (if (%in-region? s row) (%insert-lines! s row (%arg s 0 1)) ()))
+      ((= f 77) (if (%in-region? s row) (%delete-lines! s row (%arg s 0 1)) ()))
+      ((= f 88) (do (%blank! s row col (%min (- cols 1) (- (+ col (%arg s 0 1)) 1)))
+                    (if (< col cols) (%cleared! s row col (%min cols (+ col (%arg s 0 1)))) ())))
       ((= f 80) (%delete-chars! s row col cols (%min (%arg s 0 1) (- cols col))))
       ((= f 64) (%insert-chars! s row col cols (%min (%arg s 0 1) (- cols col))))
       ((= f 104) (when (= (%w s %PRIVATE) 1) (do (%alt-on! s (%alt-mode s 0)) (%modes! s #t 0))))
       ((= f 108) (when (= (%w s %PRIVATE) 1) (do (%alt-off! s (%alt-mode s 0)) (%modes! s #f 0))))
       ((= f 83) (when (= (%w s %PRIVATE) 0) (%scroll-ups! s (%arg s 0 1))))
-      ((= f 84) (when (if (= (%w s %PRIVATE) 0) (< (%w s %NP) 2) #f) (%scroll! s (%w s %TOP) (%w s %BOTTOM) (- 0 (%arg s 0 1)))))
+      ((= f 84) (when (if (= (%w s %PRIVATE) 0) (< (%w s %NP) 2) #f) (%scroll-down! s (%arg s 0 1))))
       (#t ()))))
 
 ; SU: the region up N rows, each kept in the history as a line feed at the
@@ -595,8 +683,25 @@
 (def %scroll-ups!
   (fn (self s n)
     (when (< 0 n)
-      (do (%scroll-up! s (%w s %TOP) (%w s %BOTTOM))
+      (do (%scroll-up! s (%w s %TOP) (%w s %BOTTOM) (%emptied s (%bg? s)))
           (self s (%min (- n 1) (- (%w s %BOTTOM) (%w s %TOP))))))))
+; SD and a reverse index at the top: the region down N rows, its top row
+; and the line above it unwrapped, as tmux moves the lines.
+(def %scroll-down!
+  (fn (_ s n)
+    (%unwrap! s (%w s %TOP)) (%unwrap! s (- (%w s %TOP) 1))
+    (%scroll! s (%w s %TOP) (%w s %BOTTOM) (- 0 n) (%emptied s (%bg? s)))))
+; IL and DL: N rows put in or taken out at ROW, down to the region's
+; bottom; the line above and the one tmux's move of the lines passes
+; unwrapped.
+(def %insert-lines!
+  (fn (_ s row n)
+    (%unwrap! s (- (+ row (%min n (+ (- (%w s %BOTTOM) row) 1))) 1)) (%unwrap! s (- row 1))
+    (%scroll! s row (%w s %BOTTOM) (- 0 n) (%emptied s (%bg? s)))))
+(def %delete-lines!
+  (fn (_ s row n)
+    (%unwrap! s (- row 1)) (%unwrap! s (%w s %BOTTOM))
+    (%scroll! s row (%w s %BOTTOM) n (%emptied s (%bg? s)))))
 
 ; The private modes of an h (ON) or l, from parameter I: each the screen
 ; keeps sets or clears its bit.  ?25 is kept as the cursor hidden.
@@ -632,8 +737,11 @@
     (ptr-call %c-memcpy (%addr s %SAP) (%addr s %AP) n)
     (ptr-call %c-memcpy (%addr s %SEP) (%addr s %EP) (* 16 n))
     (ptr-call %c-memcpy (%addr s %SMAP) (%addr s %MAP) (* 8 (%w s %ROWS)))
+    (ptr-call %c-memcpy (%addr s %SLP) (%addr s %LP) (* 8 (%w s %ROWS)))
     (ptr-call %c-memset (%addr s %CP) 32 n)
     (ptr-call %c-memset (%addr s %AP) 1 n)
+    (ptr-call %c-memset (%addr s %LP) 0 (* 8 (%w s %ROWS)))
+    (%unwrap! s -1)
     (%dirty-rows! s 0 (- (%w s %ROWS) 1))
     (%w! s %ASAVED (if cursor 1 0))
     (%w! s %AROW (%w s %ROW)) (%w! s %ACOL (%w s %COL)) (%w! s %AATTR (%w s %ATTR))
@@ -648,6 +756,7 @@
     (ptr-call %c-memcpy (%addr s %AP) (%addr s %SAP) n)
     (ptr-call %c-memcpy (%addr s %EP) (%addr s %SEP) (* 16 n))
     (ptr-call %c-memcpy (%addr s %MAP) (%addr s %SMAP) (* 8 (%w s %ROWS)))
+    (ptr-call %c-memcpy (%addr s %LP) (%addr s %SLP) (* 8 (%w s %ROWS)))
     (%dirty-rows! s 0 (- (%w s %ROWS) 1))
     (if (if cursor (= (%w s %ASAVED) 1) #f) (%alt-cursor! s) ())
     (%w! s %ASAVED 0)
@@ -662,45 +771,80 @@
   (fn (_ s top bottom)
     (if (if (< top bottom) (< bottom (%w s %ROWS)) #f) (%set-region! s top bottom) ())))
 (def %set-region! (fn (_ s top bottom) (%w! s %TOP top) (%w! s %BOTTOM bottom) (%goto! s 0 0)))
+; The row's marks as tmux's EL leaves them: 0 from the first column, 2,
+; and 1 from the last, a clear of the row; else the cells erased.  An
+; erase from where the row holds no cells, in no background, does
+; nothing.
 (def %erase-line!
   (fn (_ s m row col cols)
-    (match ((= m 0) (%blank! s row col (- cols 1)))
-           ((= m 1) (%blank! s row 0 (%min col (- cols 1))))
-           (#t (%blank! s row 0 (- cols 1))))))
+    (match ((= m 0) (do (%blank! s row col (- cols 1))
+                        (match ((= col 0) (%erased-row! s row))
+                               ((< col (if (%bg? s) cols (%min cols (& (>> (%lw s row) 15) %USED)))) (%cleared! s row col cols))
+                               (#t ()))))
+           ((= m 1) (do (%blank! s row 0 (%min col (- cols 1)))
+                        (if (< col (- cols 1)) (%cleared! s row 0 (+ col 1)) (%erased-row! s row))))
+           (#t (do (%blank! s row 0 (- cols 1)) (%erased-row! s row))))))
 ; An erase of the whole screen, 2 or 0 from the top-left cell, scrolls its
-; rows to the last one used into the history first, as tmux's
-; scroll-on-clear does; 3 empties the history.  A row is used when a cell
-; is not blank.
+; rows to the last one written into the history first, as tmux's
+; scroll-on-clear does; 3 empties the history.
 (def %erase-screen!
   (fn (_ s m row col rows cols)
-    (match ((= m 0) (do (if (if (= row 0) (= col 0) #f) (%keep-screen! s) ()) (%below! s row col rows cols)))
-           ((= m 1) (%above! s row col cols))
-           ((= m 2) (do (%keep-screen! s) (%blank-rows! s 0 rows)))
+    (match ((= m 0) (if (if (= row 0) (= col 0) #f) (%clear-screen! s rows) (%below! s row col rows cols)))
+           ((= m 1) (%above! s row col rows cols))
+           ((= m 2) (%clear-screen! s rows))
            ((= m 3) (do (%w! s %HCOUNT 0) (%w! s %HHEAD 0)))
            (#t ()))))
-(def %keep-screen!
-  (fn (_ s)
-    (if (%keeps? s)
-      ((fn (self r n) (if (< r n) (self (%keep-row! s r) n) ())) 0 (%used s (%w s %ROWS)))
-      ())))
-; The rows to the last used one, of the first N.
+; Every row erased, those to the last one written kept in the history
+; first where the screen keeps one; the line above unwrapped unless every
+; row was kept.
+(def %clear-screen!
+  (fn (_ s rows)
+    (def last (if (%keeps? s) (%used s rows) 0))
+    ((fn (self r) (if (< r last) (self (%keep-row! s r)) ())) 0)
+    (%blank-rows! s 0 rows)
+    (%marks! s 0 rows (%emptied s (%bg? s)))
+    (if (< last rows) (%unwrap! s -1) ())))
+; The rows to the last one written, of the first N.
 (def %used
   (fn (self s n)
-    (if (if (< 0 n) (%blank-row? s (- n 1)) #f) (self s (- n 1)) n)))
-(def %blank-row?
-  (fn (_ s r) (not (< (ptr-call %c-strspn (%at s %CP r 0) (str->ptr " ")) (%w s %COLS)))))
-(def %below! (fn (_ s row col rows cols) (%blank! s row col (- cols 1)) (%blank-rows! s (+ row 1) rows)))
-(def %above! (fn (_ s row col cols) (%blank-rows! s 0 row) (%blank! s row 0 (%min col (- cols 1)))))
+    (if (if (< 0 n) (= 0 (& (%lw s (- n 1)) %USED)) #f) (self s (- n 1)) n)))
+; ED 0 and 1: the cursor's row from or to the cursor, and every row after
+; or before it, each row cleared as tmux clears rows.
+(def %below!
+  (fn (_ s row col rows cols)
+    (%blank! s row col (- cols 1))
+    (if (< col cols) (%cleared! s row col cols) ())
+    (%blank-rows! s (+ row 1) rows)
+    (when (< (+ row 1) rows) (do (%marks! s (+ row 1) rows (%emptied s (%bg? s))) (%unwrap! s row)))))
+(def %above!
+  (fn (_ s row col rows cols)
+    (%blank-rows! s 0 row)
+    (when (< 0 row) (do (%marks! s 0 row (%emptied s (%bg? s))) (%unwrap! s -1)))
+    (%blank! s row 0 (%min col (- cols 1)))
+    (if (< col cols) (%cleared! s row 0 (+ col 1)) (%cleared-row! s row))))
+; DCH and ICH: tmux's move of the cells holds the row's width and has it
+; written to the last cell moved; an ICH at the last column erases it.
 (def %delete-chars!
   (fn (_ s row col cols n)
     (def keep (- (- cols col) n))
     (if (< 0 keep) (%shift! s row col (+ col n) keep) ())
-    (%blank! s row (- cols n) (- cols 1))))
+    (%blank! s row (- cols n) (- cols 1))
+    (when (< col cols)
+      (do (if (< 0 keep) (%moved! s row (- cols n)) ())
+          (%cleared! s row (- cols n) cols)))))
 (def %insert-chars!
   (fn (_ s row col cols n)
     (def keep (- (- cols col) n))
     (if (< 0 keep) (%shift! s row (+ col n) col keep) ())
-    (%blank! s row col (- (+ col n) 1))))
+    (%blank! s row col (- (+ col n) 1))
+    (match ((< (- cols 2) col) (if (< col cols) (%cleared! s row col (+ col 1)) ()))
+           ((< 0 keep) (%moved! s row cols))
+           (#t ()))))
+; Row R holding every cell, written to cell B-1.
+(def %moved!
+  (fn (_ s r b)
+    (def x (%lw s r))
+    (%lw! s r (%line-word (%max (& x %USED) b) (%w s %COLS) (& x %WRAP)))))
 (def %shift!
   (fn (_ s row to from n)
     (ptr-call %c-memmove (%at s %CP row to) (%at s %CP row from) n)
@@ -730,7 +874,7 @@
 (def %reverse-index!
   (fn (_ s)
     (if (= (%w s %ROW) (%w s %TOP))
-      (%scroll! s (%w s %TOP) (%w s %BOTTOM) -1)
+      (%scroll-down! s 1)
       (%goto! s (- (%w s %ROW) 1) (%w s %COL)))
     (%w! s %STATE 0)))
 
@@ -938,8 +1082,8 @@
     (def s (rest h))
     (def n (vt-make-history rows cols (%w s %HLIM)))
     (def t (rest n))
-    (%carry-cells! s t %MAP %CP %AP %EP rows cols)
-    (%carry-cells! s t %SMAP %SCP %SAP %SEP rows cols)
+    (%carry-cells! s t %MAP %CP %AP %EP %LP rows cols)
+    (%carry-cells! s t %SMAP %SCP %SAP %SEP %SLP rows cols)
     (%carry-history! s t cols)
     (%w! t %ROW (%min (%w s %ROW) (- rows 1)))
     (%w! t %COL (%min (%w s %COL) cols))
@@ -956,16 +1100,18 @@
     (ptr-call %c-memcpy (%addr t %STY) (%addr s %STY) (* 8 %STYLES))
     (ptr-call %c-memcpy (%addr t %SGRB) (%addr s %SGRB) (* %SLOT %STYLES))
     (%w! t %NSTY (%w s %NSTY))))
-; One screen's rows of S, by its map at MAP, copied to T's in order: T is
-; new, and its maps are in order.
+; One screen's rows of S, by its map at MAP, copied to T's in order, with
+; their marks: T is new, and its maps are in order.
 (def %carry-cells!
-  (fn (_ s t map cells attrs ext rows cols)
+  (fn (_ s t map cells attrs ext lines rows cols)
     (def keep-rows (%min rows (%w s %ROWS)))
     (def keep-cols (%min cols (%w s %COLS)))
     ((fn (self r)
        (when (< r keep-rows)
-         (do (def from (* (ptr-ref-word (int->ptr (+ (%w s map) (* 8 r))) 0) (%w s %COLS)))
+         (do (def at (ptr-ref-word (int->ptr (+ (%w s map) (* 8 r))) 0))
+             (def from (* at (%w s %COLS)))
              (def to (* r cols))
+             (%copy-word! t lines r (ptr-ref-word (int->ptr (+ (%w s lines) (* 8 at))) 0))
              (ptr-call %c-memcpy (int->ptr (+ (%w t cells) to)) (int->ptr (+ (%w s cells) from)) keep-cols)
              (ptr-call %c-memcpy (int->ptr (+ (%w t attrs) to)) (int->ptr (+ (%w s attrs) from)) keep-cols)
              (ptr-call %c-memcpy (int->ptr (+ (%w t ext) (* 16 to))) (int->ptr (+ (%w s ext) (* 16 from)))
@@ -982,9 +1128,17 @@
        (when (< i n)
          (do (%copy-row! t i %HC %HA %HX (%w s %HC) (%w s %HA) (%w s %HX)
                (* (%history-slot s (+ skip i)) (%w s %COLS)) (%min cols (%w s %COLS)))
+             (%copy-word! t %HL i (ptr-ref-word (%hw-at s (+ skip i)) 0))
              (self (+ i 1)))))
      0)
     (%w! t %HCOUNT n)))
+; A line's word X put at buffer row R of T's buffer of them at word TL,
+; held to T's width.
+(def %copy-word!
+  (fn (_ t tl r x)
+    (def cols (%w t %COLS))
+    (ptr-set-word! (int->ptr (+ (%w t tl) (* 8 r))) 0
+      (%line-word (%min (& x %USED) cols) (%min (& (>> x 15) %USED) cols) (& x %WRAP)))))
 ; KEEP-COLS cells from cell FROM of the buffers at CELLS, ATTRS and EXT to
 ; buffer row R of T's buffers at words TC, TA and TX.
 (def %copy-row!
@@ -1104,6 +1258,28 @@
 ; from bit 34.
 (def vt-style-word (fn (_ h i) (%style (rest h) i)))
 
+; Line LINE's word, the history's or the screen's.
+(def %mark-word
+  (fn (_ s line)
+    (def count (%w s %HCOUNT))
+    (if (< line count) (ptr-ref-word (%hw-at s line) 0) (%lw s (- line count)))))
+; Line LINE's marks: (USED SIZE WRAPPED), the cells written to the last
+; one, the cells it holds, and whether its text goes on into the next
+; line.
+(def vt-line-marks
+  (fn (_ h line)
+    ((fn (_ x) (list (& x %USED) (& (>> x 15) %USED) (= (& x %WRAP) %WRAP))) (%mark-word (rest h) line))))
+; Whether A's and B's lines, their history's and their screen's, have the
+; same marks.
+(def vt-marks-same?
+  (fn (_ a b)
+    (def s (rest a))
+    (def t (rest b))
+    (def n (+ (%w s %HCOUNT) (%w s %ROWS)))
+    (if (= n (+ (%w t %HCOUNT) (%w t %ROWS)))
+      ((fn (self i) (if (= i n) #t (if (= (%mark-word s i) (%mark-word t i)) (self (+ i 1)) #f))) 0)
+      #f)))
+
 ; The main screen the alternate screen hides, as a screen of H's size with
 ; no history; nil when the alternate screen is not up.
 (def vt-alternate
@@ -1118,6 +1294,7 @@
           ((fn (self r)
              (when (< r rows)
                (do (%copy-row! t r %CP %AP %EP (%w s %SCP) (%w s %SAP) (%w s %SEP) (* (saved r) cols) cols)
+                   (%copy-word! t %LP r (ptr-ref-word (int->ptr (+ (%w s %SLP) (* 8 (saved r)))) 0))
                    (self (+ r 1)))))
            0)
           (%carry-styles! s t)
@@ -1140,6 +1317,7 @@
              (if (< line count)
                (%copy-row! t r %CP %AP %EP (%w s %HC) (%w s %HA) (%w s %HX) (* (%history-slot s line) cols) cols)
                (%copy-row! t r %CP %AP %EP (%w s %CP) (%w s %AP) (%w s %EP) (* (%row s (- line count)) cols) cols))
+             (%copy-word! t %LP r (%mark-word s line))
              (self (+ r 1)))))
      0)
     (%carry-styles! s t)
@@ -1155,6 +1333,7 @@
     (def s (rest h))
     (%w! s %IN p) (%w! s %POS 0) (%w! s %END len)
     ((fn (self)
+       (%w! s %RZ 0)
        (when (= (feed (ptr->int s)) 1)
          (do (vt-feed-pure! h (+ p (%w s %POS)) 1)
              (%w! s %POS (+ (%w s %POS) 1))
@@ -1185,5 +1364,6 @@
 (provide tmux/vt vt-make vt-make-history vt-feed! vt-render! vt-out vt-cursor vt-size vt-origin!
   vt-touch! vt-carry vt-row vt-row-length vt-attrs vt-history vt-history-row vt-history-attrs
   vt-history-same? vt-view vt-line vt-line-length vt-line-cell vt-line-attr vt-style-word vt-alternate
+  vt-line-marks vt-marks-same?
   vt-feed-pure! vt-render-pure! vt-feed-compiled! vt-render-compiled! vt-adopt!
   vt-compiled? vt-style vt-cursor-shown? vt-cursor-keys? vt-bracketed?)

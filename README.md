@@ -313,7 +313,7 @@ PATH`.  Those that serve scripts:
     show-options, show [-gqsvw] [NAME]
     split-window [-hv] [-t PANE], new-window [-d] [-n NAME] [-t SESSION:INDEX],
     select-layout [-np] [-t PANE] [LAYOUT], rename-window [-t WINDOW] NAME
-    capture-pane [-aCepq] [-S START] [-E END] [-t PANE]
+    capture-pane [-aCeJNpq] [-S START] [-E END] [-t PANE]
     pipe-pane [-IOo] [-t PANE] [COMMAND]
     wait-for [-L | -S | -U] CHANNEL
 
@@ -334,8 +334,12 @@ capture-pane writes a pane's lines as tmux does: 0 the screen's top
 row, a negative line the history's, `-` its oldest or the screen's last;
 with -e each change of style as tmux's SGR; with -C a backslash twice
 and ESC as `\033`; with -a the screen under the alternate one; without
--p the lines kept as a paste buffer.  It takes no -J or -N, as the
-screen keeps neither which rows wrapped nor how far a row was written;
+-p the lines kept as a paste buffer.  A line runs to the cells tmux's
+grid would hold for it, its trailing spaces dropped; with -N they stay;
+with -J a line runs to its last cell written and one that wrapped goes
+on into the next.  A cell an erase blanks keeps the whole style, where
+tmux's keeps only the background, so -e may write an attribute or
+foreground there that tmux does not;
 a tab is captured as the spaces it moved over; a curly underscore is
 written 4, and an underscore's colour is not kept; there is no -b, -T,
 -P or -M.  wait-for waits for a signal on a channel, one sent with no
@@ -377,7 +381,7 @@ the names bind reads to tmux 3.8's, the bytes send-keys sends to
 tmux's, and a file of commands and a shell's words to how tmux 3.8
 reads them; `07-format` holds formats to what tmux
 3.8's display-message -p gives for them; `08-capture` holds the lines
-capture-pane names and writes, plain, with -e and with -C, to tmux
+capture-pane names and writes, plain, with -e, -C, -J and -N, to tmux
 3.8's.
 
     X=/path/to/x sh tests/oracle/panes.sh

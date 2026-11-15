@@ -1487,7 +1487,7 @@
                    (%asked (List for-each %said! lines))
                    (#t (%show-lines! lines)))
                  ())
-               (if (null? h) (list "") (capture-lines h (capture-range h (value "S") (value "E")) (on? "e") (on? "C"))))))))
+               (if (null? h) (list "") (capture-lines h (capture-range h (value "S") (value "E")) (on? "e") (on? "C") (on? "J") (on? "N"))))))))
       ((is? "pipe-pane")
         (pane!
           (fn (_ id wi)

@@ -676,8 +676,13 @@ captured() {
 	said $1 capture-pane -t cap -S 0 -E 0
 	said $1 capture-pane -pa -t cap; said $1 capture-pane -paq -t cap
 	said $1 capture-pane -p -t nope
+	# a row of 100 that wraps, and one with spaces written after its text
+	$1 send -t cap "printf '\\033[H\\033[2J%0100d\\nab  \\n'" Enter
+	sleep 2
+	said $1 capture-pane -pJ -t cap -S 0 -E 2; said $1 capture-pane -pN -t cap -S 0 -E 2
+	said $1 capture-pane -pJe -t cap -S 0 -E 2
 }
-both "capture-pane's lines, -e, -C, a buffer, -a and a pane not there" captured
+both "capture-pane's lines, -e, -C, a buffer, -a, a pane not there, -J and -N" captured
 waited() {
 	said $1 wait-for; said $1 wait-for -U ch; said $1 wait-for -S ch; said $1 wait-for ch
 	(sleep 1; $1 wait-for -S go) &
