@@ -1,5 +1,7 @@
 # x-tmux
 
+<p align="center"><img src="docs/bitwise-banner.svg" alt="x-tmux, with Bitwise the owl" width="100%"></p>
+
 A terminal multiplexer written in
 [x-lang](https://github.com/jonruttan/x-lang), after tmux, loaded as a
 lang.
