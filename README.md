@@ -164,9 +164,28 @@ the server's paste buffers, 50 at most, and C-b `]` types the newest to
 the active pane, each newline a carriage return.  Keys and pastes a
 pane's program does not take at once wait for it, in order.
 
-Not yet: rectangles, the buffer commands (`#`, `=`, `-`), searching, and
-the time a row entered the history, which tmux shows beside the
-position.
+A search asks for its text on the pane's bottom row:
+
+    vi / ?           search down or up for the text Enter takes
+    emacs C-s C-r    search down or up as the text is typed; C-s and C-r
+                     there search on, or with no text, take the last
+    n N              search again, the same way or the other
+
+As tmux searches, a search goes on from the other end, and a line is
+searched as one, its wrapped rows and all.  Text all in lower case
+matches either case, and vi's text is a regular expression where it has
+one of `^$*+()?[].\`.  The matches on the pane show black on cyan, the
+one the cursor is on black on magenta, and the position counts them,
+for 200 ms at most as tmux does: past that it shows the count rounded
+down to 1000, 100 or 10 with a `+`, or none.
+The cursor goes to a match's start, but with emacs's keys a search down
+puts it past the match's end.  A pane's last search is kept for its next
+copy mode, n searching up.  The matches go with a selection, and with
+emacs's keys with a move too.
+
+Not yet: rectangles, the buffer commands (`#`, `=`, `-`), vi's `*` and
+`#` (the word at the cursor), the jumps (`f`, `F`, `t`, `T`), and the
+time a row entered the history, which tmux shows beside the position.
 
 ## The screen
 

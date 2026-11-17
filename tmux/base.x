@@ -12,6 +12,7 @@
   vt-style vt-cursor-shown? vt-cursor-keys? vt-bracketed? vt-alternate
   vt-compiled? vt-feed-pure! vt-render-pure! vt-jit! vt-jit-make vt-exercise vt-agree vt-same?
   copy-enter copy-do copy-key copy-view copy-cursor copy-position copy-text copy-marks copy-selecting?
+  copy-recall copy-search copy-incremental copy-matches copy-count-limit!
   layout-new layout-rects layout-borders layout-split layout-remove layout-panes layout-resize layout-fit
   layout-size layout-beside layout-relabel layout-names layout-arrange
   command-parse command-read command-list command-words command-find command-matches command-flag
@@ -25,7 +26,7 @@
   vt-style vt-cursor-shown? vt-cursor-keys? vt-bracketed? vt-alternate)
 (import tmux/vt-jit vt-jit! vt-jit-make vt-exercise vt-agree vt-same?)
 (import tmux/copy copy-enter copy-do copy-key copy-view copy-cursor copy-position copy-text copy-marks
-  copy-selecting?)
+  copy-selecting? copy-recall copy-search copy-incremental copy-matches copy-count-limit!)
 (import tmux/layout layout-new layout-rects layout-borders layout-split layout-remove layout-panes
   layout-resize layout-fit layout-size layout-beside layout-relabel layout-names layout-arrange)
 (import tmux/command command-parse command-read command-list command-words command-find command-matches

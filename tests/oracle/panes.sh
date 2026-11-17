@@ -39,6 +39,9 @@
 #   resize    the window grown to 100x30: the pane's terminal follows
 #   copy      C-b [ and C-b PgUp: the history paged through, the position
 #             at the top right, q and a page down to the bottom leaving
+#   search    C-b [ then C-r: the prompt on the pane's bottom row, each key
+#             searching, the matches black on cyan and the one the cursor
+#             is on black on magenta, Enter keeping it, q leaving
 #   paste     two rows selected with emacs's keys and drawn black on
 #             yellow, M-w copying them, C-b ] typing them to a cat; a
 #             row the pane wrapped copied from C-a to C-e as one line
@@ -322,6 +325,31 @@ check "copy -- after C-b PgUp, a page down to the bottom leaves" "$(screen | gre
 tmux send-keys -t "$s" 'echo still-here' Enter
 wait_for 'still-here'
 check "copy -- keys reach the shell again" "$(screen | grep -c '^still-here$')" "1"
+
+# search
+tmux send-keys -t "$s" 'clear; seq 1 199; echo s""200' Enter
+wait_for 's200'
+tmux send-keys -t "$s" C-b '['
+wait_for '[0/'
+tmux send-keys -t "$s" C-r
+sleep 1
+check "search -- C-r asks on the pane's bottom row" "$(row 29)" "(search up)"
+tmux send-keys -t "$s" 199
+sleep 2
+# a row captured alone starts from no attribute, so its own colours show
+match() { tmux capture-pane -e -p -t "$s" -S "$1" -E "$1" | grep -c "$2"; }
+check "search -- each key searches, the match the cursor is on black on magenta" "$(match 26 '30m.*45m') $(row 27)" "1 199"
+tmux send-keys -t "$s" Enter
+sleep 1
+check "search -- Enter keeps the match, the prompt gone" "$(match 26 '45m') $(screen | grep -c '^(search')" "1 0"
+tmux send-keys -t "$s" C-r 1 8
+sleep 3
+check "search -- the other matches black on cyan" "$(match 7 '30m.*46m') $(match 15 '30m.*46m') $(match 16 '30m.*45m')" "1 1 1"
+tmux send-keys -t "$s" Escape
+sleep 1
+tmux send-keys -t "$s" q
+sleep 1
+check "search -- q leaves, the matches gone" "$(screen | grep -c '\[[0-9]*/[0-9]*\]') $(match 7 '46m')" "0 0"
 
 # paste
 tmux send-keys -t "$s" 'clear; echo one-two; echo three' Enter
