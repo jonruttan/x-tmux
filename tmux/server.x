@@ -72,7 +72,8 @@
 (import tmux/capture capture-range capture-lines)
 (import tmux/vt-jit vt-jit!)
 (import tmux/copy copy-enter copy-resize copy-view copy-origin! copy-touch! copy-cursor copy-position
-  copy-do copy-selecting? copy-text copy-marks copy-vi? copy-key)
+  copy-do copy-selecting? copy-text copy-marks copy-vi? copy-key copy-recall copy-searched copy-search
+  copy-incremental copy-matches copy-marked?)
 (import tmux/layout layout-new layout-rects layout-borders layout-split layout-remove layout-panes
   layout-resize layout-fit layout-size layout-beside layout-relabel layout-names layout-arrange)
 (import tmux/command command-parse command-read command-list command-words command-matches command-flag)
@@ -135,16 +136,20 @@
 
 ; --- the session being worked on -----------------------------------------
 
-; A pane: (ID PID FD SCREEN RECT COPY), RECT (ROW COL ROWS COLS), COPY its
-; copy mode or nil.
+; A pane: (ID PID FD SCREEN RECT COPY SEARCH), RECT (ROW COL ROWS COLS),
+; COPY its copy mode or nil, SEARCH the search its copy mode last ran,
+; (TEXT . REGEX), or nil.
 (def %pane-id (fn (_ p) (first p)))
 (def %pane-pid (fn (_ p) (List ref 1 p)))
 (def %pane-fd (fn (_ p) (List ref 2 p)))
 (def %pane-screen (fn (_ p) (List ref 3 p)))
 (def %pane-rect (fn (_ p) (List ref 4 p)))
 (def %pane-copy (fn (_ p) (List ref 5 p)))
+(def %pane-search (fn (_ p) (List ref 6 p)))
 (def %with-copy
-  (fn (_ p c) (list (%pane-id p) (%pane-pid p) (%pane-fd p) (%pane-screen p) (%pane-rect p) c)))
+  (fn (_ p c)
+    (list (%pane-id p) (%pane-pid p) (%pane-fd p) (%pane-screen p) (%pane-rect p) c
+      ((fn (_ s) (if (null? s) (%pane-search p) s)) (if (null? c) () (copy-searched c))))))
 
 ; A window: (INDEX TREE ACTIVE NAME AUTO CHECKED DUE ZOOMED ORDER LAYOUT
 ; ID), its layout, its active pane's id, its name, whether the name
@@ -169,7 +174,7 @@
 (def %window 0)      ; the shown window's index
 (def %last ())       ; the indexes of the windows shown before, the latest first
 (def %cwd "")        ; where the session was made, where a new window starts
-(def %prompt ())     ; the question on the status line, (LABEL TEXT AT YES TYPED COMMAND), or nil
+(def %prompt ())     ; the question, (LABEL TEXT AT YES TYPED COMMAND CHANGED PANE), or nil
 (def %message ())    ; the message on the status line, or nil
 (def %until 0)       ; when the message goes, in microseconds since the epoch
 (def %recent ())     ; the panes' ids, the most recently active first
@@ -263,7 +268,7 @@
     (def child (%shell cols rows cwd id))
     (when (null? child) (Err raise 'io "x-tmux: no pseudo-terminal for a pane" ()))
     (def screen (vt-origin! (vt-make-history rows cols (%option "history-limit")) (first rect) (List ref 1 rect)))
-    (set! %panes (List append %panes (list (list id (first child) (rest child) screen rect ()))))
+    (set! %panes (List append %panes (list (list id (first child) (rest child) screen rect () ()))))
     (set! %recent (pair id %recent))
     id))
 
@@ -296,7 +301,7 @@
           (if (null? (%pane-copy p)) ()
             (copy-touch! (copy-origin! (if same (%pane-copy p) (copy-resize (%pane-copy p) rows cols))
                            (first rect) (List ref 1 rect)))))
-        (%set-pane! (list (%pane-id p) (%pane-pid p) (%pane-fd p) screen rect c)))
+        (%set-pane! (list (%pane-id p) (%pane-pid p) (%pane-fd p) screen rect c (%pane-search p))))
       (List map (fn (_ r) (if (if (List ref 7 w) (= (first r) (List ref 2 w)) #f) (pair (first r) whole) r))
         (layout-rects (List ref 1 w) 0 0)))))
 
@@ -735,7 +740,7 @@
 (def %ask!
   (fn (_ text yes)
     (set! %message ())
-    (set! %prompt (list text "" 0 yes #f #f))
+    (set! %prompt (list text "" 0 yes #f #f () #f))
     (%draw-status)))
 
 ; LABEL on the status line and TEXT after it to be edited, the cursor at
@@ -744,10 +749,22 @@
 (def %ask-for!
   (fn (_ label text yes command)
     (set! %message ())
-    (set! %prompt (list label text (str-byte-len text) yes #t command))
+    (set! %prompt (list label text (str-byte-len text) yes #t command () #f))
     (set! %back -1)
     (set! %choices "")
     (%draw-status)))
+
+; LABEL asked on the active pane's bottom row, as tmux's command-prompt
+; -P: YES called with the text Enter takes, and CHANGED, unless nil, with
+; the text after a prefix each time it changes, as -i's, and at once.
+(def %ask-in-pane!
+  (fn (_ label yes changed)
+    (set! %message ())
+    (set! %prompt (list label "" 0 yes #t #f changed #t))
+    (set! %choices "")
+    (set! %touched #t)
+    (unless (null? changed) (changed "="))))
+(def %in-pane? (fn (_) (if (null? %prompt) #f (List ref 7 %prompt))))
 
 ; The lines run from the command prompt, the latest first, 100 at most,
 ; tmux's prompt-history-limit; which of them the prompt shows, -1 for
@@ -757,10 +774,10 @@
 (def %choices "")
 
 ; Where a question's text is shown from: as far along as keeps its cursor
-; on the terminal after its label, tmux's.
+; on the WIDTH it has after its label, tmux's.
 (def %scrolled
-  (fn (_)
-    (%max 0 (- (+ (List ref 2 %prompt) 1) (%max 1 (- %cols (Str8 length (first %prompt))))))))
+  (fn (_ width)
+    (%max 0 (- (+ (List ref 2 %prompt) 1) (%max 1 (- width (Str8 length (first %prompt))))))))
 
 
 ; TEXT read and run: text that does not read runs none of its commands.
@@ -1242,7 +1259,7 @@
     (def text (Str8 join "\r\n" lines))
     (vt-feed! screen (str->ptr text) (str-byte-len text))
     (vt-feed! screen (str->ptr (%esc "[H")) 3)
-    (%set-pane! (%with-copy p (copy-enter screen #f %vi)))
+    (%set-pane! (%with-copy p (copy-recall (copy-enter screen #f %vi) (%pane-search p))))
     (%name-due! %window)
     (set! %touched #t)))
 
@@ -1534,7 +1551,10 @@
 
 ; The key at byte I of the N at P put to the text being typed, as tmux's
 ; prompt takes emacs's keys: answers the byte after it.  The command
-; prompt takes Up and Down through its history and Tab to complete.
+; prompt takes Up and Down through its history and Tab to complete.  An
+; incremental prompt is told each change of its text, and C-s and C-r ask
+; it to search on down or up, or with no text, put the pane's last
+; search's text to it.
 (def %edit!
   (fn (_ p i n)
     (def b (ptr-ref p i 1))
@@ -1543,10 +1563,21 @@
     (def at (List ref 2 %prompt))
     (def yes (List ref 3 %prompt))
     (def command (List ref 5 %prompt))
+    (def changed (List ref 6 %prompt))
+    (def pane (List ref 7 %prompt))
     (def len (str-byte-len text))
     (set! %choices "")
-    (def put! (fn (_ t a) (set! %prompt (list label t a yes #t command)) (%draw-status) (set! %touched #t)))
-    (def stop! (fn (_) (set! %prompt ()) (%draw-status) (set! %touched #t)))
+    (def show!
+      (fn (_ t a) (set! %prompt (list label t a yes #t command changed pane)) (%draw-status) (set! %touched #t)))
+    (def put!
+      (fn (_ t a) (show! t a) (unless (if (null? changed) #t (str=? t text)) (changed (Str8 append "=" t)))))
+    (def stop!
+      (fn (_) (set! %prompt ()) (%draw-status) (set! %touched #t) (when pane (%touch-pane! (%pane %active)))))
+    (def again!
+      (fn (_ prefix)
+        (if (< 0 len) (changed (Str8 append prefix text))
+          ((fn (_ s) (show! s (str-byte-len s)) (changed (Str8 append "=" s)))
+           ((fn (_ s) (if (null? s) "" (first s))) (%pane-search (%pane %active)))))))
     (def recall!
       (fn (_ k)
         (when (if command (if (< k (List length %history)) (<= -1 k) #f) #f)
@@ -1568,6 +1599,8 @@
       (do (match
             ((= b 13) (do (stop!) (yes text)))
             ((if command (= b 9) #f) ((fn (_ c) (put! (first c) (rest c))) (%complete text at)))
+            ((if (null? changed) #f (= b 19)) (again! "+"))
+            ((if (null? changed) #f (= b 18)) (again! "-"))
             ((if (= b 3) #t (= b 7)) (stop!))
             ((= b 1) (move! (lit start-of-line)))
             ((= b 5) (move! (lit end-of-line)))
@@ -1619,28 +1652,35 @@
 ; status-left, the windows and status-right as their options draw them.
 ; A question's text scrolls so its cursor shows, the names Tab offers
 ; underlined after it.  With status off a question or a message shows
-; over the panes' bottom row, which is drawn again once it goes.
+; over the panes' bottom row, which is drawn again once it goes.  A
+; question asked in a pane shows on its bottom row instead.
 (def %overlaid #f)
 (def %draw-status
   (fn (_)
     (def say (%sgr (%option-style "message-style" %plain)))
     (def bottom (fn (_ s) (%out (Str8 append (%goto (- %rows 1) 0) s (%esc "[0m")))))
     (match
-      ((not (null? %prompt))
-        (do (def label ((fn (_ l) (Str8 sub 0 (%min %cols (Str8 length l)) l)) (first %prompt)))
-            (def text (List ref 1 %prompt))
-            (def from (%scrolled))
-            (def shown (Str8 sub from (%min (- (str-byte-len text) from) (%max 0 (- %cols (Str8 length label)))) text))
-            (def room (%max 0 (- %cols (+ (Str8 length label) (Str8 length shown)))))
+      ((if (null? %prompt) #f (not (%in-pane?)))
+        (do (def asked (%question %cols))
+            (def room (%max 0 (- %cols (Str8 length asked))))
             (def choices (Str8 sub 0 (%min room (Str8 length %choices)) %choices))
             (set! %overlaid (not (%status?)))
-            (bottom (Str8 append (%esc (Str8 append "[" say "m")) label shown (%esc "[4m") choices (%esc "[24m")
+            (bottom (Str8 append (%esc (Str8 append "[" say "m")) asked (%esc "[4m") choices (%esc "[24m")
                       (Str8 pad-right (- room (Str8 length choices)) #\space "")))))
       ((not (null? %message))
         (do (set! %overlaid (not (%status?)))
             (bottom (Str8 append (%esc (Str8 append "[" say "m")) (%fit %message)))))
       ((%status?) (bottom (%emit (%status-cells))))
       (%overlaid (do (set! %overlaid #f) (List for-each (fn (_ id) (%touch-pane! (%pane id))) (%shown)))))))
+
+; The question as it shows on WIDTH columns: its label, and its text from
+; where it scrolls to.
+(def %question
+  (fn (_ width)
+    (def label ((fn (_ l) (Str8 sub 0 (%min width (Str8 length l)) l)) (first %prompt)))
+    (def text (List ref 1 %prompt))
+    (def from (%scrolled width))
+    (Str8 append label (Str8 sub from (%min (- (str-byte-len text) from) (%max 0 (- width (Str8 length label)))) text))))
 
 ; Whether the status line shows, and the rows the panes have.
 (def %status? (fn (_) (str=? (%option "status") "on")))
@@ -1855,16 +1895,28 @@
         (def h (if (null? c) (%pane-screen p) (copy-view c)))
         (def n (vt-render! h))
         (%out-bytes (vt-out h) n)
-        (when (if (null? c) #f (< 0 n)) (do (%draw-selection p c) (%draw-position p c))))
+        (when (if (null? c) #f (< 0 n)) (do (%draw-matches p c) (%draw-selection p c) (%draw-position p c))))
       (%shown))
     (when (< 0 %numbers) (%draw-numbers))
     (def p (%pane %active))
     (def c (if (null? (%pane-copy p)) (vt-cursor (%pane-screen p)) (copy-cursor (%pane-copy p))))
     (def rect (%pane-rect p))
+    (def bottom (+ (first rect) (- (List ref 2 rect) 1)))
+    (when (%in-pane?)
+      (do (def asked (%question (List ref 3 rect)))
+          (%out (Str8 append (%goto bottom (List ref 1 rect))
+                  (%esc (Str8 append "[" (%sgr (%option-style "message-style" %plain)) "m")) asked (%esc "[0m")
+                  (Str8 pad-right (%max 0 (- (List ref 3 rect) (Str8 length asked))) #\space "")))))
     (%out (Str8 append (%esc "[0m")
-            (if (null? %prompt)
-              (%goto (+ (first rect) (first c)) (+ (List ref 1 rect) (%min (rest c) (- (List ref 3 rect) 1))))
-              (%goto (- %rows 1) (%min (+ (str-byte-len (first %prompt)) (- (List ref 2 %prompt) (%scrolled))) (- %cols 1))))
+            (match
+              ((null? %prompt)
+                (%goto (+ (first rect) (first c)) (+ (List ref 1 rect) (%min (rest c) (- (List ref 3 rect) 1)))))
+              ((%in-pane?)
+                (%goto bottom
+                  (+ (List ref 1 rect)
+                     (%min (+ (str-byte-len (first %prompt)) (- (List ref 2 %prompt) (%scrolled (List ref 3 rect))))
+                       (- (List ref 3 rect) 1)))))
+              (#t (%goto (- %rows 1) (%min (+ (str-byte-len (first %prompt)) (- (List ref 2 %prompt) (%scrolled %cols))) (- %cols 1)))))
             (if (if (null? %prompt) (if (null? (%pane-copy p)) (not (vt-cursor-shown? (%pane-screen p))) #f) #f)
               ""
               (%esc "[?25h"))))))
@@ -1877,6 +1929,16 @@
     (def text (copy-position c))
     (%out (Str8 append (%goto (first rect) (+ (List ref 1 rect) (%max 0 (- (List ref 3 rect) (Str8 length text)))))
             (%esc "[0;30;43m") text (%esc "[0m")))))
+; A copy mode's matches, black on cyan, the one the cursor is on black on
+; magenta, tmux's copy-mode-match-style and copy-mode-current-match-style.
+(def %draw-matches
+  (fn (_ p c)
+    (def rect (%pane-rect p))
+    (List for-each
+      (fn (_ m)
+        (%out (Str8 append (%goto (+ (first rect) (first m)) (+ (List ref 1 rect) (List ref 1 m)))
+                (%esc (if (List ref 3 m) "[0;30;45m" "[0;30;46m")) (List ref 2 m) (%esc "[0m"))))
+      (copy-matches c))))
 ; A copy mode's selection, black on yellow, tmux's mode-style.
 (def %draw-selection
   (fn (_ p c)
@@ -1917,28 +1979,53 @@
     ((fn (self xs i) (if (= (first xs) id) i (self (rest xs) (+ i 1)))) order 0)))
 
 ; The active pane into copy mode, EXIT as tmux/copy's copy-enter, unless
-; it is in it.
+; it is in it, the pane's last search to search again.
 (def %copy!
   (fn (_ exit)
     (def p (%pane %active))
     (when (null? (%pane-copy p))
-      (do (%set-pane! (%with-copy p (copy-enter (%pane-screen p) exit %vi)))
+      (do (%set-pane! (%with-copy p (copy-recall (copy-enter (%pane-screen p) exit %vi) (%pane-search p))))
           (%name-due! %window)))))
 ; The active pane's copy mode after CMD: what CMD copies kept, out of the
 ; mode, its screen drawn whole, when CMD ends it, and the view drawn whole
-; while there is a selection to draw over it or there was one.
+; while there is a selection or there are matches to draw over it, or
+; there were.  A search's commands ask for its text in the pane, vi's
+; when Enter takes it, emacs's at each change.
 (def %copy-do!
   (fn (_ cmd)
+    (match
+      ((eq? cmd (lit prompt-down))
+        (%ask-in-pane! "(search down) " (fn (_ text) (%searched! (fn (_ c) (copy-search c text #t #t)))) ()))
+      ((eq? cmd (lit prompt-up))
+        (%ask-in-pane! "(search up) " (fn (_ text) (%searched! (fn (_ c) (copy-search c text #f #t)))) ()))
+      ((eq? cmd (lit incremental-down))
+        (%ask-in-pane! "(search down) " (fn (_ text) ())
+          (fn (_ arg) (%searched! (fn (_ c) (copy-incremental c arg #f))))))
+      ((eq? cmd (lit incremental-up))
+        (%ask-in-pane! "(search up) " (fn (_ text) ())
+          (fn (_ arg) (%searched! (fn (_ c) (copy-incremental c arg #t))))))
+      (#t (do (def was (%pane-copy (%pane %active)))
+              ((fn (_ text) (unless (if (null? text) #t (= (str-byte-len text) 0)) (%keep! text (eq? cmd (lit append)))))
+               (copy-text was cmd))
+              (if (List find (fn (_ x) (eq? x cmd)) (lit (search-again search-reverse)))
+                (%searched! (fn (_ c) (copy-do c cmd)))
+                (%copy-with! (fn (_ c) (copy-do c cmd)))))))))
+; The active pane's copy mode after F, a search, and the heap collected:
+; a search reads every line, and leaves much behind.
+(def %searched! (fn (_ f) (%copy-with! f) (Heap collect)))
+; The active pane's copy mode after F, as %copy-do! draws it.
+(def %copy-with!
+  (fn (_ f)
     (def p (%pane %active))
     (set! %touched #t)
     (def was (%pane-copy p))
-    (def text (copy-text was cmd))
-    (unless (if (null? text) #t (= (str-byte-len text) 0)) (%keep! text (eq? cmd (lit append))))
-    (def c (copy-do was cmd))
-    (%set-pane! (%with-copy p c))
-    (if (null? c)
-      (do (vt-touch! (%pane-screen p)) (%name-due! %window))
-      (when (if (copy-selecting? was) #t (copy-selecting? c)) (copy-touch! c)))))
+    (unless (null? was)
+      (do (def c (f was))
+          (%set-pane! (%with-copy p c))
+          (if (null? c)
+            (do (vt-touch! (%pane-screen p)) (%name-due! %window))
+            (when (if (copy-selecting? was) #t (if (copy-selecting? c) #t (if (copy-marked? was) #t (copy-marked? c))))
+              (copy-touch! c)))))))
 
 ; --- paste buffers ------------------------------------------------------
 
