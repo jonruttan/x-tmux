@@ -50,9 +50,11 @@
 
 (import x/sys/posix)
 (import tmux/vt vt-carry vt-size vt-cursor vt-origin! vt-touch! vt-history vt-view vt-row-length
-  vt-line vt-line-length vt-line-marks vt-line-cell)
+  vt-line vt-line-length vt-line-marks vt-line-wrapped? vt-line-into! vt-line-cell)
 
-(import x/core/doors ptr-ref ptr-set! str-make str->ptr int/ int%)
+(import x/core/doors ptr-ref ptr-set! ptr-ref-word ptr-set-word! ptr-call ffi-dlsym ffi-dlopen str-make str->ptr
+  int+ int- int* int< int=
+  ptr->int int->ptr str-byte-sub int/ int%)
 (def %min (fn (_ a b) (if (< a b) a b)))
 (def %max (fn (_ a b) (if (< a b) b a)))
 
@@ -75,22 +77,24 @@
 ; C with slot I V.
 (def %with (fn (self c i v) (if (= i 0) (pair v (rest c)) (pair (first c) (self (rest c) (- i 1) v)))))
 
-; A copy of SNAP at OFF, its view made, FOUND its slots from SEARCH on;
-; its first slot SNAP with its rows, columns and history, read once.
-(def %copy
-  (fn (_ snap off cx cy lastcx lastsx exit sel vi found)
+; A copy's first slot: SNAP with its rows, columns and history, read once,
+; and a box for its text, which its first search reads (%text).
+(def %head
+  (fn (_ snap)
     (def size (vt-size snap))
-    (List append
-      (list (list snap (first size) (rest size) (vt-history snap)) (vt-view snap off) off cx cy lastcx lastsx
-            exit sel vi)
-      found)))
+    (list snap (first size) (rest size) (vt-history snap) (Vector make 1 ()))))
+; A copy of HEAD's snapshot at OFF, its view made, FOUND its slots from
+; SEARCH on.
+(def %copy
+  (fn (_ head off cx cy lastcx lastsx exit sel vi found)
+    (List append (list head (vt-view (first head) off) off cx cy lastcx lastsx exit sel vi) found)))
 ; C with its cursor's column CX, or row CY too, the view kept.
 (def %at-x (fn (_ c cx) (%with c 3 cx)))
 (def %moved
   (fn (_ c off cx cy)
     (if (= off (%off c))
       (%with (%with c 3 cx) 4 cy)
-      (%copy (%snap c) off cx cy (%lastcx c) (%lastsx c) (%exit c) (%sel c) (%vi c) (%found c)))))
+      (%copy (first c) off cx cy (%lastcx c) (%lastsx c) (%exit c) (%sel c) (%vi c) (%found c)))))
 
 (def %rows (fn (_ c) (first (rest (first c)))))
 (def %cols (fn (_ c) (first (rest (rest (first c))))))
@@ -108,7 +112,7 @@
     (def size (vt-size screen))
     (def snap (vt-carry screen (first size) (rest size)))
     (def at (vt-cursor screen))
-    (%copy snap 0 (%min (rest at) (- (rest size) 1)) (first at) 0 0 exit () vi (list () () () ()))))
+    (%copy (%head snap) 0 (%min (rest at) (- (rest size) 1)) (first at) 0 0 exit () vi (list () () () ()))))
 
 ; C with the search its pane last ran, (TEXT . REGEX), or nil, to search
 ; again, up, as tmux's copy mode begins with its pane's.
@@ -124,7 +128,7 @@
   (fn (_ c rows cols)
     (def snap (vt-carry (%snap c) rows cols))
     (def r
-      (%copy snap (%min (%off c) (vt-history snap)) (%min (%cx c) (- cols 1)) (%min (%cy c) (- rows 1))
+      (%copy (%head snap) (%min (%off c) (vt-history snap)) (%min (%cx c) (- cols 1)) (%min (%cy c) (- rows 1))
         (%lastcx c) (%lastsx c) (%exit c) () (%vi c) (%found c)))
     (def o (%with r 12 (list (%off r) (%cx r) (%cy r))))
     (if (null? (%count o)) o (%with o 11 (%counted o (%asked (%last o)))))))
@@ -233,7 +237,7 @@
 
 ; Whether line LINE of C's copy wrapped into the next, and the cells it
 ; holds.
-(def %wrapped? (fn (_ c line) (List ref 2 (vt-line-marks (%snap c) line))))
+(def %wrapped? (fn (_ c line) (vt-line-wrapped? (%snap c) line)))
 (def %held (fn (_ c line) (List ref 1 (vt-line-marks (%snap c) line))))
 ; The first and the last row of the line LINE is on, the rows a wrap
 ; joins being one line, as tmux's grid reader takes them.
@@ -313,11 +317,11 @@
 (def %prev
   (fn (_ c a wrap) (if (= a 0) (if wrap (%at c (%final c) (- (%cols c) 1)) 0) (- a 1))))
 
-; What a search looks for: (TEXT RX CIS), RX TEXT compiled when it is a
+; What a search looks for: (TEXT RX CIS NL), RX TEXT compiled when it is a
 ; regular expression, #f when it does not read as one, else nil; CIS
-; whether TEXT is all in lower case, and either case matches.  TEXT is
-; taken as a regular expression only where it has one of its special
-; characters, as tmux's.
+; whether TEXT is all in lower case, and either case matches, NL whether
+; it has a newline, which no line does.  TEXT is taken as a regular
+; expression only where it has one of its special characters, as tmux's.
 (def %special? (fn (_ text) (List find (fn (_ ch) (not (null? (Str8 index-of ch text)))) %specials)))
 (def %specials (lit ("^" "$" "*" "+" "(" ")" "?" "[" "]" "." "\\")))
 ; x/type/regex loaded once, at the first regular expression.
@@ -325,7 +329,8 @@
 (def %regex! (fn (_) (unless %regex-loaded (do (import x/type/regex) (set! %regex-loaded #t)))))
 (def %query
   (fn (_ text regex)
-    (list text (if regex (guard (e #f) (do (%regex!) (Regex compile text))) ()) (str=? text (Str8 downcase text)))))
+    (list text (if regex (guard (e #f) (do (%regex!) (Regex compile text))) ()) (str=? text (%lower text))
+      (not (null? (Str8 index-of "\n" text))))))
 ; The search LAST, (TEXT REGEX DOWN), as %query has it.
 (def %asked (fn (_ last) (%query (first last) (List ref 1 last))))
 
@@ -360,49 +365,174 @@
                 (vt-line-cell snap line k))
                (pair b acc))))
          0 0 ())))))
-; The line LINE and the lines a wrap joins on to it: (TEXT . ROWS), TEXT
-; theirs run together, cased as Q asks, and ROWS (LINE BASE OFFSETS) each,
-; the last first, BASE the byte its text starts at in TEXT.
-(def %run
-  (fn (_ c line q)
-    (def final (%final c))
-    (def cased (fn (_ t) (if (List ref 2 q) (%lower t) t)))
-    (def cs (%cells c line))
-    (if (if (< line final) (%wrapped? c line) #f)
-      ((fn (self l base texts rows)
-         (def more (%cells c l))
-         (def texts2 (pair (first more) texts))
-         (def rows2 (pair (list l base (rest more)) rows))
-         (if (if (< l final) (%wrapped? c l) #f)
-           (self (+ l 1) (+ base (str-byte-len (first more))) texts2 rows2)
-           (pair (cased (Str8 join "" (List reverse texts2))) rows2)))
-       (+ line 1) (str-byte-len (first cs)) (list (first cs)) (list (list line 0 (rest cs))))
-      (pair (cased (first cs)) (list (list line 0 (rest cs)))))))
-; Byte B of a run's text as a place, its cell's; a byte past a row's last
-; cell is the next row's start.
+; The copy's text, read at its first search and kept in its box: (BASE
+; STARTS COLS ROWS FLAGS STRSTR STRCASESTR STRCSPN OFFS BUF STARTBUF
+; FLAGBUF MEMSET).  BUF, at address BASE, is every line's text, the rows a wrap
+; joins run together and a newline after each line, a NUL after the last,
+; so that libc's strstr and strcasestr find a text's next match in one
+; call however many lines are between.  STARTS points at the byte each
+; row starts at in BUF, a word a row and one past the last; FLAGS at a
+; byte a row, 1 where a cell is not a byte, and OFFS holds that row's cell
+; offsets, as %cells has them.  The buffers are in the list so the heap
+; keeps them.  A search reads the text once and hands it down.  The box is the copy's own: a module
+; variable set as the server runs is not a root the heap collects from.
+(def %text
+  (fn (_ c)
+    (def box (List ref 4 (first c)))
+    (when (null? (Vector ref 0 box)) (Vector set! 0 (%read c) box))
+    (Vector ref 0 box)))
+(def %read
+  (fn (_ c)
+    (def snap (%snap c))
+    (def cols (%cols c))
+    (def n (+ (%final c) 1))
+    (def lib (ffi-dlopen () 1))
+    (def memcpy (ffi-dlsym lib "memcpy"))
+    (def starts (str-make (* 8 (+ n 1))))
+    (def flags (str-make n))
+    (def offs (Vector make n ()))
+    (def sp (str->ptr starts))
+    (def fp (str->ptr flags))
+    (def at! (fn (_ buf i) (int->ptr (+ (ptr->int (str->ptr buf)) i))))
+    ; BUF with room for NEED bytes from AT, of CAP: (BUF . CAP).
+    (def room
+      (fn (_ buf cap at need)
+        (if (< (+ at need) cap) (pair buf cap)
+          ((fn (_ big) (do (ptr-call memcpy (str->ptr big) (str->ptr buf) at) (pair big (* 2 (+ at need)))))
+           (str-make (* 2 (+ at need)))))))
+    ((fn (self r buf cap at)
+       (ptr-set-word! sp (* 8 r) at)
+       (if (= r n)
+         (do (ptr-set! (at! buf at) 0 0 1)
+             (list (ptr->int (str->ptr buf)) sp cols n fp (ffi-dlsym lib "strstr") (ffi-dlsym lib "strcasestr")
+               (ffi-dlsym lib "strcspn") offs buf starts flags (ffi-dlsym lib "memset")))
+         (do (def bc (room buf cap at (+ cols 2)))
+             (def len
+               (if (vt-line-into! snap r (at! (first bc) at)) (do (ptr-set! fp r 0 1) cols)
+                 (do (def cs (%cells c r))
+                     (def k (str-byte-len (first cs)))
+                     (set! bc (room (first bc) (rest bc) at (+ k 2)))
+                     (ptr-call memcpy (at! (first bc) at) (str->ptr (first cs)) k)
+                     (ptr-set! fp r 1 1)
+                     (Vector set! r (rest cs) offs)
+                     k)))
+             (def sep (if (if (< r (- n 1)) (vt-line-wrapped? snap r) #f) 0 1))
+             (when (= sep 1) (ptr-set! (at! (first bc) (+ at len)) 0 10 1))
+             (self (+ r 1) (first bc) (rest bc) (+ at len sep)))))
+     0 (str-make (+ (* n (+ cols 1)) 2)) (+ (* n (+ cols 1)) 2) 0)))
+; The parts of a copy's text T, as %read lays it out, and of a query Q.
+; A search calls these for each match it reads, so they take the list
+; apart by hand and count on the integer doors.
+(def %t-base (fn (_ t) (first t)))
+(def %t-cols (fn (_ t) (first (rest (rest t)))))
+(def %t-rows (fn (_ t) (first (rest (rest (rest t))))))
+(def %t-flags (fn (_ t) (first (rest (rest (rest (rest t)))))))
+(def %t-door (fn (self t k) (if (int= k 0) (first t) (self (rest t) (int- k 1)))))
+(def %q-rx (fn (_ q) (first (rest q))))
+(def %q-cis (fn (_ q) (first (rest (rest q)))))
+(def %q-nl (fn (_ q) (first (rest (rest (rest q))))))
+; The byte row R starts at in BUF, and its cell offsets, or nil where each
+; cell is a byte.
+(def %start-of (fn (_ t r) (ptr-ref-word (first (rest t)) (int* 8 r))))
+(def %offs-of (fn (_ t r) (if (int= (ptr-ref (%t-flags t) r 1) 0) () (Vector ref r (List ref 8 t)))))
+; The bytes from row R's start to its line's newline.
+(def %line-len (fn (_ t r) (ptr-call (%t-door t 7) (int->ptr (int+ (%t-base t) (%start-of t r))) (str->ptr "\n"))))
+; F's answer with row R's line ended at its newline, a NUL there while F
+; runs, so that a search does not go past it.
+(def %within
+  (fn (_ t r f)
+    (def p (int->ptr (int+ (%t-base t) (int+ (%start-of t r) (%line-len t r)))))
+    (ptr-set! p 0 0 1)
+    ((fn (_ x) (ptr-set! p 0 10 1) x) (f))))
+
+; The byte in BUF column COL of line LINE starts at.
+(def %byte
+  (fn (_ t line col)
+    (int+ (%start-of t line) ((fn (_ offs) (if (null? offs) col (List ref col offs))) (%offs-of t line)))))
+; The row byte B of BUF is in, row FROM or one after: a few rows walked,
+; past them halved.
+(def %line-of
+  (fn (_ t b from)
+    (def n (%t-rows t))
+    (def half
+      (fn (self lo hi) (if (int= (int+ lo 1) hi) lo ((fn (_ m) (if (int< b (%start-of t m)) (self lo m) (self m hi))) (int/ (int+ lo hi) 2)))))
+    ((fn (self r k)
+       (if (int= (int+ r 1) n) r
+         (if (int< b (%start-of t (int+ r 1))) r
+           (if (int< k 8) (self (int+ r 1) (int+ k 1)) (half r n)))))
+     from 0)))
+; Byte B of BUF as a place, its cell's, B in line LINE's text or the rows
+; a wrap joins on to it; a byte past a row's last cell is the next row's
+; start.
 (def %place
-  (fn (_ c run b)
-    (def row (List find (fn (_ r) (not (< b (List ref 1 r)))) (rest run)))
-    (def rel (- b (List ref 1 row)))
-    (def offs (List ref 2 row))
-    (%at c (first row)
-      (if (null? offs) rel
-        ((fn (self xs k best) (if (null? xs) best (self (rest xs) (+ k 1) (if (= (first xs) rel) k best))))
-         offs 0 0)))))
-; The byte column COL of the run's first line starts at.
-(def %byte (fn (_ run col) ((fn (_ offs) (if (null? offs) col (List ref col offs))) (List ref 2 (List ref (- (List length (rest run)) 1) (rest run))))))
-; Q's first match in TEXT from byte FROM: (START . END), or nil; an empty
-; one is none.
+  (fn (_ t line b)
+    (def final (int- (%t-rows t) 1))
+    (def at
+      (fn (_ r rel offs)
+        (int+ (int* r (%t-cols t))
+          (if (null? offs) rel
+            ((fn (self xs k best) (if (null? xs) best (self (rest xs) (int+ k 1) (if (int= (first xs) rel) k best))))
+             offs 0 0)))))
+    ((fn (self r)
+       (if (if (int< r final) (not (int< b (%start-of t (int+ r 1)))) #f) (self (int+ r 1))
+         (at r (int- b (%start-of t r)) (%offs-of t r))))
+     line)))
+; What Q searches in line LINE: for a regular expression, (BASE . TEXT),
+; TEXT the line's from LINE on, the rows a wrap joins and all, cased as Q
+; asks, BASE the byte in BUF it starts at; else LINE.
+(def %run
+  (fn (_ t line q)
+    (if (null? (%q-rx q)) line
+      ((fn (_ base) ((fn (_ text) (pair base (if (%q-cis q) (%lower text) text))) (str-byte-sub (List ref 9 t) base (%line-len t line))))
+       (%start-of t line)))))
+; Q's text's first match from byte FROM of BUF: (START . END) in BUF, or
+; nil.  Text with a newline in it matches none.
+(def %found-at
+  (fn (_ t q from)
+    (def base (%t-base t))
+    (if (%q-nl q) ()
+      ((fn (_ p) (if (int= p 0) () ((fn (_ i) (pair i (int+ i (str-byte-len (first q))))) (int- p base))))
+       (ptr-call (%t-door t (if (%q-cis q) 6 5)) (int->ptr (int+ base from)) (str->ptr (first q)))))))
+; Q's first match in the line RUN is of from byte FROM of BUF: (START .
+; END) in BUF, or nil; an empty one is none.
 (def %hit
-  (fn (_ q text from)
-    (def rx (List ref 1 q))
+  (fn (_ t q run from)
+    (def rx (%q-rx q))
     (match
-      ((null? rx)
-        ((fn (_ i) (if (null? i) () (pair i (+ i (str-byte-len (first q))))))
-         (Str8 %find-bytes (first q) from text)))
+      ((null? rx) (%within t run (fn (_) (%found-at t q from))))
       ((eq? rx #f) ())
-      (#t ((fn (_ m) (if (null? m) () (if (= (first m) (List ref 1 m)) () (pair (first m) (List ref 1 m)))))
-           (Regex find-at text from rx))))))
+      (#t ((fn (_ m) (if (null? m) () (if (= (first m) (List ref 1 m)) () (pair (+ (first run) (first m)) (+ (first run) (List ref 1 m))))))
+           (Regex find-at (rest run) (- from (first run)) rx))))))
+; Q's text's first match from byte FROM of BUF on, FROM in row ROW or
+; after it, to the copy's end: ((A . WIDTH) NEXT R), NEXT the byte its next
+; search starts at, past it, or at the next row where it runs on into it,
+; as tmux's search goes on in a row, and R the row it starts on; or nil.
+(def %onward
+  (fn (_ t q from row)
+    (def at
+      (fn (_ h r)
+        ((fn (_ a next) (list (pair a (int- (%place t r (rest h)) a)) (if (int< next (rest h)) next (rest h)) r))
+         (%place t r (first h)) (%start-of t (int+ r 1)))))
+    ((fn (_ h) (if (null? h) () (at h (%line-of t (first h) row)))) (%found-at t q from))))
+; Q's text's last match up from column X of line LINE to line ENDLINE:
+; the last to start before X+1 on LINE or on a line between, as a row at
+; a time would find it, (A . WIDTH), or nil.  The lines searched double
+; up from LINE till one has a match.
+(def %backward
+  (fn (_ t q line x endline)
+    (def hi (%byte t line (int+ x 1)))
+    ; The last match from byte FROM that starts before HI, or BEST.
+    (def last
+      (fn (self from best)
+        ((fn (_ h) (if (if (null? h) #t (not (int< (first h) hi))) best (self (int+ (first h) 1) h))) (%found-at t q from))))
+    (def found
+      (fn (_ h) ((fn (_ r) ((fn (_ a) (pair a (int- (%place t r (rest h)) a))) (%place t r (first h)))) (%line-of t (first h) 0))))
+    ((fn (self k)
+       ((fn (_ top)
+          ((fn (_ h) (if (not (null? h)) (found h) (if (int= top endline) () (self (int* k 2)))))
+           (last (%start-of t top) ())))
+        (%max endline (int- line k))))
+     1)))
 
 ; The first match of Q that starts in line LINE at a column LO to
 ; HI-1: (A . WIDTH), A its place, or nil.  It may run on into the lines
@@ -410,11 +540,11 @@
 (def %match-lr
   (fn (_ c line lo hi q)
     (if (< lo hi)
-      (do (def run (%run c line q))
-          (def h (%hit q (first run) (%byte run lo)))
+      (do (def t (%text c))
+          (def h (%hit t q (%run t line q) (%byte t line lo)))
           (if (null? h) ()
-            ((fn (_ a) (if (< a (%at c line hi)) (pair a (- (%place c run (rest h)) a)) ()))
-             (%place c run (first h)))))
+            ((fn (_ a) (if (< a (%at c line hi)) (pair a (- (%place t line (rest h)) a)) ()))
+             (%place t line (first h)))))
       ())))
 ; The match of Q that starts in line LINE nearest before column HI, from
 ; LO: the last to start there for text; for a regular expression the
@@ -422,19 +552,20 @@
 ; the last of them, as tmux's.
 (def %match-rl
   (fn (_ c line lo hi q)
-    (def run (%run c line q))
+    (def t (%text c))
+    (def run (%run t line q))
     (def end (%at c line hi))
     (def regex (not (null? (List ref 1 q))))
     ((fn (self from best)
-       (def h (%hit q (first run) from))
+       (def h (%hit t q run from))
        (if (null? h) best
          ((fn (_ a)
             (if (< a end)
               ((fn (_ m) (if (if regex (not (< (+ a (rest m)) end)) #f) m (self (if regex (rest h) (+ (first h) 1)) m)))
-               (pair a (- (%place c run (rest h)) a)))
+               (pair a (- (%place t line (rest h)) a)))
               best))
-          (%place c run (first h)))))
-     (%byte run lo) ())))
+          (%place t line (first h)))))
+     (%byte t line lo) ())))
 ; A regular expression's match R at the start of line ROW, after LINE-1
 ; wrapped into it: the match that starts on a line before and ends where
 ; R does, as tmux's window_copy_search_back_overlap.
@@ -446,18 +577,25 @@
       r)))
 
 ; Q's next match from column FX of line FY, DOWN to line ENDLINE or up to
-; it, round from the other end as WRAP has it: (A . WIDTH), or nil.
+; it, round from the other end as WRAP has it: (A . WIDTH), or nil.  Text
+; is found by libc in the text, a regular expression a line at a time.
 (def %jump
   (fn (self c q fx fy endline down wrap)
     (def cols (%cols c))
     (def found
-      (if down
-        ((fn (loop i x) (if (< endline i) () ((fn (_ r) (if (null? r) (loop (+ i 1) 0) r)) (%match-lr c i x cols q))))
-         fy fx)
-        ((fn (loop i x)
-           (if (< i endline) ()
-             ((fn (_ r) (if (null? r) (loop (- i 1) (- cols 1)) (%overlap c q r i endline))) (%match-rl c i 0 (+ x 1) q))))
-         fy fx)))
+      (match
+        ((if down (null? (List ref 1 q)) #f)
+          ((fn (_ o) (if (null? o) () (if (< (* (+ endline 1) cols) (+ (first (first o)) 1)) () (first o))))
+           ((fn (_ t) (%onward t q (%byte t fy fx) fy)) (%text c))))
+        (down
+          ((fn (loop i x) (if (< endline i) () ((fn (_ r) (if (null? r) (loop (+ i 1) 0) r)) (%match-lr c i x cols q))))
+           fy fx))
+        ((null? (List ref 1 q)) (%backward (%text c) q fy fx endline))
+        (#t
+          ((fn (loop i x)
+             (if (< i endline) ()
+               ((fn (_ r) (if (null? r) (loop (- i 1) (- cols 1)) (%overlap c q r i endline))) (%match-rl c i 0 (+ x 1) q))))
+           fy fx))))
     (match
       ((not (null? found)) found)
       (wrap (self c q (if down 0 (- cols 1)) (if down 0 (%final c)) fy down #f))
@@ -465,16 +603,29 @@
 
 ; Q's matches in lines FROM to TO-1, each line's from its start on, one
 ; after another, (A . WIDTH) each, and whether the clock passed UNTIL, in
-; microseconds, 0 for never, first: (MATCHES . STOPPED).
+; microseconds, 0 for never, first: (MATCHES . STOPPED).  The clock is
+; read each 32 lines or matches.
 (def %matches
   (fn (_ c q from to until)
-    ((fn (self line x acc)
-       (match
-         ((= line to) (pair (List reverse acc) #f))
-         ((if (= x 0) (if (< 0 until) (< until (%micros)) #f) #f) (pair (List reverse acc) #t))
-         (#t ((fn (_ r) (if (null? r) (self (+ line 1) 0 acc) (self line (+ (- (first r) (%at c line 0)) (rest r)) (pair r acc))))
-              (%match-lr c line x (%cols c) q)))))
-     from 0 ())))
+    (def late (fn (_ k) (if (< 0 until) (if (= (int% k 32) 0) (< until (%micros)) #f) #f)))
+    (def cols (%cols c))
+    (if (null? (List ref 1 q))
+      (do (def t (%text c))
+          ((fn (self b row k acc)
+             (match
+               ((late k) (pair (List reverse acc) #t))
+               (#t ((fn (_ o)
+                      (if (if (null? o) #t (not (< (first (first o)) (* to cols)))) (pair (List reverse acc) #f)
+                        (self (List ref 1 o) (List ref 2 o) (+ k 1) (pair (first o) acc))))
+                    (%onward t q b row)))))
+           (%start-of t from) from 0 ()))
+      ((fn (self line x acc)
+         (match
+           ((= line to) (pair (List reverse acc) #f))
+           ((if (= x 0) (late line) #f) (pair (List reverse acc) #t))
+           (#t ((fn (_ r) (if (null? r) (self (+ line 1) 0 acc) (self line (+ (- (first r) (%at c line 0)) (rest r)) (pair r acc))))
+                (%match-lr c line x cols q)))))
+       from 0 ()))))
 ; The matches of Q in C counted, (N . MORE), as tmux's: a count that takes
 ; longer than %count-limit microseconds stops, and is 10, 100 or 1000 and
 ; more, or -1, none shown, below 10.
@@ -499,7 +650,7 @@
     (def top (- (%history c) (%off c)))
     (def m (str-make n))
     (def p (str->ptr m))
-    ((fn (self i) (when (< i n) (do (ptr-set! p i 0 1) (self (+ i 1))))) 0)
+    (ptr-call (%t-door (%text c) 12) p 0 n)
     (List fold
       (fn (_ gen r)
         (def b (- (first r) (%at c top 0)))

@@ -41,7 +41,8 @@
 #             at the top right, q and a page down to the bottom leaving
 #   search    C-b [ then C-r: the prompt on the pane's bottom row, each key
 #             searching, the matches black on cyan and the one the cursor
-#             is on black on magenta, Enter keeping it, q leaving
+#             is on black on magenta, Enter keeping it with the count by
+#             the position, q leaving
 #   paste     two rows selected with emacs's keys and drawn black on
 #             yellow, M-w copying them, C-b ] typing them to a cat; a
 #             row the pane wrapped copied from C-a to C-e as one line
@@ -341,10 +342,12 @@ match() { tmux capture-pane -e -p -t "$s" -S "$1" -E "$1" | grep -c "$2"; }
 check "search -- each key searches, the match the cursor is on black on magenta" "$(match 26 '30m.*45m') $(row 27)" "1 199"
 tmux send-keys -t "$s" Enter
 sleep 1
-check "search -- Enter keeps the match, the prompt gone" "$(match 26 '45m') $(screen | grep -c '^(search')" "1 0"
+check "search -- Enter keeps the match, the prompt gone, the count by the position" \
+  "$(match 26 '45m') $(screen | grep -c '^(search') $(row 1 | grep -cE ' \[0/[0-9]+\] \([0-9]+ results\)$')" "1 0 1"
 tmux send-keys -t "$s" C-r 1 8
 sleep 3
-check "search -- the other matches black on cyan" "$(match 7 '30m.*46m') $(match 15 '30m.*46m') $(match 16 '30m.*45m')" "1 1 1"
+check "search -- the other matches black on cyan, the count by the position" \
+  "$(match 7 '30m.*46m') $(match 15 '30m.*46m') $(match 16 '30m.*45m') $(row 1 | grep -cE ' \([0-9]+ results\)$')" "1 1 1 1"
 tmux send-keys -t "$s" Escape
 sleep 1
 tmux send-keys -t "$s" q
