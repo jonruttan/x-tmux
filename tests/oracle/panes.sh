@@ -40,7 +40,8 @@
 #   copy      C-b [ and C-b PgUp: the history paged through, the position
 #             at the top right, q and a page down to the bottom leaving
 #   paste     two rows selected with emacs's keys and drawn black on
-#             yellow, M-w copying them, C-b ] typing them to a cat
+#             yellow, M-w copying them, C-b ] typing them to a cat; a
+#             row the pane wrapped copied from C-a to C-e as one line
 #   windows   C-b c, 1, l, n, p: windows made and shown, the status line
 #             listing them with tmux's flags; a missing number refused for
 #             a moment; C-b & asked, a no keeping the window and a yes
@@ -343,6 +344,20 @@ tmux send-keys -t "$s" Enter C-d
 sleep 1
 check "paste -- C-b ] types the newest buffer, a newline a carriage return" "$(cat "$fx/pasted")" "one-two
 three"
+# a row of 150 that the 100-wide pane wraps, selected from its start to its end
+tmux send-keys -t "$s" "clear; printf '%0150d\\n' 0" Enter
+sleep 1
+tmux send-keys -t "$s" C-b '['
+wait_for '[0/'
+tmux send-keys -t "$s" Up Up C-a C-Space C-e M-w
+sleep 1
+tmux send-keys -t "$s" "cat >$fx/joined" Enter
+sleep 1
+tmux send-keys -t "$s" C-b ']'
+sleep 1
+tmux send-keys -t "$s" Enter C-d
+sleep 1
+check "paste -- a wrapped row copied as one line" "$(cat "$fx/joined")" "$(printf '%0150d' 0)"
 # the screen as the copy checks left it, for attach's
 tmux send-keys -t "$s" 'clear; echo still-here' Enter
 wait_for 'still-here'

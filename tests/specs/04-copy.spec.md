@@ -170,3 +170,58 @@ each run of commands, its keys sent there to a pane of the same lines.
 ```
 ---
     (('clear-selection 'copy 'copy-end-of-line 'copy) ('begin-selection 'copy 'copy 'select-line 'other-end 'copy-end-of-line 'append 'clear-selection))
+
+## wrapped rows
+
+### a row the terminal wrapped is one line with the next: a selection goes on into it, the line's start and end are its rows', and C-k copies to its end
+
+```tmux
+(do (def h (spec-feed! vt-feed-pure! (vt-make-history 6 20 100) "abcdefghijklmnopqrstuvwxyz0123\r\nshort\r\n"))
+    (def run (fn (_ vi cmds) (List fold copy-do (copy-do (copy-enter h #f vi) 'history-top) cmds)))
+    (def take
+      (fn (_ vi cmds) (copy-text (run vi (List reverse (rest (List reverse cmds)))) (first (List reverse cmds)))))
+    (write (list (take #f (list 'right 'right 'begin-selection 'down 'copy))
+                 (take #f (list 'right 'right 'copy-end-of-line))
+                 (take #f (list 'begin-selection 'end-of-line 'copy))
+                 (take #f (list 'down 'begin-selection 'up 'copy))
+                 (copy-cursor (run #f (list 'end-of-line)))
+                 (copy-cursor (run #f (list 'down 'right 'right 'right 'start-of-line))))))
+```
+---
+    ("cdefghijklmnopqrstuv" "cdefghijklmnopqrstuvwxyz0123" "abcdefghijklmnopqrstuvwxyz0123" "abcdefghijklmnopqrst" (1 . 10) (0 . 0))
+
+### vi: V takes the whole line, from the row it began on to the cursor's; a selection's last row runs past its end
+
+```tmux
+(do (def h (spec-feed! vt-feed-pure! (vt-make-history 6 20 100) "abcdefghijklmnopqrstuvwxyz0123\r\nshort\r\n"))
+    (def run (fn (_ vi cmds) (List fold copy-do (copy-do (copy-enter h #f vi) 'history-top) cmds)))
+    (def take
+      (fn (_ vi cmds) (copy-text (run vi (List reverse (rest (List reverse cmds)))) (first (List reverse cmds)))))
+    (write (list (take #t (list 'down 'select-line 'copy))
+                 (take #t (list 'begin-selection 'down 'down 'copy))
+                 (take #t (list 'right 'right 'copy-end-of-line))
+                 (take #t (list 'begin-selection 'end-of-line 'copy))
+                 (take #t (list 'down 'down 'select-line 'up 'copy))
+                 (take #t (list 'select-line 'down 'down 'copy))
+                 (take #t (list 'down 'down 'begin-selection 'up 'copy))
+                 (copy-cursor (run #t (list 'end-of-line)))
+                 (copy-cursor (run #t (list 'down 'select-line 'up)))
+                 (copy-cursor (run #t (list 'down 'down 'select-line 'up))))))
+```
+---
+    ("abcdefghijklmnopqrstuvwxyz0123\n" "abcdefghijklmnopqrstuvwxyz0123\ns" "cdefghijklmnopqrstuvwxyz0123" "abcdefghijklmnopqrstuvwxyz0123" "uvwxyz0123\nshort\n" "abcdefghijklmnopqrstuvwxyz0123\nshort\n\n" "uvwxyz0123\ns" (1 . 9) (0 . 19) (1 . 0))
+
+### a wrapped row keeps the spaces it holds
+
+```tmux
+(do (def h (spec-feed! vt-feed-pure! (vt-make-history 6 20 100) "abcdefghijklmnopqr  xyz\r\nnext\r\n"))
+    (def run (fn (_ vi cmds) (List fold copy-do (copy-do (copy-enter h #f vi) 'history-top) cmds)))
+    (def take
+      (fn (_ vi cmds) (copy-text (run vi (List reverse (rest (List reverse cmds)))) (first (List reverse cmds)))))
+    (write (list (take #f (list 'begin-selection 'down 'end-of-line 'copy))
+                 (take #t (list 'begin-selection 'down 'end-of-line 'copy))
+                 (take #f (list 'right 'copy-end-of-line))
+                 (take #t (list 'select-line 'copy)))))
+```
+---
+    ("abcdefghijklmnopqr  xyz" "abcdefghijklmnopqr  xyz" "bcdefghijklmnopqr  xyz" "abcdefghijklmnopqr  xyz\n")

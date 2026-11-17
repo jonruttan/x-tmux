@@ -15,13 +15,16 @@
 ; page; the top of the history and the bottom.  A move to a shorter row
 ; puts the cursor at the row's end, and back on a longer one at the column
 ; it left, which LASTCX keeps, from a row LASTSX long.  With vi's keys the
-; cursor stays on a row's characters: its end is the last of them.
+; cursor stays on a row's characters: its end is the last of them.  A
+; line's start and end are those of the rows a wrap joins, its first row's
+; start and its last row's end.
 ;
 ; A selection runs from where it began to the cursor.  With emacs's keys
 ; it stops short of the cell the later end is on, and with vi's takes it;
 ; a row's trailing blanks are left out, and the selection takes a row's
-; end, a newline, where it runs past the row's last character.  vi's V
-; selects whole rows.
+; end, a newline, where it runs past the row's last character; a row that
+; wrapped keeps its blanks and goes on into the next.  vi's V selects
+; whole lines.
 ;
 ; A copy: (SNAP VIEW OFF CX CY LASTCX LASTSX EXIT SEL VI), SNAP the copied
 ; screen, VIEW what it shows at OFF (tmux/vt's vt-view), EXIT whether a
@@ -34,7 +37,7 @@
 
 (import x/sys/posix)
 (import tmux/vt vt-carry vt-size vt-cursor vt-origin! vt-touch! vt-history vt-view vt-row-length
-  vt-line vt-line-length)
+  vt-line vt-line-length vt-line-marks)
 
 (import x/core/doors ptr-ref)
 (def %min (fn (_ a b) (if (< a b) a b)))
@@ -191,6 +194,24 @@
       ((< (+ top (- rows 1)) line) (%moved c (- (%history c) (- line (- rows 1))) col (- rows 1)))
       (#t (%moved c (%off c) col (- line top))))))
 
+; Whether line LINE of C's copy wrapped into the next, and the cells it
+; holds.
+(def %wrapped? (fn (_ c line) (List ref 2 (vt-line-marks (%snap c) line))))
+(def %held (fn (_ c line) (List ref 1 (vt-line-marks (%snap c) line))))
+; The first and the last row of the line LINE is on, the rows a wrap
+; joins being one line, as tmux's grid reader takes them.
+(def %first-line
+  (fn (self c line) (if (if (< 0 line) (%wrapped? c (- line 1)) #f) (self c (- line 1)) line)))
+(def %last-line
+  (fn (self c line)
+    (if (if (< line (+ (%history c) (- (%rows c) 1))) (%wrapped? c line) #f) (self c (+ line 1)) line)))
+; The cursor at the end of its line, on the line's last row.
+(def %line-end
+  (fn (_ c)
+    (def last (%last-line c (%line c)))
+    (def n (vt-line-length (%snap c) last))
+    (%goto c last (if (if (%vi c) (< 0 n) #f) (- n 1) n))))
+
 ; The cursor to where the selection began, and the selection begun where
 ; the cursor was.
 (def %other-end
@@ -215,11 +236,11 @@
       ((eq? cmd (lit history-top)) (%fit (%moved c (%history c) 0 0)))
       ((eq? cmd (lit history-bottom))
         ((fn (_ b) (%fit (%at-x b (%end b)))) (%moved c 0 (%cx c) (- (%rows c) 1))))
-      ((eq? cmd (lit start-of-line)) (%at-x c 0))
-      ((eq? cmd (lit end-of-line)) (%at-x c (%end c)))
+      ((eq? cmd (lit start-of-line)) (%goto c (%first-line c (%line c)) 0))
+      ((eq? cmd (lit end-of-line)) (%line-end c))
       ((eq? cmd (lit begin-selection)) (%with c 8 (list (%line c) (%cx c) #f)))
       ((eq? cmd (lit clear-selection)) (%with c 8 ()))
-      ((eq? cmd (lit select-line)) ((fn (_ s) (%at-x s (%end s))) (%with c 8 (list (%line c) 0 #t))))
+      ((eq? cmd (lit select-line)) (%line-end (%with c 8 (list (%first-line c (%line c)) 0 #t))))
       ((eq? cmd (lit other-end)) (%other-end c))
       ((eq? cmd (lit cancel)) ())
       ((eq? cmd (lit copy)) ())
@@ -233,7 +254,8 @@
 (def copy-selecting? (fn (_ c) (not (null? (%sel c)))))
 
 ; The selection's ends, (LINE . COL) each, the earlier first, and the
-; column past the later one's last cell, whole rows' past every column.
+; column past the later one's last cell, whole rows' past every column:
+; the line they began on to its last row, and the cursor's row.
 (def %ends
   (fn (_ c)
     (def s (%sel c))
@@ -243,29 +265,45 @@
     (def lo (if ab a b))
     (def hi (if ab b a))
     (if (List ref 2 s)
-      (list (pair (first lo) 0) (pair (first hi) (+ (%cols c) 1)))
+      (list (pair (%min (first a) (first b)) 0) (pair (%max (first b) (%last-line c (first a))) (+ (%cols c) 1)))
       (list lo hi (if (%vi c) (+ (rest hi) 1) (rest hi))))))
 (def %stop (fn (_ c ends) (if (null? (rest (rest ends))) (rest (List ref 1 ends)) (List ref 2 ends))))
 
 ; Line LINE's cells FROM to TO-1, or nothing.
 (def %span (fn (_ c line from to) (if (< from to) (vt-line (%snap c) line from to) "")))
 
-; The selection's text, or nil when there is none.
+; The selection's text, or nil when there is none, as tmux's
+; window_copy_get_selection writes it.  A row runs to its last character
+; and is followed by a newline; a row that wrapped runs to the cells it
+; holds, its spaces kept, and goes on into the next row with no newline
+; where the selection takes it to its end.  The last row stops where the
+; selection does, its last character at most, past it with vi's keys; its
+; newline is left off, but with vi's keys where the selection runs past
+; the row's last character, unless the row wrapped and the selection
+; stops at it.
 (def %selected
   (fn (_ c)
     (def ends (%ends c))
     (def lo (first ends))
     (def last (first (List ref 1 ends)))
+    (def tail (vt-line-length (%snap c) last))
     (def stop (%stop c ends))
-    ((fn (self line acc)
-       (if (< last line) (Str8 join "" (List reverse acc))
-         (do (def n (vt-line-length (%snap c) line))
-             (def from (if (= line (first lo)) (rest lo) 0))
-             (self (+ line 1)
-               (pair (if (< line last) (Str8 append (%span c line from n) "\n")
-                       (Str8 append (%span c line from (%min stop n)) (if (< n stop) "\n" "")))
-                     acc)))))
-     (first lo) ())))
+    (def lastex (if (%vi c) (+ (%min (- stop 1) tail) 1) (%min stop tail)))
+    (def bare (if (if (%vi c) (< tail lastex) #f) #f (if (%wrapped? c last) (not (= lastex tail)) #t)))
+    ; the row's text from SX to EX, and its newline
+    (def row
+      (fn (_ line sx ex)
+        (def wrapped (%wrapped? c line))
+        (def xx (if wrapped (%held c line) (vt-line-length (%snap c) line)))
+        (def e (%min ex xx))
+        (Str8 append (%span c line (%min sx xx) e)
+          (if (if (if wrapped (= e xx) #f) #t (if (= line last) bare #f)) "" "\n"))))
+    (if (if (= (first lo) last) (< lastex (rest lo)) #f) ()
+      ((fn (self line acc)
+         (if (< last line) (Str8 join "" (List reverse acc))
+           (self (+ line 1)
+             (pair (row line (if (= line (first lo)) (rest lo) 0) (if (= line last) lastex (%cols c))) acc))))
+       (first lo) ()))))
 
 ; What the command CMD copies from C: the selection, or the cursor's row
 ; from the cursor to its end; nil for a command that copies nothing, or a
@@ -274,7 +312,7 @@
   (fn (_ c cmd)
     (match
       ((if (eq? cmd (lit copy)) #t (eq? cmd (lit append))) (if (null? (%sel c)) () (%selected c)))
-      ((eq? cmd (lit copy-end-of-line)) (%span c (%line c) (%cx c) (%length c)))
+      ((eq? cmd (lit copy-end-of-line)) (%selected (%line-end (%with c 8 (list (%line c) (%cx c) #f)))))
       (#t ()))))
 
 ; The selection on C's view: (ROW COL TEXT) for each row it is on, from
