@@ -83,21 +83,45 @@
 #             kill-session, capture-pane, wait-for and pipe-pane, and the
 #             errors of each
 #
-# x-tmux runs from a shell in the tmux pane, on a socket of its own, -f
-# /dev/null keeping the tester's own tmux.conf out of it.
+# x-tmux runs from a shell in a tmux pane, each on a socket of its own, -f
+# /dev/null keeping the tester's own tmux.conf out of both.
 #
 # The real tmux is the oracle twice over: it runs the test, and the sizes
 # and layouts asserted are the ones it gives its own panes.
 set -u
 X=${X:-x}
 BUNDLE="$(cd "$(dirname "$0")/../.." && pwd)"
+# A run stopped by a kill, the guard's, never reaches its trap, and its
+# servers live on: tmux's on sockets named for its pid, x-tmux's in its
+# directory, which holds its pid.  Each of a run that is gone is ended
+# first, a pid counting as the run's only while it is a panes.sh.
+gone() { ! ps -o command= -p "$1" 2>/dev/null | grep -q 'oracle/panes\.sh'; }
+for k in "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)"/xtmux-oracle-*; do
+	[ -S "$k" ] && gone "${k##*-}" || continue
+	env -u TMUX -u TMUX_PANE tmux -S "$k" kill-server 2>/dev/null
+	rm -f "$k"
+done
+for d in "${TMPDIR:-/tmp}"/x-tmux-oracle.*; do
+	[ -f "$d/pid" ] && gone "$(cat "$d/pid")" || continue
+	for l in oracle oracle-sh; do
+		X_LANG_DIR=$d/langs/ TMUX_TMPDIR=$d $X -l tmux -- -L $l kill-server 2>/dev/null
+	done
+	rm -rf "$d"
+done
 fx=$(mktemp -d "${TMPDIR:-/tmp}/x-tmux-oracle.XXXXXX")
+echo $$ >"$fx/pid"
 mkdir -p "$fx/langs"
 ln -s "$BUNDLE" "$fx/langs/x-tmux"
 s=xtmux-oracle-$$
 c=/tmp/xtc$$
 r=xtmux-oracle-sh-$$
-trap 'tmux kill-session -t $s 2>/dev/null; X_LANG_DIR=$fx/langs/ TMUX_TMPDIR=$fx $X -l tmux -- -L oracle kill-server 2>/dev/null; tmux -L $r kill-server 2>/dev/null; X_LANG_DIR=$fx/langs/ TMUX_TMPDIR=$fx $X -l tmux -- -L oracle-sh kill-server 2>/dev/null; rm -f "$c"; rm -rf "$fx"' EXIT
+# The tmux the test runs in, on a socket of its own with no tmux.conf: the
+# tester's server, its sessions and the panes a client of theirs shows are
+# never sent a key, and a session the tester's config restores never lands
+# in this one.
+o=xtmux-oracle-outer-$$
+tmux() { env -u TMUX -u TMUX_PANE tmux -L "$o" -f /dev/null "$@"; }
+trap 'tmux kill-server 2>/dev/null; X_LANG_DIR=$fx/langs/ TMUX_TMPDIR=$fx $X -l tmux -- -L oracle kill-server 2>/dev/null; env tmux -L $r kill-server 2>/dev/null; X_LANG_DIR=$fx/langs/ TMUX_TMPDIR=$fx $X -l tmux -- -L oracle-sh kill-server 2>/dev/null; rm -f "$c" "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$o" "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$r"; rm -rf "$fx"' EXIT
 failed=0
 
 screen() { tmux capture-pane -p -t "$s" | sed 's/ *$//'; }
@@ -181,7 +205,7 @@ tmux send-keys -t "$s" 'stty size' Enter
 wait_for '23 39'
 check "split -h -- the new pane is 39 wide, as tmux's is" "$(screen | grep -c '23 39$')" "1"
 blank40=$(printf '%40s' '')
-check "split -h -- the border is column 41" "$(row 5)" "$blank40│"
+check "split -h -- the border is column 41" "$(row 5)" "${blank40}│"
 
 # split -v
 tmux send-keys -t "$s" C-b '"'
@@ -189,7 +213,7 @@ sleep 2
 tmux send-keys -t "$s" 'stty size' Enter
 wait_for '11 39'
 check "split -v -- the new pane is 11 rows of 39" "$(screen | grep -c '11 39$')" "1"
-check "split -v -- the border row is 12, right of the column" "$(row 12)" "$blank40│$(printf '─%.0s' $(seq 1 39))"
+check "split -v -- the border row is 12, right of the column" "$(row 12)" "${blank40}│$(printf '─%.0s' $(seq 1 39))"
 
 # next
 tmux send-keys -t "$s" C-b o
