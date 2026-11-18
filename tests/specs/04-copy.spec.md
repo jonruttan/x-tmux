@@ -439,3 +439,72 @@ cursor's column and row, with vi's keys and then emacs's.
 ```
 ---
     (('jump-forward 'jump-backward 'jump-to-forward 'jump-to-backward 'jump-again 'jump-reverse) ('jump-forward 'jump-backward 'jump-to-forward 'jump-to-backward 'jump-again 'jump-reverse))
+
+## rectangles
+
+A 20x6 pane, as tmux 3.8's rectangle-toggle with send -X, and
+copy-selection-no-clear for what a copy takes: after each `at` the
+cursor's column and row, and after each `copy` the selection's text,
+with vi's keys and then emacs's.
+
+### a rectangle's selection keeps the cursor's column up and down, past a row's end; end-of-line goes past the pane's edge; the columns copied from the left end to the right, emacs's leaving out the cursor's at the right
+
+```tmux
+(do (def h (spec-feed! vt-feed-pure! (vt-make-history 6 20 100) "abcdef\r\nab\r\nabcdefghij\r\n"))
+    (def run
+      (fn (_ c steps)
+        (rest (List fold
+                (fn (_ acc s)
+                  (match
+                    ((eq? s 'at) (pair (first acc) (List append (rest acc) (list (list (rest (copy-cursor (first acc))) (first (copy-cursor (first acc))))))))
+                    ((eq? s 'copy) (pair (first acc) (List append (rest acc) (list (copy-text (first acc) 'copy)))))
+                    (#t (pair (copy-do (first acc) s) (rest acc)))))
+                (pair c ()) steps))))
+    (def steps
+      '(history-top right right right right begin-selection rectangle-toggle down at down at copy left left left at copy
+        up at copy end-of-line at copy up at copy other-end at copy rectangle-toggle at copy rectangle-toggle at
+        clear-selection at))
+    (write (List map (fn (_ vi) (run (copy-enter h #f vi) steps)) (list #t #f))))
+```
+---
+    (((4 1) (4 2) "e\n\ne" (1 2) "bcde\nb\nbcde" (1 1) "bcde\nb\n" (20 1) "ef\n\n" (20 0) "ef\n" (4 0) "ef\n" (4 0) "ef\n" (4 0) (4 0)) ((4 1) (4 2) "e\n\ne" (1 2) "bcde\nb\nbcde" (1 1) "bcde\nb" (20 1) "ef\n" (20 0) "ef" (4 0) "ef" (4 0) "ef" (4 0) (4 0)))
+
+### with no selection a rectangle lets vi's cursor stop past a row's last character up and down; toggled off, the cursor goes back to its limit
+
+```tmux
+(do (def h (spec-feed! vt-feed-pure! (vt-make-history 6 20 100) "abcdef\r\nab\r\nabcdefghij\r\n"))
+    (def run
+      (fn (_ c steps)
+        (rest (List fold
+                (fn (_ acc s)
+                  (if (eq? s 'at)
+                    (pair (first acc) (List append (rest acc) (list (list (rest (copy-cursor (first acc))) (first (copy-cursor (first acc)))))))
+                    (pair (copy-do (first acc) s) (rest acc))))
+                (pair c ()) steps))))
+    (def steps
+      '(history-top rectangle-toggle end-of-line at down at down at up at up at rectangle-toggle at begin-selection
+        rectangle-toggle down down end-of-line at rectangle-toggle at clear-selection at))
+    (write (List map (fn (_ vi) (run (copy-enter h #f vi) steps)) (list #t #f))))
+```
+---
+    (((5 0) (2 1) (5 2) (2 1) (5 0) (5 0) (20 2) (9 2) (9 2)) ((6 0) (2 1) (10 2) (2 1) (6 0) (6 0) (20 2) (10 2) (10 2)))
+
+### drawn from its left end to its right on each of its rows, the cursor's column and all, either way round
+
+```tmux
+(do (def h (spec-feed! vt-feed-pure! (vt-make-history 6 20 100) "abcdef\r\nab\r\nabcdefghij\r\n"))
+    (def go (fn (_ c cmds) (List fold (fn (_ c s) (copy-do c s)) c cmds)))
+    (write (list (copy-marks (go (copy-enter h #f #t) '(history-top right begin-selection rectangle-toggle down down right right)))
+                 (copy-marks (go (copy-enter h #f #f) '(history-top right right right begin-selection rectangle-toggle down left left))))))
+```
+---
+    (((0 1 "bcd") (1 1 "b  ") (2 1 "bcd")) ((0 1 "bcd") (1 1 "b  ")))
+
+### the keys: emacs's R, vi's v and C-v
+
+```tmux
+(write (list (List map (fn (_ t) ((fn (_ b) (first (copy-key (%spec-str->ptr (first b)) 0 (rest b) #f))) (spec-bytes t))) (list "R"))
+             (List map (fn (_ t) ((fn (_ b) (first (copy-key (%spec-str->ptr (first b)) 0 (rest b) #t))) (spec-bytes t))) (list "v" "\x16"))))
+```
+---
+    (('rectangle-toggle) ('rectangle-toggle 'rectangle-toggle))

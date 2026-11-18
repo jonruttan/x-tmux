@@ -47,7 +47,8 @@
 #             answer; F, f and T moving the cursor by it on its row
 #   paste     two rows selected with emacs's keys and drawn black on
 #             yellow, M-w copying them, C-b ] typing them to a cat; a
-#             row the pane wrapped copied from C-a to C-e as one line
+#             row the pane wrapped copied from C-a to C-e as one line; R's
+#             rectangle drawn and copied by its columns
 #   windows   C-b c, 1, l, n, p: windows made and shown, the status line
 #             listing them with tmux's flags; a missing number refused for
 #             a moment; C-b & asked, a no keeping the window and a yes
@@ -437,6 +438,28 @@ sleep 1
 tmux send-keys -t "$s" Enter C-d
 sleep 1
 check "paste -- a wrapped row copied as one line" "$(cat "$fx/joined")" "$(printf '%0150d' 0)"
+# a rectangle, R with emacs's keys: drawn from its left end to its right
+# on each row, past a short row's end; copied short of the cursor's column
+tmux send-keys -t "$s" "clear; printf 'abcdef\\nab\\nabcdefghij\\n'" Enter
+wait_for 'abcdefghij'
+tmux send-keys -t "$s" C-b '['
+wait_for '[0/'
+tmux send-keys -t "$s" Up Up Up C-a C-f C-Space R Down Down C-f C-f
+sleep 1
+# the text drawn black on yellow in row R
+drawn() { tmux capture-pane -e -p -t "$s" -S "$1" -E "$1" | grep -o '43m[^[:cntrl:]]*' | head -1 | sed 's/^43m\(.*\)/[\1]/'; }
+check "paste -- a rectangle drawn on each of its rows" "$(drawn 0)$(drawn 1)$(drawn 2)$(drawn 3)" "[bcd][b  ][bcd]"
+tmux send-keys -t "$s" M-w
+sleep 1
+tmux send-keys -t "$s" "cat >$fx/block" Enter
+sleep 1
+tmux send-keys -t "$s" C-b ']'
+sleep 1
+tmux send-keys -t "$s" Enter C-d
+sleep 1
+check "paste -- a rectangle copied, its columns on each row" "$(cat "$fx/block")" "bc
+b
+bc"
 # the screen as the copy checks left it, for attach's
 tmux send-keys -t "$s" 'clear; echo still-here' Enter
 wait_for 'still-here'

@@ -33,7 +33,7 @@
 ; cursor is on apart, and the position counts them.
 ;
 ; A copy: (SNAP VIEW OFF CX CY LASTCX LASTSX EXIT SEL VI SEARCH COUNT
-; ORIGIN LAST JUMP), SNAP the copied screen, VIEW what it shows at OFF
+; ORIGIN LAST JUMP RECT), SNAP the copied screen, VIEW what it shows at OFF
 ; (tmux/vt's vt-view), EXIT whether a page down to the bottom ends the
 ; mode, as tmux's copy-mode -e, SEL the selection's other end, (LINE COL
 ; ROWS), or nil, and VI whether the keys are vi's.  LINE counts from the
@@ -44,7 +44,8 @@
 ; or nil when the matches are not marked;
 ; ORIGIN (OFF CX CY), where an incremental search began, or nil; LAST
 ; (TEXT REGEX DOWN), the search last run, REGEX whether as a regular
-; expression, or nil; JUMP (CMD . CHAR), the jump last run, or nil.
+; expression, or nil; JUMP (CMD . CHAR), the jump last run, or nil; RECT
+; whether a selection is a rectangle, as tmux's rectangle-toggle.
 
 (module tmux/copy)
 
@@ -73,6 +74,9 @@
 (def %origin (fn (_ c) (List ref 12 c)))
 (def %last (fn (_ c) (List ref 13 c)))
 (def %jumped (fn (_ c) (List ref 14 c)))
+(def %rect (fn (_ c) (List ref 15 c)))
+; Whether C has a selection that is a rectangle.
+(def %block? (fn (_ c) (if (%rect c) (not (null? (%sel c))) #f)))
 ; The slots from SEARCH on.
 (def %found (fn (_ c) ((fn (self xs n) (if (= n 0) xs (self (rest xs) (- n 1)))) c 10)))
 ; C with slot I V.
@@ -103,6 +107,9 @@
 ; The length of the row the cursor is on, and the column its end is.
 (def %length (fn (_ c) (vt-row-length (%view c) (%cy c))))
 (def %end (fn (_ c) ((fn (_ n) (if (if (%vi c) (< 0 n) #f) (- n 1) n)) (%length c))))
+; The column the cursor may go to at most, as tmux's window_copy_cursor_limit:
+; its end, or with a rectangle, as vi's virtualedit=block, the row's length.
+(def %limit (fn (_ c) (if (%rect c) (%length c) (%end c))))
 ; The cursor's line, as SEL's.
 (def %line (fn (_ c) (+ (- (%history c) (%off c)) (%cy c))))
 
@@ -113,7 +120,7 @@
     (def size (vt-size screen))
     (def snap (vt-carry screen (first size) (rest size)))
     (def at (vt-cursor screen))
-    (%copy (%head snap) 0 (%min (rest at) (- (rest size) 1)) (first at) 0 0 exit () vi (list () () () () ()))))
+    (%copy (%head snap) 0 (%min (rest at) (- (rest size) 1)) (first at) 0 0 exit () vi (list () () () () () #f))))
 
 ; C with the search its pane last ran, (TEXT . REGEX), or nil, to search
 ; again, up, as tmux's copy mode begins with its pane's.
@@ -153,26 +160,32 @@
 
 ; Before a move up or down: the cursor's column kept as LASTCX, with its
 ; row's length as LASTSX, unless it is at the row's end; then put back at
-; LASTCX.
+; LASTCX.  A rectangle's selection keeps the cursor's column as it is.
 (def %remember
   (fn (_ c)
-    (def ox (%length c))
-    (def kept (if (= (%cx c) ox) c (%with (%with c 5 (%cx c)) 6 ox)))
-    (%at-x kept (%lastcx kept))))
+    (if (%block? c) c
+      (do (def ox (%length c))
+          (def kept (if (= (%cx c) ox) c (%with (%with c 5 (%cx c)) 6 ox)))
+          (%at-x kept (%lastcx kept))))))
 ; After one: the cursor at the new row's end when it is past it, or when
-; it was at the end of the row it left and this one's end is elsewhere.
-; With whole rows selected, at the row's start above where the selection
-; began, else at its end.
+; it was at the end of the row it left and this one's end is elsewhere,
+; then at its limit at most, or after a PAGE its end, as tmux's page moves
+; go by its end of line.  With whole rows selected, at the row's start
+; above where the selection began, else at its end.  A rectangle's
+; selection leaves the cursor where it is.
 (def %settle
-  (fn (_ c)
-    (def px (%length c))
-    (%fit
-      (if (if (if (< (%cx c) (%lastsx c)) #f (not (= (%cx c) px))) #t (< px (%cx c)))
-        (%at-x c px)
-        c))))
+  (fn (_ c page)
+    (if (%block? c) c
+      (do (def px (%length c))
+          (def s
+            (if (if (if (< (%cx c) (%lastsx c)) #f (not (= (%cx c) px))) #t (< px (%cx c)))
+              (%at-x c px)
+              c))
+          (%fit s (if page (%end s) (%limit s)))))))
+; S with the cursor at E at most, or with whole rows selected, at its row's
+; start or E.
 (def %fit
-  (fn (_ s)
-    (def e (%end s))
+  (fn (_ s e)
     (match
       ((if (null? (%sel s)) #f (List ref 2 (%sel s))) (%at-x s (if (< (%line s) (first (%sel s))) 0 e)))
       ((< e (%cx s)) (%at-x s e))
@@ -184,14 +197,16 @@
     (%settle
       (if (= (%cy r) 0)
         (%moved r (%min (+ (%off r) 1) (%history r)) (%cx r) 0)
-        (%moved r (%off r) (%cx r) (- (%cy r) 1))))))
+        (%moved r (%off r) (%cx r) (- (%cy r) 1)))
+      #f)))
 (def %down
   (fn (_ c)
     (def r (%remember c))
     (%settle
       (if (= (%cy r) (- (%rows r) 1))
         (%moved r (%max (- (%off r) 1) 0) (%cx r) (%cy r))
-        (%moved r (%off r) (%cx r) (+ (%cy r) 1))))))
+        (%moved r (%off r) (%cx r) (+ (%cy r) 1)))
+      #f)))
 
 ; N rows a page up or down moves, a pane's rows less two or half of them.
 (def %page (fn (_ c half) (if (< 2 (%rows c)) (if half (>> (%rows c) 1) (- (%rows c) 2)) 1)))
@@ -202,7 +217,8 @@
     (%settle
       (if (< (%history r) (+ (%off r) n))
         (%moved r (%history r) (%cx r) (%max 0 (- (%cy r) n)))
-        (%moved r (+ (%off r) n) (%cx r) (%cy r))))))
+        (%moved r (+ (%off r) n) (%cx r) (%cy r)))
+      #t)))
 ; tmux's: short of a page from the bottom, the cursor goes down the page.
 (def %page-down
   (fn (_ c half)
@@ -212,7 +228,8 @@
       (%settle
         (if (< (%off r) n)
           (%moved r 0 (%cx r) (%min (+ (%cy r) n) (- (%rows r) 1)))
-          (%moved r (- (%off r) n) (%cx r) (%cy r)))))
+          (%moved r (- (%off r) n) (%cx r) (%cy r)))
+        #t))
     (if (if (%exit moved) (= (%off moved) 0) #f) () moved)))
 
 (def %left
@@ -247,20 +264,24 @@
 (def %last-line
   (fn (self c line)
     (if (if (< line (+ (%history c) (- (%rows c) 1))) (%wrapped? c line) #f) (self c (+ line 1)) line)))
-; The cursor at the end of its line, on the line's last row.
+; The cursor at the end of its line, on the line's last row; with a
+; rectangle's selection, past the pane's last column, as tmux's.
 (def %line-end
   (fn (_ c)
     (def last (%last-line c (%line c)))
     (def n (vt-line-length (%snap c) last))
-    (%goto c last (if (if (%vi c) (< 0 n) #f) (- n 1) n))))
+    (%goto c last (if (%block? c) (%cols c) (if (if (%vi c) (< 0 n) #f) (- n 1) n)))))
 
 ; The cursor to where the selection began, and the selection begun where
-; the cursor was.
+; the cursor was, at its limit at most with a rectangle.
 (def %other-end
   (fn (_ c)
     (def s (%sel c))
     (if (null? s) c
-      (%goto (%with c 8 (list (%line c) (%cx c) (List ref 2 s))) (first s) (List ref 1 s)))))
+      ((fn (_ o) (if (%rect o) (%clamp o) o))
+       (%goto (%with c 8 (list (%line c) (%cx c) (List ref 2 s))) (first s) (List ref 1 s))))))
+; C with the cursor at its limit at most.
+(def %clamp (fn (_ c) ((fn (_ e) (if (< e (%cx c)) (%at-x c e) c)) (%limit c))))
 
 ; The word at C's cursor, as tmux's copy_cursor_word: back from the
 ; cursor to a separator, the line's start, or a wrap's, then on to the
@@ -404,7 +425,7 @@
   (fn (_ c cmd)
     (def r (%do c cmd))
     (if (if (null? r) #t (null? (%count c))) r
-      (if (if (List find (fn (_ x) (eq? x cmd)) (lit (begin-selection clear-selection select-line))) #t
+      (if (if (List find (fn (_ x) (eq? x cmd)) (lit (begin-selection clear-selection select-line rectangle-toggle))) #t
             (if (%vi c) #f (not (null? (List find (fn (_ x) (eq? x cmd)) %moves)))))
         (%with (%with r 11 ()) 12 ())
         r))))
@@ -428,14 +449,15 @@
       ((eq? cmd (lit page-down)) (%page-down c #f))
       ((eq? cmd (lit halfpage-up)) (%page-up c #t))
       ((eq? cmd (lit halfpage-down)) (%page-down c #t))
-      ((eq? cmd (lit history-top)) (%fit (%moved c (%history c) 0 0)))
+      ((eq? cmd (lit history-top)) ((fn (_ t) (%fit t (%end t))) (%moved c (%history c) 0 0)))
       ((eq? cmd (lit history-bottom))
-        ((fn (_ b) (%fit (%at-x b (%end b)))) (%moved c 0 (%cx c) (- (%rows c) 1))))
+        ((fn (_ b) ((fn (_ e) (%fit (%at-x b e) e)) (%end b))) (%moved c 0 (%cx c) (- (%rows c) 1))))
       ((eq? cmd (lit start-of-line)) (%goto c (%first-line c (%line c)) 0))
       ((eq? cmd (lit end-of-line)) (%line-end c))
       ((eq? cmd (lit begin-selection)) (%with c 8 (list (%line c) (%cx c) #f)))
-      ((eq? cmd (lit clear-selection)) (%with c 8 ()))
-      ((eq? cmd (lit select-line)) (%line-end (%with c 8 (list (%first-line c (%line c)) 0 #t))))
+      ((eq? cmd (lit clear-selection)) (%clamp (%with c 8 ())))
+      ((eq? cmd (lit rectangle-toggle)) (%clamp (%with c 15 (not (%rect c)))))
+      ((eq? cmd (lit select-line)) (%line-end (%with (%with c 15 #f) 8 (list (%first-line c (%line c)) 0 #t))))
       ((eq? cmd (lit other-end)) (%other-end c))
       ((eq? cmd (lit cancel)) ())
       ((eq? cmd (lit copy)) ())
@@ -972,7 +994,48 @@
 ; Line LINE's cells FROM to TO-1, or nothing.
 (def %span (fn (_ c line from to) (if (< from to) (vt-line (%snap c) line from to) "")))
 
-; The selection's text, or nil when there is none, as tmux's
+; A rectangle's columns, as tmux copies it: from the left end, to past the
+; right end, the cursor's column left out at the right with emacs's keys,
+; and its lines, the earlier first: (FROM TO LO HI).
+(def %block
+  (fn (_ c)
+    (def s (%sel c))
+    (def x (List ref 1 s))
+    (def cx (%cx c))
+    (def a (first s))
+    (def b (%line c))
+    (if (< x cx)
+      (list x (if (%vi c) (+ cx 1) cx) (%min a b) (%max a b))
+      (list cx (+ x 1) (%min a b) (%max a b)))))
+; A rectangle's text, as tmux's window_copy_get_selection writes it: each
+; line's cells in its columns and a newline, a row that wrapped running to
+; the cells it holds and no newline where the columns take it to its end.
+; The last newline is left off with emacs's keys, or where the columns
+; stop at the last line's end or short of it, unless that row wrapped and
+; they stop at its end; nil when nothing is taken.
+(def %block-text
+  (fn (_ c)
+    (def b (%block c))
+    (def from (first b))
+    (def to (List ref 1 b))
+    (def hi (List ref 3 b))
+    (def row
+      (fn (_ line)
+        (def wrapped (%wrapped? c line))
+        (def xx (if wrapped (%held c line) (vt-line-length (%snap c) line)))
+        (def e (%min to xx))
+        (Str8 append (%span c line (%min from xx) e) (if (if wrapped (= e xx) #f) "" "\n"))))
+    (def all ((fn (self line acc) (if (< hi line) (Str8 join "" (List reverse acc)) (self (+ line 1) (pair (row line) acc))))
+              (List ref 2 b) ()))
+    (def tail (vt-line-length (%snap c) hi))
+    (def n (str-byte-len all))
+    (match
+      ((= n 0) ())
+      ((if (if (%vi c) (< tail to) #f) #f (if (%wrapped? c hi) (not (= to tail)) #t)) (str-byte-sub all 0 (- n 1)))
+      (#t all))))
+
+; The selection's text, a rectangle's as %block-text has it, or nil when
+; there is none, as tmux's
 ; window_copy_get_selection writes it.  A row runs to its last character
 ; and is followed by a newline; a row that wrapped runs to the cells it
 ; holds, its spaces kept, and goes on into the next row with no newline
@@ -981,7 +1044,8 @@
 ; newline is left off, but with vi's keys where the selection runs past
 ; the row's last character, unless the row wrapped and the selection
 ; stops at it.
-(def %selected
+(def %selected (fn (_ c) (if (%block? c) (%block-text c) (%stream-text c))))
+(def %stream-text
   (fn (_ c)
     (def ends (%ends c))
     (def lo (first ends))
@@ -1016,21 +1080,32 @@
       (#t ()))))
 
 ; The selection on C's view: (ROW COL TEXT) for each row it is on, from
-; the column it starts at, to the pane's edge on every row but its last.
+; the column it starts at, to the pane's edge on every row but its last;
+; a rectangle's from its left end to its right on each of its rows, as
+; tmux draws one, the cursor's column and all.
 (def copy-marks
   (fn (_ c)
     (if (null? (%sel c)) ()
-      (do (def ends (%ends c))
-          (def lo (first ends))
-          (def last (first (List ref 1 ends)))
-          (def stop (%min (%stop c ends) (%cols c)))
+      (do (def cols (%cols c))
+          (def span
+            (if (%block? c)
+              ((fn (_ x cx a b)
+                 (def from (%min x cx))
+                 (def to (%min (+ (%max x cx) 1) cols))
+                 (list (%min a b) (%max a b) from from to to))
+               (List ref 1 (%sel c)) (%cx c) (first (%sel c)) (%line c))
+              ((fn (_ ends) (list (first (first ends)) (first (List ref 1 ends)) (rest (first ends)) 0
+                                  (%min (%stop c ends) cols) cols))
+               (%ends c))))
+          (def lo (first span))
+          (def last (List ref 1 span))
           (def top (- (%history c) (%off c)))
           (List fold
             (fn (_ acc r)
               (def line (+ top r))
-              (def from (if (= line (first lo)) (rest lo) 0))
-              (def to (if (= line last) stop (%cols c)))
-              (if (if (< line (first lo)) #t (if (< last line) #t (not (< from to)))) acc
+              (def from (if (= line lo) (List ref 2 span) (List ref 3 span)))
+              (def to (if (= line last) (List ref 4 span) (List ref 5 span)))
+              (if (if (< line lo) #t (if (< last line) #t (not (< from to)))) acc
                 (List append acc (list (list r from (vt-line (%snap c) line from to))))))
             () (List range 0 (%rows c)))))))
 
@@ -1055,7 +1130,7 @@
         (pair 19 (lit incremental-down)) (pair 18 (lit incremental-up)) (pair 110 (lit search-again))
         (pair 78 (lit search-reverse)) (pair 102 (lit jump-forward)) (pair 70 (lit jump-backward))
         (pair 116 (lit jump-to-forward)) (pair 84 (lit jump-to-backward)) (pair 59 (lit jump-again))
-        (pair 44 (lit jump-reverse))))
+        (pair 44 (lit jump-reverse)) (pair 82 (lit rectangle-toggle))))
 (def %meta
   (list (pair 118 (lit page-up)) (pair 60 (lit history-top)) (pair 62 (lit history-bottom))
         (pair 119 (lit copy))))
@@ -1069,7 +1144,8 @@
         (pair 47 (lit prompt-down)) (pair 63 (lit prompt-up)) (pair 110 (lit search-again)) (pair 78 (lit search-reverse))
         (pair 42 (lit search-word-down)) (pair 35 (lit search-word-up)) (pair 102 (lit jump-forward))
         (pair 70 (lit jump-backward)) (pair 116 (lit jump-to-forward)) (pair 84 (lit jump-to-backward))
-        (pair 59 (lit jump-again)) (pair 44 (lit jump-reverse))))
+        (pair 59 (lit jump-again)) (pair 44 (lit jump-reverse)) (pair 118 (lit rectangle-toggle))
+        (pair 22 (lit rectangle-toggle))))
 ; The cursor keys and the paging keys, by a CSI's final, or a ~ sequence's
 ; number.
 (def %finals
