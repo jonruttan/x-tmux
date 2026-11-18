@@ -33,7 +33,7 @@
 ; cursor is on apart, and the position counts them.
 ;
 ; A copy: (SNAP VIEW OFF CX CY LASTCX LASTSX EXIT SEL VI SEARCH COUNT
-; ORIGIN LAST), SNAP the copied screen, VIEW what it shows at OFF
+; ORIGIN LAST JUMP), SNAP the copied screen, VIEW what it shows at OFF
 ; (tmux/vt's vt-view), EXIT whether a page down to the bottom ends the
 ; mode, as tmux's copy-mode -e, SEL the selection's other end, (LINE COL
 ; ROWS), or nil, and VI whether the keys are vi's.  LINE counts from the
@@ -44,7 +44,7 @@
 ; or nil when the matches are not marked;
 ; ORIGIN (OFF CX CY), where an incremental search began, or nil; LAST
 ; (TEXT REGEX DOWN), the search last run, REGEX whether as a regular
-; expression, or nil.
+; expression, or nil; JUMP (CMD . CHAR), the jump last run, or nil.
 
 (module tmux/copy)
 
@@ -72,6 +72,7 @@
 (def %count (fn (_ c) (List ref 11 c)))
 (def %origin (fn (_ c) (List ref 12 c)))
 (def %last (fn (_ c) (List ref 13 c)))
+(def %jumped (fn (_ c) (List ref 14 c)))
 ; The slots from SEARCH on.
 (def %found (fn (_ c) ((fn (self xs n) (if (= n 0) xs (self (rest xs) (- n 1)))) c 10)))
 ; C with slot I V.
@@ -112,7 +113,7 @@
     (def size (vt-size screen))
     (def snap (vt-carry screen (first size) (rest size)))
     (def at (vt-cursor screen))
-    (%copy (%head snap) 0 (%min (rest at) (- (rest size) 1)) (first at) 0 0 exit () vi (list () () () ()))))
+    (%copy (%head snap) 0 (%min (rest at) (- (rest size) 1)) (first at) 0 0 exit () vi (list () () () () ()))))
 
 ; C with the search its pane last ran, (TEXT . REGEX), or nil, to search
 ; again, up, as tmux's copy mode begins with its pane's.
@@ -311,6 +312,90 @@
       (if (List ref 2 from) (step (first from) (List ref 1 from)) (pair (first from) (List ref 1 from))))
     (Str8 join "" (List reverse (on start ())))))
 
+; --- jumps ----------------------------------------------------------------
+
+; C after a jump, CMD one of tmux's jump-forward, jump-backward,
+; jump-to-forward and jump-to-backward, to the character CHAR, kept for
+; jump-again and jump-reverse.
+(def copy-jump (fn (_ c cmd ch) (copy-do (%with c 14 (pair cmd ch)) (lit jump-again))))
+; jump-again, and jump-reverse with REVERSE: C's last jump again, its way
+; or the other, as tmux's grid reader jumps.  A jump stays on its line,
+; the rows a wrap joins: f to the next CHAR, F to the one before, t to the
+; cell before the next, T to the cell after the one before.  With emacs's
+; keys T can put the cursor past a row's last cell.
+(def %leap
+  (fn (_ c reverse)
+    (def j (%jumped c))
+    (if (null? j) c
+      (do (def h (%snap c))
+          (def cols (%cols c))
+          (def final (%final c))
+          (def ch (rest j))
+          (def byte (if (int= (str-byte-len ch) 1) (ptr-ref (str->ptr ch) 0 1) ()))
+          (def cell (fn (_ y x) (vt-line-cell h y x)))
+          (def holds?
+            (fn (_ y x)
+              (if (int< x cols)
+                ((fn (_ b) (if (null? byte) (if (int= b 128) (str=? (vt-line h y x (int+ x 1)) ch) #f) (int= b byte)))
+                 (cell y x))
+                #f)))
+          (def pad? (fn (_ y x) (if (int< x cols) (int= (cell y x) 129) #f)))
+          (def len (fn (_ y) (vt-line-length h y)))
+          (def wrapped? (fn (_ y) (vt-line-wrapped? h y)))
+          (def fwd
+            (fn (self y x)
+              (match
+                ((int< x (len y)) (if (holds? y x) (pair y x) (self y (int+ x 1))))
+                ((if (int= y final) #t (not (wrapped? y))) ())
+                (#t (self (int+ y 1) 0)))))
+          (def bwd
+            (fn (self y x)
+              (match
+                ((int< x 0)
+                  (if (if (int= y 0) #t (not (wrapped? (int- y 1)))) () (self (int- y 1) (int- (len (int- y 1)) 1))))
+                ((holds? y x) (pair y x))
+                (#t (self y (int- x 1))))))
+          (def left
+            (fn (_ at wrap)
+              (def y (first at))
+              (def x ((fn (self x) (if (if (int< 0 x) (pad? y x) #f) (self (int- x 1)) x)) (rest at)))
+              (match
+                ((if (int= x 0) (if (int< 0 y) (if wrap #t (wrapped? (int- y 1))) #f) #f) (pair (int- y 1) (len (int- y 1))))
+                ((int< 0 x) (pair y (int- x 1)))
+                (#t (pair y x)))))
+          (def right
+            (fn (_ at onemore)
+              (def y (first at))
+              (def x (rest at))
+              (def n (len y))
+              (def px
+                (if onemore n
+                  (if (int= n 0) 0 ((fn (self x) (if (if (int< 0 x) (pad? y x) #f) (self (int- x 1)) x)) (int- n 1)))))
+              (match
+                ((if (int< x px) #f (int< y final)) (pair (int+ y 1) 0))
+                ((int< x px) (pair y ((fn (self x) (if (if (int< x px) (pad? y x) #f) (self (int+ x 1)) x)) (int+ x 1))))
+                (#t at))))
+          (def here (pair (%line c) (%cx c)))
+          (def kind
+            ((fn (_ k)
+               (if reverse
+                 (match
+                   ((eq? k (lit jump-forward)) (lit jump-backward))
+                   ((eq? k (lit jump-backward)) (lit jump-forward))
+                   ((eq? k (lit jump-to-forward)) (lit jump-to-backward))
+                   (#t (lit jump-to-forward)))
+                 k))
+             (first j)))
+          (def to
+            (match
+              ((eq? kind (lit jump-forward)) (fwd (first here) (int+ (rest here) 1)))
+              ((eq? kind (lit jump-backward)) ((fn (_ l) (bwd (first l) (rest l))) (left here #f)))
+              ((eq? kind (lit jump-to-forward))
+                ((fn (_ r) (if (null? r) r (left r #t))) (fwd (first here) (int+ (rest here) 2))))
+              (#t ((fn (_ l) ((fn (_ r) (if (null? r) r (right r (not (%vi c))))) (bwd (first l) (rest l))))
+                   (left (left here #f) #f)))))
+          (if (null? to) c (%goto c (first to) (rest to)))))))
+
 ; C after the command CMD, or nil when CMD ends the mode.  The copying
 ; commands end it; copy-text has what they copy.  The matches are let go
 ; by a selection's commands, and with emacs's keys by a move too, and an
@@ -325,12 +410,14 @@
         r))))
 (def %moves
   (lit (up down left right page-up page-down halfpage-up halfpage-down history-top history-bottom
-        start-of-line end-of-line other-end)))
+        start-of-line end-of-line other-end jump-again jump-reverse)))
 (def %do
   (fn (_ c cmd)
     (match
       ((eq? cmd (lit search-again)) (%again c #f))
       ((eq? cmd (lit search-reverse)) (%again c #t))
+      ((eq? cmd (lit jump-again)) (%leap c #f))
+      ((eq? cmd (lit jump-reverse)) (%leap c #t))
       ((eq? cmd (lit search-word-down)) (copy-search c (%word c) #t #t))
       ((eq? cmd (lit search-word-up)) (copy-search c (%word c) #f #t))
       ((eq? cmd (lit up)) (%up c))
@@ -966,7 +1053,9 @@
         (pair 0 (lit begin-selection)) (pair 7 (lit clear-selection)) (pair 23 (lit copy))
         (pair 11 (lit copy-end-of-line))
         (pair 19 (lit incremental-down)) (pair 18 (lit incremental-up)) (pair 110 (lit search-again))
-        (pair 78 (lit search-reverse))))
+        (pair 78 (lit search-reverse)) (pair 102 (lit jump-forward)) (pair 70 (lit jump-backward))
+        (pair 116 (lit jump-to-forward)) (pair 84 (lit jump-to-backward)) (pair 59 (lit jump-again))
+        (pair 44 (lit jump-reverse))))
 (def %meta
   (list (pair 118 (lit page-up)) (pair 60 (lit history-top)) (pair 62 (lit history-bottom))
         (pair 119 (lit copy))))
@@ -978,7 +1067,9 @@
         (pair 32 (lit begin-selection)) (pair 13 (lit copy)) (pair 10 (lit copy)) (pair 86 (lit select-line))
         (pair 111 (lit other-end)) (pair 68 (lit copy-end-of-line)) (pair 65 (lit append))
         (pair 47 (lit prompt-down)) (pair 63 (lit prompt-up)) (pair 110 (lit search-again)) (pair 78 (lit search-reverse))
-        (pair 42 (lit search-word-down)) (pair 35 (lit search-word-up))))
+        (pair 42 (lit search-word-down)) (pair 35 (lit search-word-up)) (pair 102 (lit jump-forward))
+        (pair 70 (lit jump-backward)) (pair 116 (lit jump-to-forward)) (pair 84 (lit jump-to-backward))
+        (pair 59 (lit jump-again)) (pair 44 (lit jump-reverse))))
 ; The cursor keys and the paging keys, by a CSI's final, or a ~ sequence's
 ; number.
 (def %finals
@@ -1021,4 +1112,4 @@
 
 (provide tmux/copy copy-enter copy-resize copy-view copy-origin! copy-touch! copy-cursor copy-position
   copy-do copy-selecting? copy-text copy-marks copy-vi? copy-key copy-recall copy-searched copy-search
-  copy-incremental copy-matches copy-marked? copy-count-limit!)
+  copy-incremental copy-matches copy-marked? copy-count-limit! copy-jump)

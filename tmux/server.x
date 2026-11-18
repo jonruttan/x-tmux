@@ -73,7 +73,7 @@
 (import tmux/vt-jit vt-jit!)
 (import tmux/copy copy-enter copy-resize copy-view copy-origin! copy-touch! copy-cursor copy-position
   copy-do copy-selecting? copy-text copy-marks copy-vi? copy-key copy-recall copy-searched copy-search
-  copy-incremental copy-matches copy-marked?)
+  copy-incremental copy-matches copy-marked? copy-jump)
 (import tmux/layout layout-new layout-rects layout-borders layout-split layout-remove layout-panes
   layout-resize layout-fit layout-size layout-beside layout-relabel layout-names layout-arrange)
 (import tmux/command command-parse command-read command-list command-words command-matches command-flag)
@@ -81,7 +81,8 @@
 (import tmux/proto proto-conn proto-fd proto-send! proto-send-text! proto-fill! proto-each! proto-text
   proto-fields)
 
-(import x/core/doors str-make str->ptr ptr->str ptr->int int->ptr ptr-ref ptr-set! ptr-ref-word ptr-set-word! ptr-call str-byte-len)
+(import x/core/doors str-make str->ptr ptr->str ptr->int int->ptr ptr-ref ptr-set! ptr-ref-word ptr-set-word! ptr-call str-byte-len
+  int=)
 (def %num (fn (_ n) ((prim-ref (lit convert) (lit to)) n (Type named STRING) 10)))
 (def %to-int (fn (_ s) ((prim-ref (lit convert) (lit to)) s (Type named INTEGER) 10)))
 (def %int (fn (_ r) (if (> r 2147483647) (- r 4294967296) r)))
@@ -174,7 +175,7 @@
 (def %window 0)      ; the shown window's index
 (def %last ())       ; the indexes of the windows shown before, the latest first
 (def %cwd "")        ; where the session was made, where a new window starts
-(def %prompt ())     ; the question, (LABEL TEXT AT YES TYPED COMMAND CHANGED PANE), or nil
+(def %prompt ())     ; the question, (LABEL TEXT AT YES TYPED COMMAND CHANGED PANE ONE), or nil
 (def %message ())    ; the message on the status line, or nil
 (def %until 0)       ; when the message goes, in microseconds since the epoch
 (def %recent ())     ; the panes' ids, the most recently active first
@@ -740,7 +741,7 @@
 (def %ask!
   (fn (_ text yes)
     (set! %message ())
-    (set! %prompt (list text "" 0 yes #f #f () #f))
+    (set! %prompt (list text "" 0 yes #f #f () #f #f))
     (%draw-status)))
 
 ; LABEL on the status line and TEXT after it to be edited, the cursor at
@@ -749,7 +750,7 @@
 (def %ask-for!
   (fn (_ label text yes command)
     (set! %message ())
-    (set! %prompt (list label text (str-byte-len text) yes #t command () #f))
+    (set! %prompt (list label text (str-byte-len text) yes #t command () #f #f))
     (set! %back -1)
     (set! %choices "")
     (%draw-status)))
@@ -757,10 +758,11 @@
 ; LABEL asked on the active pane's bottom row, as tmux's command-prompt
 ; -P: YES called with the text Enter takes, and CHANGED, unless nil, with
 ; the text after a prefix each time it changes, as -i's, and at once.
+; With ONE, as -1, the first key typed is the answer.
 (def %ask-in-pane!
-  (fn (_ label yes changed)
+  (fn (_ label yes changed one)
     (set! %message ())
-    (set! %prompt (list label "" 0 yes #t #f changed #t))
+    (set! %prompt (list label "" 0 yes #t #f changed #t one))
     (set! %choices "")
     (set! %touched #t)
     (unless (null? changed) (changed "="))))
@@ -1568,7 +1570,7 @@
     (def len (str-byte-len text))
     (set! %choices "")
     (def show!
-      (fn (_ t a) (set! %prompt (list label t a yes #t command changed pane)) (%draw-status) (set! %touched #t)))
+      (fn (_ t a) (set! %prompt (list label t a yes #t command changed pane #f)) (%draw-status) (set! %touched #t)))
     (def put!
       (fn (_ t a) (show! t a) (unless (if (null? changed) #t (str=? t text)) (changed (Str8 append "=" t)))))
     (def stop!
@@ -1594,25 +1596,42 @@
           ((eq? k (lit up)) (recall! (+ %back 1)))
           ((eq? k (lit down)) (recall! (- %back 1)))
           (#t ()))))
-    (if (= b 27)
-      ((fn (_ k) (move! (first k)) (rest k)) (copy-key p i n #f))
-      (do (match
-            ((= b 13) (do (stop!) (yes text)))
-            ((if command (= b 9) #f) ((fn (_ c) (put! (first c) (rest c))) (%complete text at)))
-            ((if (null? changed) #f (= b 19)) (again! "+"))
-            ((if (null? changed) #f (= b 18)) (again! "-"))
-            ((if (= b 3) #t (= b 7)) (stop!))
-            ((= b 1) (move! (lit start-of-line)))
-            ((= b 5) (move! (lit end-of-line)))
-            ((= b 2) (move! (lit left)))
-            ((= b 6) (move! (lit right)))
-            ((= b 21) (put! "" 0))
-            ((= b 11) (put! (Str8 sub 0 at text) at))
-            ((if (= b 127) #t (= b 8))
-              (when (< 0 at) (put! (Str8 append (Str8 sub 0 (- at 1) text) (Str8 sub at (- len at) text)) (- at 1))))
-            ((< 31 b) (put! (Str8 append (Str8 sub 0 at text) (%byte b) (Str8 sub at (- len at) text)) (+ at 1)))
-            (#t ()))
-          (+ i 1)))))
+    (match
+      ((List ref 8 %prompt)
+        ((fn (_ k) (unless (null? (first k)) (do (stop!) (yes (first k)))) (rest k)) (%one-key p i n)))
+      ((= b 27) ((fn (_ k) (move! (first k)) (rest k)) (copy-key p i n #f)))
+      (#t (do (match
+              ((= b 13) (do (stop!) (yes text)))
+              ((if command (= b 9) #f) ((fn (_ c) (put! (first c) (rest c))) (%complete text at)))
+              ((if (null? changed) #f (= b 19)) (again! "+"))
+              ((if (null? changed) #f (= b 18)) (again! "-"))
+              ((if (= b 3) #t (= b 7)) (stop!))
+              ((= b 1) (move! (lit start-of-line)))
+              ((= b 5) (move! (lit end-of-line)))
+              ((= b 2) (move! (lit left)))
+              ((= b 6) (move! (lit right)))
+              ((= b 21) (put! "" 0))
+              ((= b 11) (put! (Str8 sub 0 at text) at))
+              ((if (= b 127) #t (= b 8))
+                (when (< 0 at) (put! (Str8 append (Str8 sub 0 (- at 1) text) (Str8 sub at (- len at) text)) (- at 1))))
+              ((< 31 b) (put! (Str8 append (Str8 sub 0 at text) (%byte b) (Str8 sub at (- len at) text)) (+ at 1)))
+              (#t ()))
+              (+ i 1))))))
+
+; The key at byte I of the N at P as a one-key prompt takes it, tmux's
+; -1: (TEXT . NEXT), TEXT the character, or nil for a key that is not one,
+; a sequence or a stray byte, and NEXT the byte after it.  Escape alone is
+; its own byte.
+(def %one-key
+  (fn (_ p i n)
+    (def b (ptr-ref p i 1))
+    (def bytes (fn (self j k acc) (if (int= k 0) acc (self (+ j 1) (- k 1) (Str8 append acc (%byte (ptr-ref p j 1)))))))
+    (def wide (match ((< b 128) 1) ((< b 192) 0) ((< b 224) 2) ((< b 240) 3) (#t 4)))
+    (match
+      ((if (= b 27) (< (+ i 1) n) #f) (pair () (rest (copy-key p i n #f))))
+      ((= wide 0) (pair () (+ i 1)))
+      ((< n (+ i wide)) (pair () n))
+      (#t (pair (bytes i wide "") (+ i wide))))))
 
 ; --- drawing ------------------------------------------------------------
 
@@ -1986,24 +2005,34 @@
     (when (null? (%pane-copy p))
       (do (%set-pane! (%with-copy p (copy-recall (copy-enter (%pane-screen p) exit %vi) (%pane-search p))))
           (%name-due! %window)))))
+; The prompt a jump's command CMD asks with, tmux's, or nil for another
+; command.
+(def %jump-label
+  (fn (_ cmd)
+    ((fn (_ e) (if (null? e) () (rest e)))
+     (List find (fn (_ e) (eq? (first e) cmd))
+       (list (pair (lit jump-forward) "(jump forward) ") (pair (lit jump-backward) "(jump backward) ")
+             (pair (lit jump-to-forward) "(jump to forward) ") (pair (lit jump-to-backward) "(jump to backward) "))))))
 ; The active pane's copy mode after CMD: what CMD copies kept, out of the
 ; mode, its screen drawn whole, when CMD ends it, and the view drawn whole
 ; while there is a selection or there are matches to draw over it, or
 ; there were.  A search's commands ask for its text in the pane, vi's
-; when Enter takes it, emacs's at each change.
+; when Enter takes it, emacs's at each change; a jump's for one key.
 (def %copy-do!
   (fn (_ cmd)
     (match
       ((eq? cmd (lit prompt-down))
-        (%ask-in-pane! "(search down) " (fn (_ text) (%searched! (fn (_ c) (copy-search c text #t #t)))) ()))
+        (%ask-in-pane! "(search down) " (fn (_ text) (%searched! (fn (_ c) (copy-search c text #t #t)))) () #f))
       ((eq? cmd (lit prompt-up))
-        (%ask-in-pane! "(search up) " (fn (_ text) (%searched! (fn (_ c) (copy-search c text #f #t)))) ()))
+        (%ask-in-pane! "(search up) " (fn (_ text) (%searched! (fn (_ c) (copy-search c text #f #t)))) () #f))
       ((eq? cmd (lit incremental-down))
         (%ask-in-pane! "(search down) " (fn (_ text) ())
-          (fn (_ arg) (%searched! (fn (_ c) (copy-incremental c arg #f))))))
+          (fn (_ arg) (%searched! (fn (_ c) (copy-incremental c arg #f)))) #f))
       ((eq? cmd (lit incremental-up))
         (%ask-in-pane! "(search up) " (fn (_ text) ())
-          (fn (_ arg) (%searched! (fn (_ c) (copy-incremental c arg #t))))))
+          (fn (_ arg) (%searched! (fn (_ c) (copy-incremental c arg #t)))) #f))
+      ((not (null? (%jump-label cmd)))
+        (%ask-in-pane! (%jump-label cmd) (fn (_ ch) (%copy-with! (fn (_ c) (copy-jump c cmd ch)))) () #t))
       (#t (do (def was (%pane-copy (%pane %active)))
               ((fn (_ text) (unless (if (null? text) #t (= (str-byte-len text) 0)) (%keep! text (eq? cmd (lit append)))))
                (copy-text was cmd))
