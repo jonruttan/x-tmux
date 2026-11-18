@@ -1246,6 +1246,14 @@
 ; Cell C of line LINE: its byte, 128 for a character in the extended
 ; buffer, 129 for padding; and its attribute, its style's number.
 (def vt-line-cell (fn (_ h line c) (ptr-ref (int->ptr (first (%line (rest h) line))) c 1)))
+; Line LINE's text written at P when each of its cells is a byte: its
+; COLS bytes, and #t; else nothing written, and #f.
+(def vt-line-into!
+  (fn (_ h line p)
+    (def s (rest h))
+    (def cols (%w s %COLS))
+    (def cells (int->ptr (first (%line s line))))
+    (if (= 0 (ptr-call %c-memchr cells %WIDE cols)) (do (ptr-call %c-memcpy p cells cols) #t) #f)))
 (def vt-line-attr
   (fn (_ h line c)
     (def s (rest h))
@@ -1269,6 +1277,8 @@
 (def vt-line-marks
   (fn (_ h line)
     ((fn (_ x) (list (& x %USED) (& (>> x 15) %USED) (= (& x %WRAP) %WRAP))) (%mark-word (rest h) line))))
+; Whether line LINE's text goes on into the next, its marks' WRAPPED.
+(def vt-line-wrapped? (fn (_ h line) (= (& (%mark-word (rest h) line) %WRAP) %WRAP)))
 ; Whether A's and B's lines, their history's and their screen's, have the
 ; same marks.
 (def vt-marks-same?
@@ -1364,6 +1374,6 @@
 (provide tmux/vt vt-make vt-make-history vt-feed! vt-render! vt-out vt-cursor vt-size vt-origin!
   vt-touch! vt-carry vt-row vt-row-length vt-attrs vt-history vt-history-row vt-history-attrs
   vt-history-same? vt-view vt-line vt-line-length vt-line-cell vt-line-attr vt-style-word vt-alternate
-  vt-line-marks vt-marks-same?
+  vt-line-marks vt-line-wrapped? vt-line-into! vt-marks-same?
   vt-feed-pure! vt-render-pure! vt-feed-compiled! vt-render-compiled! vt-adopt!
   vt-compiled? vt-style vt-cursor-shown? vt-cursor-keys? vt-bracketed?)
