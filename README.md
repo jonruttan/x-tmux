@@ -149,6 +149,7 @@ yellow, and copying it leaves the mode:
     emacs C-Space, vi Space    begin a selection
     emacs C-g, vi Escape       clear it
     vi V                       select whole lines
+    emacs R, vi v C-v          a rectangle, or back to rows
     vi o                       the cursor to the selection's other end
     emacs M-w C-w, vi Enter    copy it
     vi A                       copy it to the end of the newest buffer
@@ -163,6 +164,11 @@ into the next with no newline.  What is copied is kept as the newest of
 the server's paste buffers, 50 at most, and C-b `]` types the newest to
 the active pane, each newline a carriage return.  Keys and pastes a
 pane's program does not take at once wait for it, in order.
+
+A rectangle takes the same columns from each row, from its left end to
+its right, with emacs's keys short of the cursor's column where it is
+the right end.  While there is one the cursor keeps its column up and
+down, past a row's end, and the line's end is past the pane's edge.
 
 A search asks for its text on the pane's bottom row:
 
@@ -199,8 +205,8 @@ emacs's keys and vi's alike:
 A jump stays on its line, the rows a wrap joins, and with emacs's keys
 lets the matches go, as a move does.
 
-Not yet: rectangles, the buffer commands (`#`, `=`, `-`), and the time
-a row entered the history, which tmux shows beside the position.
+Not yet: the buffer commands (`#`, `=`, `-`), and the time a row
+entered the history, which tmux shows beside the position.
 
 ## The screen
 
