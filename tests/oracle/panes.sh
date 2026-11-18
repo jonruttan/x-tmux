@@ -43,6 +43,8 @@
 #             searching, the matches black on cyan and the one the cursor
 #             is on black on magenta, Enter keeping it with the count by
 #             the position, q leaving
+#   jumps     F asking for one key on the pane's bottom row, the key the
+#             answer; F, f and T moving the cursor by it on its row
 #   paste     two rows selected with emacs's keys and drawn black on
 #             yellow, M-w copying them, C-b ] typing them to a cat; a
 #             row the pane wrapped copied from C-a to C-e as one line
@@ -353,6 +355,28 @@ sleep 1
 tmux send-keys -t "$s" q
 sleep 1
 check "search -- q leaves, the matches gone" "$(screen | grep -c '\[[0-9]*/[0-9]*\]') $(match 7 '46m')" "0 0"
+
+# jumps
+tmux send-keys -t "$s" 'clear; echo jump-here x' Enter
+wait_for 'jump-here x'
+tmux send-keys -t "$s" C-b '['
+wait_for '[0/'
+cursor() { tmux display -p -t "$s" '#{cursor_x}'; }
+tmux send-keys -t "$s" Up F
+sleep 1
+check "jumps -- F asks on the pane's bottom row" "$(row 29)" "(jump backward)"
+tmux send-keys -t "$s" j
+sleep 1
+check "jumps -- the key typed is the answer: the cursor on the j, the prompt gone" \
+  "$(cursor) $(screen | grep -c '^(jump')" "0 0"
+tmux send-keys -t "$s" f x
+sleep 1
+check "jumps -- f on to the x" "$(cursor)" "10"
+tmux send-keys -t "$s" T h
+sleep 1
+check "jumps -- T back to the cell after the h" "$(cursor)" "6"
+tmux send-keys -t "$s" q
+sleep 1
 
 # paste
 tmux send-keys -t "$s" 'clear; echo one-two; echo three' Enter

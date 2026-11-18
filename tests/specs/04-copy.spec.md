@@ -398,3 +398,44 @@ cursor's column and row and the position, its count of the matches.
 ```
 ---
     (('incremental-down 'incremental-up 'search-again 'search-reverse) ('prompt-down 'prompt-up 'search-again 'search-reverse 'search-word-down 'search-word-up))
+
+## jumps
+
+A 20x6 pane, as tmux 3.8's jumped with send -X: after each command, the
+cursor's column and row, with vi's keys and then emacs's.
+
+### f F t T to a character on the cursor's line and over its wraps, ; again, , the other way; T with emacs's keys past a row's last cell
+
+```tmux
+(do (def h (spec-feed! vt-feed-pure! (vt-make-history 6 20 100) "abcabc x.y\r\nzzz abc\r\nabcdefghijklmnopqrstuvwxyz\r\n"))
+    (def at (fn (_ c) (list (rest (copy-cursor c)) (first (copy-cursor c)))))
+    (def steps
+      (fn (_ c fs) (rest (List fold (fn (_ acc f) ((fn (_ n) (pair n (List append (rest acc) (list (at n))))) (do (Heap collect) (f (first acc)))))
+                           (pair c ()) fs))))
+    (def k (fn (_ cmd) (fn (_ c) (copy-do c cmd))))
+    (def j (fn (_ cmd ch) (fn (_ c) (copy-jump c cmd ch))))
+    (def first-run
+      (list (k 'history-top) (j 'jump-forward "c") (k 'jump-again) (k 'jump-again) (k 'jump-reverse)
+            (j 'jump-to-forward "c") (k 'jump-again) (j 'jump-to-backward "a") (k 'jump-again) (k 'jump-reverse)
+            (j 'jump-forward "z") (j 'jump-forward "y") (j 'jump-backward "x") (j 'jump-backward "b")
+            (k 'down) (k 'down) (k 'down) (j 'jump-backward "q") (j 'jump-forward "x") (j 'jump-to-backward "s")
+            (j 'jump-to-forward "y") (k 'end-of-line) (j 'jump-to-backward "u") (j 'jump-forward "z")))
+    (def second-run
+      (list (k 'history-top) (k 'down) (k 'down) (k 'end-of-line) (k 'left) (j 'jump-to-forward "u") (k 'jump-reverse)
+            (j 'jump-to-forward "v") (k 'start-of-line) (j 'jump-backward "r") (j 'jump-to-backward "t")
+            (j 'jump-to-backward "t") (j 'jump-forward "u") (j 'jump-to-backward "t")))
+    (write (List map (fn (_ vi) (list (steps (copy-enter h #f vi) first-run) (steps (copy-enter h #f vi) second-run)))
+             (list #t #f))))
+```
+---
+    ((((0 0) (2 0) (5 0) (5 0) (2 0) (4 0) (4 0) (1 0) (1 0) (2 0) (2 0) (9 0) (7 0) (4 0) (4 1) (4 2) (4 3) (16 2) (3 3) (19 2) (3 3) (5 3) (1 3) (5 3)) ((0 0) (0 1) (0 2) (5 3) (4 3) (4 3) (1 3) (1 3) (0 2) (0 2) (0 2) (0 2) (0 3) (0 3))) (((0 0) (2 0) (5 0) (5 0) (2 0) (4 0) (4 0) (1 0) (1 0) (2 0) (2 0) (9 0) (7 0) (4 0) (4 1) (4 2) (4 3) (16 2) (3 3) (19 2) (3 3) (6 3) (1 3) (5 3)) ((0 0) (0 1) (0 2) (6 3) (5 3) (5 3) (1 3) (1 3) (0 2) (0 2) (0 2) (0 2) (0 3) (20 2))))
+
+### the keys, emacs's and vi's alike: f F t T ; ,
+
+```tmux
+(write (List map (fn (_ vi) (List map (fn (_ t) ((fn (_ b) (first (copy-key (%spec-str->ptr (first b)) 0 (rest b) vi))) (spec-bytes t)))
+                              (list "f" "F" "t" "T" ";" ",")))
+         (list #f #t)))
+```
+---
+    (('jump-forward 'jump-backward 'jump-to-forward 'jump-to-backward 'jump-again 'jump-reverse) ('jump-forward 'jump-backward 'jump-to-forward 'jump-to-backward 'jump-again 'jump-reverse))

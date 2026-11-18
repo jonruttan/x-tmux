@@ -188,9 +188,19 @@ The word at the cursor runs to a space or a character in tmux's
 word-separators, the printable ASCII not a letter, a digit or `_`,
 over a wrap; on a separator, it is the word after it.
 
-Not yet: rectangles, the buffer commands (`#`, `=`, `-`), the jumps
-(`f`, `F`, `t`, `T`), and the time a row entered the history, which
-tmux shows beside the position.
+A jump asks for one key on the pane's bottom row, the key typed its
+answer, and moves to that character on the cursor's line, with
+emacs's keys and vi's alike:
+
+    f F              to the next or the one before
+    t T              the cell before the next, or after the one before
+    ; ,              jump again, the same way or the other
+
+A jump stays on its line, the rows a wrap joins, and with emacs's keys
+lets the matches go, as a move does.
+
+Not yet: rectangles, the buffer commands (`#`, `=`, `-`), and the time
+a row entered the history, which tmux shows beside the position.
 
 ## The screen
 
