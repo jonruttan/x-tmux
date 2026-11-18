@@ -2007,7 +2007,7 @@
       (#t (do (def was (%pane-copy (%pane %active)))
               ((fn (_ text) (unless (if (null? text) #t (= (str-byte-len text) 0)) (%keep! text (eq? cmd (lit append)))))
                (copy-text was cmd))
-              (if (List find (fn (_ x) (eq? x cmd)) (lit (search-again search-reverse)))
+              (if (List find (fn (_ x) (eq? x cmd)) (lit (search-again search-reverse search-word-down search-word-up)))
                 (%searched! (fn (_ c) (copy-do c cmd)))
                 (%copy-with! (fn (_ c) (copy-do c cmd)))))))))
 ; The active pane's copy mode after F, a search, and the heap collected:

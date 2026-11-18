@@ -170,6 +170,7 @@ A search asks for its text on the pane's bottom row:
     emacs C-s C-r    search down or up as the text is typed; C-s and C-r
                      there search on, or with no text, take the last
     n N              search again, the same way or the other
+    vi * #           search down or up for the word at the cursor
 
 As tmux searches, a search goes on from the other end, and a line is
 searched as one, its wrapped rows and all.  Text all in lower case
@@ -183,9 +184,13 @@ puts it past the match's end.  A pane's last search is kept for its next
 copy mode, n searching up.  The matches go with a selection, and with
 emacs's keys with a move too.
 
-Not yet: rectangles, the buffer commands (`#`, `=`, `-`), vi's `*` and
-`#` (the word at the cursor), the jumps (`f`, `F`, `t`, `T`), and the
-time a row entered the history, which tmux shows beside the position.
+The word at the cursor runs to a space or a character in tmux's
+word-separators, the printable ASCII not a letter, a digit or `_`,
+over a wrap; on a separator, it is the word after it.
+
+Not yet: rectangles, the buffer commands (`#`, `=`, `-`), the jumps
+(`f`, `F`, `t`, `T`), and the time a row entered the history, which
+tmux shows beside the position.
 
 ## The screen
 
