@@ -261,6 +261,56 @@
     (if (null? s) c
       (%goto (%with c 8 (list (%line c) (%cx c) (List ref 2 s))) (first s) (List ref 1 s)))))
 
+; The word at C's cursor, as tmux's copy_cursor_word: back from the
+; cursor to a separator, the line's start, or a wrap's, then on to the
+; next separator or the line's end, a wrap carried; the cursor on a
+; separator takes the word after it.  A separator is a space or one of
+; word-separators' default, the printable ASCII not a letter, a digit or
+; `_`.  An empty string for none.
+(def %separator?
+  (fn (_ b)
+    (if (int< b 32) #f
+      (if (int< b 48) #t
+        (if (int< b 58) #f
+          (if (int< b 65) #t
+            (if (int< b 91) #f
+              (if (int< b 97) (not (int= b 95))
+                (if (int< b 123) #f (int< b 127))))))))))
+(def %word
+  (fn (_ c)
+    (def h (%snap c))
+    (def final (%final c))
+    (def sep? (fn (_ y x) ((fn (_ b) (if (int= b 129) #f (%separator? b))) (vt-line-cell h y x))))
+    (def back
+      (fn (self y x)
+        (match
+          ((sep? y x) (list y x #t))
+          ((int< 0 x) (self y (int- x 1)))
+          ((int= y 0) (list y x #f))
+          ((not (vt-line-wrapped? h (int- y 1))) (list y x #f))
+          (#t ((fn (_ n) (if (int= n 0) (list (int- y 1) 0 #f) (self (int- y 1) (int- n 1))))
+               (vt-line-length h (int- y 1)))))))
+    (def from (back (%line c) (%cx c)))
+    ; The cell after Y X on its line, or a wrap's next; nil at the end.
+    (def step
+      (fn (_ y x)
+        (def e (vt-line-length h y))
+        (if (if (int= e 0) #t (int= x (int- e 1)))
+          (if (if (int= y final) #t (not (vt-line-wrapped? h y))) () (pair (int+ y 1) 0))
+          (pair y (int+ x 1)))))
+    (def on
+      (fn (self at acc)
+        (if (null? at) acc
+          ((fn (_ y x b)
+             (match
+               ((int= b 129) (self (step y x) acc))
+               ((%separator? b) acc)
+               (#t (self (step y x) (pair (vt-line h y x (int+ x 1)) acc)))))
+           (first at) (rest at) (vt-line-cell h (first at) (rest at))))))
+    (def start
+      (if (List ref 2 from) (step (first from) (List ref 1 from)) (pair (first from) (List ref 1 from))))
+    (Str8 join "" (List reverse (on start ())))))
+
 ; C after the command CMD, or nil when CMD ends the mode.  The copying
 ; commands end it; copy-text has what they copy.  The matches are let go
 ; by a selection's commands, and with emacs's keys by a move too, and an
@@ -281,6 +331,8 @@
     (match
       ((eq? cmd (lit search-again)) (%again c #f))
       ((eq? cmd (lit search-reverse)) (%again c #t))
+      ((eq? cmd (lit search-word-down)) (copy-search c (%word c) #t #t))
+      ((eq? cmd (lit search-word-up)) (copy-search c (%word c) #f #t))
       ((eq? cmd (lit up)) (%up c))
       ((eq? cmd (lit down)) (%down c))
       ((eq? cmd (lit left)) (%left c))
@@ -925,7 +977,8 @@
         (pair 36 (lit end-of-line)) (pair 113 (lit cancel)) (pair 3 (lit cancel))
         (pair 32 (lit begin-selection)) (pair 13 (lit copy)) (pair 10 (lit copy)) (pair 86 (lit select-line))
         (pair 111 (lit other-end)) (pair 68 (lit copy-end-of-line)) (pair 65 (lit append))
-        (pair 47 (lit prompt-down)) (pair 63 (lit prompt-up)) (pair 110 (lit search-again)) (pair 78 (lit search-reverse))))
+        (pair 47 (lit prompt-down)) (pair 63 (lit prompt-up)) (pair 110 (lit search-again)) (pair 78 (lit search-reverse))
+        (pair 42 (lit search-word-down)) (pair 35 (lit search-word-up))))
 ; The cursor keys and the paging keys, by a CSI's final, or a ~ sequence's
 ; number.
 (def %finals

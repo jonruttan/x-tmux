@@ -365,13 +365,36 @@ cursor's column and row and the position, its count of the matches.
 ---
     (((0 0 "abc" #f) (1 3 "abc" #f) (2 0 "abc" #f) (2 4 "abc" #f) (2 8 "abc" #t)) ((0 0 "abc" #t) (1 3 "abc" #f) (2 0 "abc" #f) (2 4 "abc" #f) (2 8 "abc" #f)) ((0 18 "st" #t) (1 0 "uvw" #t)))
 
-### the keys: emacs's C-s C-r n N, vi's / ? n N
+### vi's * and #: the word at the cursor searched down or up, a wrap carried, the cursor on a separator taking the word after it; none on a blank row
+
+```tmux
+(do (copy-count-limit! 0)
+    (def h (spec-feed! vt-feed-pure! (vt-make-history 6 20 100) "foo.bar foo\r\nbar_x foo-bar\r\nabcdefghijklmnopqrstfoo\r\n"))
+    (def at (fn (_ c) (list (rest (copy-cursor c)) (first (copy-cursor c)) (copy-position c))))
+    (def steps
+      (fn (_ c fs) (rest (List fold (fn (_ acc f) ((fn (_ n) (pair n (List append (rest acc) (list (at n))))) (do (Heap collect) (f (first acc)))))
+                           (pair c ()) fs))))
+    (def k (fn (_ cmd) (fn (_ c) (copy-do c cmd))))
+    (write (list
+      (steps (copy-enter h #f #t)
+        (list (k 'search-word-down) (k 'up) (k 'search-word-down) (k 'search-word-up) (k 'up) (k 'right) (k 'right) (k 'right)
+              (k 'search-word-down) (k 'search-word-up) (k 'history-top) (k 'search-word-down) (k 'search-word-down)
+              (k 'search-word-up)))
+      (steps (copy-enter h #f #t)
+        (list (k 'history-top) (k 'right) (k 'right) (k 'right) (k 'search-word-down) (k 'search-word-down)
+              (k 'search-word-down) (k 'search-word-up) (k 'end-of-line) (k 'left) (k 'left) (k 'left) (k 'search-word-up)
+              (k 'search-again))))))
+```
+---
+    (((0 4 "[0/0]") (2 3 "[0/0]") (0 2 "[0/0] (1 results)") (0 2 "[0/0] (1 results)") (0 1 "[0/0] (1 results)") (1 1 "[0/0] (1 results)") (2 1 "[0/0] (1 results)") (3 1 "[0/0] (1 results)") (0 1 "[0/0] (1 results)") (0 1 "[0/0] (1 results)") (0 0 "[0/0] (1 results)") (8 0 "[0/0] (4 results)") (6 1 "[0/0] (4 results)") (8 0 "[0/0] (4 results)")) ((0 0 "[0/0]") (1 0 "[0/0]") (2 0 "[0/0]") (3 0 "[0/0]") (4 0 "[0/0] (3 results)") (0 1 "[0/0] (3 results)") (0 1 "[0/0] (1 results)") (0 1 "[0/0] (1 results)") (12 1 "[0/0] (1 results)") (11 1 "[0/0] (1 results)") (10 1 "[0/0] (1 results)") (9 1 "[0/0] (1 results)") (0 1 "[0/0] (3 results)") (4 0 "[0/0] (3 results)")))
+
+### the keys: emacs's C-s C-r n N, vi's / ? n N * #
 
 ```tmux
 (write (list (List map (fn (_ t) ((fn (_ b) (first (copy-key (%spec-str->ptr (first b)) 0 (rest b) #f))) (spec-bytes t)))
                (list "\x13" "\x12" "n" "N"))
              (List map (fn (_ t) ((fn (_ b) (first (copy-key (%spec-str->ptr (first b)) 0 (rest b) #t))) (spec-bytes t)))
-               (list "/" "?" "n" "N"))))
+               (list "/" "?" "n" "N" "*" "#"))))
 ```
 ---
-    (('incremental-down 'incremental-up 'search-again 'search-reverse) ('prompt-down 'prompt-up 'search-again 'search-reverse))
+    (('incremental-down 'incremental-up 'search-again 'search-reverse) ('prompt-down 'prompt-up 'search-again 'search-reverse 'search-word-down 'search-word-up))
