@@ -25,6 +25,8 @@
 ;   ,   rename the window                         d   detach the client
 ;   [   copy mode (tmux/copy)                     PgUp  copy mode, a page up
 ;   ]   paste the newest buffer                   C-b a C-b to the pane
+;   #   list the buffers                          =   choose a buffer to paste
+;   -   delete the newest buffer
 ;   z   zoom the active pane, or back             arrows  the pane that way
 ;   C-arrows  move its border a cell              M-arrows  5 cells
 ;   ;   the pane active before                    q   the panes' numbers
@@ -42,9 +44,10 @@
 ; main ones mirrored.
 ; In copy mode the active pane shows its history and keys move through
 ; it; PgUp's ends at the bottom.  What copy mode copies is kept as the
-; newest of the server's paste buffers, 50 at most, as tmux keeps them,
-; and a paste types it to the active pane, each newline a carriage
-; return.  Keys and pastes the pane's program does not take at once wait
+; newest of the server's paste buffers (tmux/paste), 50 at most, as tmux
+; keeps them, and a paste types it to the active pane, each newline a
+; carriage return.  Choosing a buffer shows them in a list (tmux/tree)
+; over the active pane, tmux's buffer mode.  Keys and pastes the pane's program does not take at once wait
 ; for it, in order.  A question on the status line takes y
 ; for yes and any other key for no; a name asked for is typed and edited
 ; there, Enter taking it and Escape leaving it.  A window is named after
@@ -80,6 +83,9 @@
 (import tmux/keys key-read key-name key-bytes key-text-bytes)
 (import tmux/proto proto-conn proto-fd proto-send! proto-send-text! proto-fill! proto-each! proto-text
   proto-fields)
+(import tmux/paste paste-empty paste-buffers paste-name paste-data paste-created paste-size paste-named paste-top
+  paste-free paste-add paste-set paste-rename paste-sorted paste-sample paste-shown)
+(import tmux/tree tree-enter tree-build tree-key tree-up tree-down tree-resize tree-current tree-tagged tree-screen)
 
 (import x/core/doors str-make str->ptr ptr->str ptr->int int->ptr ptr-ref ptr-set! ptr-ref-word ptr-set-word! ptr-call str-byte-len
   int=)
@@ -137,9 +143,11 @@
 
 ; --- the session being worked on -----------------------------------------
 
-; A pane: (ID PID FD SCREEN RECT COPY SEARCH), RECT (ROW COL ROWS COLS),
-; COPY its copy mode or nil, SEARCH the search its copy mode last ran,
-; (TEXT . REGEX), or nil.
+; A pane: (ID PID FD SCREEN RECT COPY SEARCH CHOOSE), RECT (ROW COL ROWS
+; COLS), COPY its copy mode or nil, SEARCH the search its copy mode last
+; ran, (TEXT . REGEX), or nil, CHOOSE its buffer mode or nil.  A buffer
+; mode is over a copy mode as tmux stacks its modes, and leaving it shows
+; the copy mode again.
 (def %pane-id (fn (_ p) (first p)))
 (def %pane-pid (fn (_ p) (List ref 1 p)))
 (def %pane-fd (fn (_ p) (List ref 2 p)))
@@ -147,10 +155,17 @@
 (def %pane-rect (fn (_ p) (List ref 4 p)))
 (def %pane-copy (fn (_ p) (List ref 5 p)))
 (def %pane-search (fn (_ p) (List ref 6 p)))
+(def %pane-choose (fn (_ p) (List ref 7 p)))
 (def %with-copy
   (fn (_ p c)
     (list (%pane-id p) (%pane-pid p) (%pane-fd p) (%pane-screen p) (%pane-rect p) c
-      ((fn (_ s) (if (null? s) (%pane-search p) s)) (if (null? c) () (copy-searched c))))))
+      ((fn (_ s) (if (null? s) (%pane-search p) s)) (if (null? c) () (copy-searched c)))
+      (%pane-choose p))))
+(def %with-choose
+  (fn (_ p m)
+    (list (%pane-id p) (%pane-pid p) (%pane-fd p) (%pane-screen p) (%pane-rect p) (%pane-copy p) (%pane-search p) m)))
+; Whether pane P shows a mode, copy or buffer.
+(def %in-mode? (fn (_ p) (if (null? (%pane-copy p)) (not (null? (%pane-choose p))) #t)))
 
 ; A window: (INDEX TREE ACTIVE NAME AUTO CHECKED DUE ZOOMED ORDER LAYOUT
 ; ID), its layout, its active pane's id, its name, whether the name
@@ -269,7 +284,7 @@
     (def child (%shell cols rows cwd id))
     (when (null? child) (Err raise 'io "x-tmux: no pseudo-terminal for a pane" ()))
     (def screen (vt-origin! (vt-make-history rows cols (%option "history-limit")) (first rect) (List ref 1 rect)))
-    (set! %panes (List append %panes (list (list id (first child) (rest child) screen rect () ()))))
+    (set! %panes (List append %panes (list (list id (first child) (rest child) screen rect () () ()))))
     (set! %recent (pair id %recent))
     id))
 
@@ -281,8 +296,8 @@
 
 ; Every pane of window W placed where its layout puts it now, its zoomed
 ; pane over the whole window: a pane whose size has changed carried to a
-; screen of the new size, its terminal told, and its copy mode carried
-; too; every screen and copy marked to be drawn whole.
+; screen of the new size, its terminal told, and its copy mode and buffer
+; mode carried too; every screen and mode marked to be drawn whole.
 (def %place!
   (fn (_ w)
     (def whole (list 0 0 (%pane-rows) %cols))
@@ -302,7 +317,11 @@
           (if (null? (%pane-copy p)) ()
             (copy-touch! (copy-origin! (if same (%pane-copy p) (copy-resize (%pane-copy p) rows cols))
                            (first rect) (List ref 1 rect)))))
-        (%set-pane! (list (%pane-id p) (%pane-pid p) (%pane-fd p) screen rect c (%pane-search p))))
+        (def m
+          (if (null? (%pane-choose p)) ()
+            (%choose-with (%pane-choose p) (if same (first (%pane-choose p)) (tree-resize (first (%pane-choose p)) rows cols)))))
+        (%set-pane! (list (%pane-id p) (%pane-pid p) (%pane-fd p) screen rect c (%pane-search p) m))
+        (unless (null? m) (%choose-touch! (%pane (%pane-id p)))))
       (List map (fn (_ r) (if (if (List ref 7 w) (= (first r) (List ref 2 w)) #f) (pair (first r) whole) r))
         (layout-rects (List ref 1 w) 0 0)))))
 
@@ -675,7 +694,7 @@
     (%window-set! i 6 #f)
     (when (List ref 4 w)
       (do (def p (%pane (List ref 2 w)))
-          (def name (if (null? (%pane-copy p)) (%program (%pane-fd p)) "[tmux]"))
+          (def name (if (%in-mode? p) "[tmux]" (%program (%pane-fd p))))
           (unless (if (null? name) #t (str=? name (List ref 3 w)))
             (do (%window-set! i 3 name) (%draw-status) (set! %touched #t)))))))
 
@@ -1036,6 +1055,7 @@
 (def %defaults
   (Str8 join "\n"
     (list "bind C-b send-prefix" "bind C-o rotate-window" "bind Space next-layout" "bind '\"' split-window"
+      "bind '#' list-buffers" "bind - delete-buffer" "bind = choose-buffer -Z"
       "bind % split-window -h" "bind & confirm-before -p \"kill-window #W? (y/n)\" kill-window"
       "bind , command-prompt -I \"#W\" { rename-window -- \"%%\" }"
       "bind 0 select-window -t :=0" "bind 1 select-window -t :=1" "bind 2 select-window -t :=2"
@@ -1336,7 +1356,51 @@
               (%source (%home (first paths))))))
          args))
       ((is? "wait-for") (%wait-for (first args) (on? "S") (on? "L") (on? "U")))
+      ((is? "list-buffers")
+        ((fn (_ order)
+           (if (if (null? order) (on? "O") #f) "invalid sort order"
+             ((fn (_ lines)
+                (match
+                  ((null? lines) ())
+                  ((if %asked #t (null? %current)) (List for-each %said! lines))
+                  (#t (%show-lines! lines)))
+                ())
+              (List map (fn (_ b) (%buffer-expand (format %list-buffers-format) b))
+                (List filter (fn (_ b) (if (on? "f") (format-true? (%buffer-expand (command-flag flags "f") b)) #t))
+                  (paste-sorted %paste (if (null? order) (lit creation) order) (on? "r")))))))
+         (if (on? "O") (%sort-order (command-flag flags "O")) ())))
+      ((is? "delete-buffer")
+        ((fn (_ name)
+           (def b (if (null? name) (paste-top %paste) (paste-named %paste name)))
+           (match
+             ((if (null? b) (not (null? name)) #f) (Str8 append "unknown buffer: " name))
+             ((null? b) "no buffer")
+             (#t (done (%paste-set! (paste-free %paste (paste-name b)))))))
+         (command-flag flags "b")))
+      ((is? "set-buffer")
+        ((fn (_ name)
+           (def b (if (null? name) () (paste-named %paste name)))
+           (def top (if (null? name) (paste-top %paste) b))
+           (match
+             ((on? "n")
+               (match
+                 ((if (null? top) (not (null? name)) #f) (Str8 append "unknown buffer: " name))
+                 ((null? top) "no buffer")
+                 (#t ((fn (_ r) (if (null? (rest r)) (done (%paste-set! (first r))) (rest r)))
+                      (paste-rename %paste (paste-name top) (command-flag flags "n"))))))
+             ((null? args) "no data specified")
+             (#t ((fn (_ r) (if (null? (rest r)) (done (%paste-set! (first r))) (rest r)))
+                  (paste-set %paste (if (if (on? "a") (not (null? b)) #f) (Str8 append (paste-data b) (first args)) (first args))
+                    name %buffer-limit (Sys now))))))
+         ((fn (_ n) (if (eq? n #t) () n)) (command-flag flags "b"))))
       ((null? %current) "no current session")
+      ((is? "choose-buffer")
+        ((fn (_ order)
+           (if (if (null? order) (on? "O") #f) "invalid sort order"
+             (done (%choose! (if (null? order) (lit creation) order) (on? "r") (on? "N") (on? "Z")
+                     (if (on? "f") (command-flag flags "f") ()) (format %choose-format)
+                     (if (null? args) %choose-command (first args))))))
+         (if (on? "O") (%sort-order (command-flag flags "O")) ())))
       ((is? "command-prompt")
         (done (%command-prompt! (command-flag flags "p") (command-flag flags "I") (if (null? args) () (first args)))))
       ((is? "confirm-before")
@@ -1484,13 +1548,17 @@
       ((is? "display-panes") (done (%show-numbers!)))
       ((is? "copy-mode") (done (do (%copy! (if (on? "u") #t (on? "e"))) (when (on? "u") (%copy-do! (lit page-up))))))
       ((is? "paste-buffer")
-        (done (unless (null? %buffers)
-                (do (def fd (%pane-fd (%pane %active)))
-                    (def send! (fn (_ t) (%send! fd (str->ptr t) (str-byte-len t))))
-                    (def bracket (if (on? "p") (vt-bracketed? (%pane-screen (%pane %active))) #f))
-                    (when bracket (send! (%esc "[200~")))
-                    (send! (%typed (first %buffers)))
-                    (when bracket (send! (%esc "[201~")))))))
+        ((fn (_ name)
+           (def b (if (null? name) (paste-top %paste) (paste-named %paste name)))
+           (if (if (null? b) (not (null? name)) #f) (Str8 append "no buffer " name)
+             (done (unless (null? b)
+                     (do (def fd (%pane-fd (%pane %active)))
+                         (def send! (fn (_ t) (%send! fd (str->ptr t) (str-byte-len t))))
+                         (def bracket (if (on? "p") (vt-bracketed? (%pane-screen (%pane %active))) #f))
+                         (when bracket (send! (%esc "[200~")))
+                         (send! (%typed (paste-data b)))
+                         (when bracket (send! (%esc "[201~"))))))))
+         ((fn (_ n) (if (eq? n #t) () n)) (command-flag flags "b"))))
       ((is? "capture-pane")
         (pane!
           (fn (_ id wi)
@@ -1705,9 +1773,13 @@
 (def %status? (fn (_) (str=? (%option "status") "on")))
 (def %pane-rows (fn (_) (if (%status?) (- %rows 1) %rows)))
 
-; Pane P's screen, or its copy, to be drawn whole.
+; Pane P's screen, or its mode's, to be drawn whole.
 (def %touch-pane!
-  (fn (_ p) (if (null? (%pane-copy p)) (vt-touch! (%pane-screen p)) (copy-touch! (%pane-copy p)))))
+  (fn (_ p)
+    (match
+      ((not (null? (%pane-choose p))) (%choose-touch! p))
+      ((null? (%pane-copy p)) (vt-touch! (%pane-screen p)))
+      (#t (copy-touch! (%pane-copy p))))))
 
 ; TEXT cut or padded to the terminal's width.
 (def %fit
@@ -1811,7 +1883,7 @@
         ((str=? name "pane_width") (%num (List ref 3 rect)))
         ((str=? name "pane_height") (%num (List ref 2 rect)))
         ((str=? name "pane_active") (yes (= id (List ref 2 w))))
-        ((str=? name "pane_in_mode") (yes (not (null? (%pane-copy p)))))
+        ((str=? name "pane_in_mode") (yes (%in-mode? p)))
         ((str=? name "client_width") (%num %cols))
         ((str=? name "client_height") (%num %rows))
         ((str=? name "client_prefix") (yes %prefix))
@@ -1903,22 +1975,29 @@
 ; copy's with the position over its top right, the panes' numbers over
 ; them while they show, then the cursor where the active pane has it, or
 ; after the question on the status line.  The cursor is shown unless the
-; active pane's program hid it, outside copy mode and the prompt.
+; active pane's program hid it, outside copy mode and the prompt, or the
+; pane is in buffer mode, which hides it as tmux's does.
 (def %render!
   (fn (_)
     (%out (%esc "[?25l"))
     (List for-each
       (fn (_ id)
+        (%choose-fresh! (%pane id))
         (def p (%pane id))
-        (def c (%pane-copy p))
-        (def h (if (null? c) (%pane-screen p) (copy-view c)))
+        (def m (%pane-choose p))
+        (def c (if (null? m) (%pane-copy p) ()))
+        (def h (match ((not (null? m)) (tree-screen (first m))) ((null? c) (%pane-screen p)) (#t (copy-view c))))
         (def n (vt-render! h))
         (%out-bytes (vt-out h) n)
         (when (if (null? c) #f (< 0 n)) (do (%draw-matches p c) (%draw-selection p c) (%draw-position p c))))
       (%shown))
     (when (< 0 %numbers) (%draw-numbers))
     (def p (%pane %active))
-    (def c (if (null? (%pane-copy p)) (vt-cursor (%pane-screen p)) (copy-cursor (%pane-copy p))))
+    (def c
+      (match
+        ((not (null? (%pane-choose p))) (vt-cursor (tree-screen (first (%pane-choose p)))))
+        ((null? (%pane-copy p)) (vt-cursor (%pane-screen p)))
+        (#t (copy-cursor (%pane-copy p)))))
     (def rect (%pane-rect p))
     (def bottom (+ (first rect) (- (List ref 2 rect) 1)))
     (when (%in-pane?)
@@ -1936,7 +2015,9 @@
                      (%min (+ (str-byte-len (first %prompt)) (- (List ref 2 %prompt) (%scrolled (List ref 3 rect))))
                        (- (List ref 3 rect) 1)))))
               (#t (%goto (- %rows 1) (%min (+ (str-byte-len (first %prompt)) (- (List ref 2 %prompt) (%scrolled %cols))) (- %cols 1)))))
-            (if (if (null? %prompt) (if (null? (%pane-copy p)) (not (vt-cursor-shown? (%pane-screen p))) #f) #f)
+            (if (if (null? %prompt)
+                  (if (null? (%pane-choose p)) (if (null? (%pane-copy p)) (not (vt-cursor-shown? (%pane-screen p))) #f) #t)
+                  #f)
               ""
               (%esc "[?25h"))))))
 
@@ -2058,18 +2139,187 @@
 
 ; --- paste buffers ------------------------------------------------------
 
-(def %buffers ())    ; the paste buffers, the newest first
+(def %paste paste-empty)   ; the paste buffers, tmux/paste's store
+(def %paste-gen 0)         ; how many times the store has changed
 (def %buffer-limit 50)
 
-; TEXT kept as the newest buffer, or, APPEND, added to its end; the oldest
-; let go past the limit.
+; TEXT kept as the newest buffer, or, APPEND, added to the end of the
+; newest automatic one, which tmux then sets again by its name.
 (def %keep!
   (fn (_ text append)
-    (set! %buffers
-      (if (if append (not (null? %buffers)) #f)
-        (pair (Str8 append (first %buffers) text) (rest %buffers))
-        ((fn (self xs n) (if (if (null? xs) #t (= n 0)) () (pair (first xs) (self (rest xs) (- n 1)))))
-         (pair text %buffers) %buffer-limit)))))
+    (def top (paste-top %paste))
+    (%paste-set!
+      (if (if append (not (null? top)) #f)
+        (first (paste-set %paste (Str8 append (paste-data top) text) (paste-name top) %buffer-limit (Sys now)))
+        (paste-add %paste text %buffer-limit (Sys now))))))
+
+; The store made STORE: a buffer mode built before is built again before
+; it is next drawn or given a key, in whichever session it is.
+(def %paste-set!
+  (fn (_ store)
+    (set! %paste store)
+    (set! %paste-gen (+ %paste-gen 1))))
+
+; Buffer B's value for a format NAME, or LOOK's.
+(def %buffer-look
+  (fn (_ b look)
+    (fn (_ name)
+      (match
+        ((str=? name "buffer_name") (paste-name b))
+        ((str=? name "buffer_size") (%num (paste-size b)))
+        ((str=? name "buffer_sample") (paste-sample b))
+        ((str=? name "buffer_full") (paste-data b))
+        ((str=? name "buffer_created") (%num (paste-created b)))
+        ((str=? name "buffer_mode_format") %choose-format)
+        (#t (look name))))))
+; FORMAT expanded for buffer B, in the active pane when there is a
+; session.
+(def %buffer-expand
+  (fn (_ format b)
+    (format-expand format
+      (%buffer-look b (if (null? %current) (fn (_ name) ()) (%look (%window-at %window) %active))))))
+
+; list-buffers' line, tmux's.
+(def %list-buffers-format "#{buffer_name}: #{buffer_size} bytes: \"#{buffer_sample}\"")
+; A sort order by tmux's name, or nil.
+(def %sort-order
+  (fn (_ s)
+    ((fn (_ e) (if (null? e) () (rest e)))
+     (List find (fn (_ e) (str=? (first e) (Str8 downcase s)))
+       (list (pair "creation" (lit creation)) (pair "name" (lit name)) (pair "title" (lit name))
+             (pair "size" (lit size)))))))
+
+; --- buffer mode ----------------------------------------------------------
+
+; A buffer mode is (TREE ZOOMED COMMAND GEN): ZOOMED whether choosing
+; zoomed the window, to put it back as the mode ends, COMMAND what Enter
+; runs, %% the buffer's name, GEN the store's %paste-gen it was built at.
+(def %choose-format "#{t/p:buffer_created}: #{buffer_sample}")
+(def %choose-command "paste-buffer -p -b '%%'")
+(def %choose-with (fn (_ m t) (list t (List ref 1 m) (List ref 2 m) %paste-gen)))
+
+; choose-buffer, tmux's: the active pane into buffer mode, unless there
+; are no buffers.  The list is sorted by ORDER, REVERSED, and shows the
+; buffers FILTER is true for (all of them when it is true for none), each
+; name followed by FORMAT, with a preview unless OFF; ZOOM zooms the
+; window for it.
+(def %choose!
+  (fn (_ order reversed off zoom filter format command)
+    (unless (null? (paste-buffers %paste))
+      (do (def build
+            (fn (_ order reversed)
+              (def all (paste-sorted %paste order reversed))
+              (def item (fn (_ b) (list (paste-name b) (paste-name b) (%buffer-expand format b))))
+              (def kept (if (null? filter) all (List filter (fn (_ b) (format-true? (%buffer-expand filter b))) all)))
+              (List map item (if (null? kept) all kept))))
+          (def show
+            (fn (_ name cols rows)
+              ((fn (_ b) (if (null? b) () (List map paste-shown (Str8 split "\n" (paste-data b)))))
+               (paste-named %paste name))))
+          (def zoomed (if zoom (if (%zoomed?) #f (< 1 (List length (%order)))) #f))
+          (when zoomed (%zoom!))
+          (def p (%pane %active))
+          (def rect (%pane-rect p))
+          (%set-pane! (%with-choose p
+                        (list (tree-enter build show (List ref 2 rect) (List ref 3 rect) (lit (creation name size))
+                                order reversed (if off (lit off) (lit normal)))
+                          zoomed command %paste-gen)))
+          (%choose-touch! (%pane %active))
+          (%name-due! %window)))))
+
+; Pane P's buffer mode with tree T, drawn whole: no buffers left, it ends.
+(def %choose-set!
+  (fn (_ p t)
+    (if (null? (tree-current t)) (%choose-end! p)
+      (do (%set-pane! (%with-choose p (%choose-with (%pane-choose p) t)))
+          (%choose-touch! (%pane (%pane-id p)))))))
+; Pane P's buffer mode built again if the store has changed since it was.
+(def %choose-fresh!
+  (fn (_ p)
+    (def m (%pane-choose p))
+    (unless (if (null? m) #t (= (List ref 3 m) %paste-gen)) (%choose-set! p (tree-build (first m))))))
+; Pane P's buffer mode's screen at the pane's place, drawn whole.
+(def %choose-touch!
+  (fn (_ p)
+    (def rect (%pane-rect p))
+    (vt-touch! (vt-origin! (tree-screen (first (%pane-choose p))) (first rect) (List ref 1 rect)))
+    (set! %touched #t)))
+; Pane P out of buffer mode, its window put back if the mode zoomed it,
+; and what is under it drawn whole.
+(def %choose-end!
+  (fn (_ p)
+    (def zoomed (if (null? (%pane-choose p)) #f (List ref 1 (%pane-choose p))))
+    (%set-pane! (%with-choose p ()))
+    (when (if zoomed (%zoomed?) #f) (%zoom!))
+    (%touch-pane! (%pane (%pane-id p)))
+    (%name-due! %window)
+    (set! %touched #t)))
+
+; KEY in the active pane's buffer mode, tmux's window_buffer_key: Enter
+; and p run its command on the selected buffer, P on each tagged one, and
+; end the mode; d deletes the selected buffer and D the tagged ones.
+(def %choose-key!
+  (fn (_ key)
+    (%choose-fresh! (%pane %active))
+    (def p (%pane %active))
+    (def m (%pane-choose p))
+    (unless (null? m) (%choose-took! p m key))))
+(def %choose-took!
+  (fn (_ p m key)
+    (def r (tree-key (first m) key))
+    (def t (first r))
+    (def left (List ref 2 r))
+    (def run! (fn (_ names) (List for-each (fn (_ name) (%run-text! (%template (List ref 2 m) name))) names)))
+    ; the selected buffer let go, the selection moved down to the next,
+    ; or up from the last, first
+    (def delete!
+      (fn (_ t2 name)
+        (def moved (if (equal? name (tree-current t2))
+                     ((fn (_ d) (if (rest d) (first d) (tree-up t2 #f))) (tree-down t2 #f))
+                     t2))
+        (set! %paste (paste-free %paste name))
+        moved))
+    (match
+      ((List ref 1 r) (%choose-end! p))
+      ((null? left) (%choose-set! p t))
+      ((if (str=? left "Enter") #t (str=? left "p")) (do (%choose-end! p) (run! (list (tree-current t)))))
+      ((str=? left "P") (do (%choose-end! p) (run! (tree-tagged t))))
+      ((str=? left "d") (%paste-done! p (delete! t (tree-current t))))
+      ((str=? left "D") (%paste-done! p (List fold delete! t (tree-tagged t))))
+      (#t (%choose-set! p t)))))
+; After a delete in pane P's buffer mode, its tree T built again.
+(def %paste-done!
+  (fn (_ p t)
+    (%paste-set! %paste)
+    (%choose-set! p (tree-build t))))
+
+; TEMPLATE with NAME put for its %% or %1, tmux's cmd_template_replace: in
+; quotes, a ' written '\'' for %%, a " \ $ ; ~ led by a backslash for %%%.
+(def %template
+  (fn (_ template name)
+    (def n (str-byte-len template))
+    (def quoted
+      (fn (_ dq)
+        (Str8 join ""
+          (List map
+            (fn (_ c)
+              (match
+                ((if dq #f (str=? c "'")) "'\\''")
+                ((if dq (not (null? (List find (fn (_ x) (str=? x c)) (lit ("\"" "\\" "$" ";" "~"))))) #f) (Str8 append "\\" c))
+                (#t c)))
+            (%bytes name)))))
+    ((fn (self i replaced acc)
+       (def b (if (< i n) (ptr-ref (str->ptr template) i 1) 0))
+       (def at (fn (_ k) (if (< k n) (ptr-ref (str->ptr template) k 1) 0)))
+       (match
+         ((<= n i) (Str8 join "" (List reverse acc)))
+         ((if (= b 37) (= (at (+ i 1)) 49) #f)
+           (if (= (at (+ i 2)) 37) (self (+ i 3) replaced (pair (quoted #t) acc)) (self (+ i 2) replaced (pair name acc))))
+         ((if (= b 37) (if (= (at (+ i 1)) 37) (not replaced) #f) #f)
+           (if (= (at (+ i 2)) 37) (self (+ i 3) #t (pair (quoted #t) acc)) (self (+ i 2) #t (pair (quoted #f) acc))))
+         (#t (self (+ i 1) replaced (pair (%byte b) acc)))))
+     0 #f ())))
+(def %bytes (fn (_ s) ((fn (self i) (if (= i (str-byte-len s)) () (pair (%byte (ptr-ref (str->ptr s) i 1)) (self (+ i 1))))) 0)))
 
 ; TEXT as a paste types it: each newline a carriage return.
 (def %typed
@@ -2126,7 +2376,7 @@
         () %pending))))
 
 ; N typed bytes at P: runs of keys to the active pane, or each a command
-; while it is in copy mode; the prefix and its command handled where they
+; while it is in buffer mode or copy mode; the prefix and its command handled where they
 ; fall, a key while a question is asked its answer, a key while the
 ; panes' numbers show taken by them, and a key the root table binds run.
 ; Keys clear a message.
@@ -2166,6 +2416,7 @@
                      (%prefix (do (set! %prefix #f) (on (%command! p i n))))
                      (repeats (do (flush!) (on (%command! p i n))))
                      ((str=? key (%option "prefix")) (do (flush!) (set! %prefix #t) (on (rest k))))
+                     ((not (null? (%pane-choose pane))) (do (%choose-key! key) (on (rest k))))
                      ((not (null? (%pane-copy pane)))
                        ((fn (_ c) (%copy-do! (first c)) (on (rest c))) (copy-key p i n %vi)))
                      ((not (null? (%bound "root" key)))
