@@ -16,7 +16,12 @@
 ;   #{=N:X} #{=-N:X}   X's first N characters, or its last N
 ;   #{l:X}             X as it is, not expanded
 ;   #{b:X} #{d:X}      X's last path part, or the rest
-;   #X                 a one-letter name: H host, h host short, D pane id,
+;   #{t:X} #{t/p:X}    X, seconds since the epoch, as a local time: as C's
+;                      ctime writes it, or as tmux writes it short, the
+;                      hour and minute in the last day, the day of the week
+;                      and month this month or in the last 28 days, the
+;                      day and month in the last year, else month and year
+;   #X                a one-letter name: H host, h host short, D pane id,
 ;                      P pane index, T pane title, S session name,
 ;                      I window index, W window name, F window flags
 ;   ## #, #}           # , and }
@@ -120,6 +125,8 @@
       ((%starts? "l:" e) (%from e 2))
       ((%starts? "b:" e) (%last-part (%inner (%from e 2) lookup)))
       ((%starts? "d:" e) (%dir (%inner (%from e 2) lookup)))
+      ((%starts? "t/p:" e) (%time (%inner (%from e 4) lookup) #t))
+      ((%starts? "t:" e) (%time (%inner (%from e 2) lookup) #f))
       ((%starts? "=" e)
         ((fn (_ colon)
            ((fn (_ k)
@@ -177,6 +184,27 @@
 (def %month-names
   (lit ("January" "February" "March" "April" "May" "June" "July" "August" "September" "October" "November"
         "December")))
+; V, seconds since the epoch, as a local time, PRETTY tmux's
+; format_pretty_time, else ctime's; empty for no time or a time of 0.
+(def %time
+  (fn (_ v pretty)
+    (def t (%int v))
+    (if (if (null? t) #t (= t 0)) ""
+      (do (def d (Date local t))
+          (if (not pretty) (format-time "%a %b %e %H:%M:%S %Y" d)
+            (do (def now ((fn (_ n) (if (< n t) t n)) (Sys now)))
+                (def age (- now t))
+                (def nd (Date local now))
+                (def f (fn (_ x k) (Assoc get k x)))
+                (def months (fn (_ x) (+ (* 12 (f x 'year)) (- (f x 'month) 1))))
+                (format-time
+                  (match
+                    ((< age 86400) "%H:%M")
+                    ((if (= (months d) (months nd)) #t (< age (* 28 86400))) "%a%d")
+                    ((< (- (months nd) (months d)) 12) "%d%b")
+                    (#t "%h%y"))
+                  d)))))))
+
 (def %two (fn (_ n) (if (< n 10) (Str8 append "0" (%num n)) (%num n))))
 (def %pad (fn (_ n) (if (< n 10) (Str8 append " " (%num n)) (%num n))))
 

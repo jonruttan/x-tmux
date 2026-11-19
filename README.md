@@ -69,6 +69,9 @@ The prefix is C-b, and after it, as tmux binds its keys:
     [     copy mode
     PgUp  copy mode, a page up; a page down to the bottom leaves it
     ]     paste the newest buffer
+    #     list the buffers
+    =     choose a buffer to paste
+    -     delete the newest buffer
     C-b   a C-b to the pane
 
 A new window takes the lowest free number and starts its shell where the
@@ -77,7 +80,7 @@ and the one shown before it `-`; closing the shown window shows that one.
 The status line's parts and styles are options, below.
 A question on the status line takes `y` for yes and any other key for no.
 A window is named after its active pane's foreground program, `[tmux]`
-while that pane is in copy mode, looked at as its panes write and at most
+while that pane is in copy mode or buffer mode, looked at as its panes write and at most
 every half second, as tmux's automatic-rename names it; the name is the
 kernel's for the process.  C-b `,` asks for a name on the status line,
 the old one there to edit with emacs's keys, Enter taking it and Escape
@@ -93,7 +96,8 @@ above: split-window, new-window, kill-pane, kill-window, kill-session,
 select-pane, last-pane, select-window, next-window, previous-window,
 last-window, rename-window, resize-pane, swap-pane, rotate-window,
 select-layout, next-layout, previous-layout, display-panes, copy-mode,
-paste-buffer, send-prefix and detach-client, those of the shell below,
+paste-buffer, list-buffers, choose-buffer, delete-buffer, set-buffer,
+send-prefix and detach-client, those of the shell below,
 with command-prompt,
 confirm-before, display-message and those of the configuration below.
 `display-message [-lp] [-d MS] [-F FORMAT] [FORMAT]` shows a format on
@@ -205,8 +209,50 @@ emacs's keys and vi's alike:
 A jump stays on its line, the rows a wrap joins, and with emacs's keys
 lets the matches go, as a move does.
 
-Not yet: the buffer commands (`#`, `=`, `-`), and the time a row
-entered the history, which tmux shows beside the position.
+Not yet: the time a row entered the history, which tmux shows beside
+the position.
+
+## The paste buffers
+
+The buffers are kept as tmux keeps them.  What copy mode copies is an
+automatic buffer, named bufferN; one set by name with `set-buffer -b`,
+or renamed with `-n`, is not, and only automatic buffers count towards
+the 50.  Copy mode's append sets the newest automatic buffer again
+under its name, so it is no longer automatic.  With no `-b`, a paste
+and a delete take the newest automatic buffer.
+
+    list-buffers [-r] [-F FORMAT] [-f FILTER] [-O ORDER]
+    delete-buffer [-b NAME]
+    set-buffer [-a] [-b NAME] [-n NEW] [DATA]
+    paste-buffer [-p] [-b NAME]
+    choose-buffer [-NrZ] [-F FORMAT] [-f FILTER] [-O ORDER] [TEMPLATE]
+
+`list-buffers` writes `NAME: SIZE bytes: "SAMPLE"` for each buffer, the
+newest first, or by `-O name` or `size`; from a key its lines show over
+the pane as tmux shows a command's output.  A sample is the buffer's
+first 200 bytes, a newline, a tab, a backslash and a byte that is not
+printable written as C writes them in a string.  The formats have
+`buffer_name`, `buffer_size`, `buffer_sample`, `buffer_full` and
+`buffer_created`, which `#{t:...}` and `#{t/p:...}` write as a time.
+
+`choose-buffer`, C-b `=`, lists the buffers over the pane, each led by
+the key that picks it, 0 to 9 then M-a to M-z, and its time and sample,
+with a box under them previewing the selected one:
+
+    Up Down, k j, C-p C-n    the buffer above or below, wrapping
+    PgUp PgDn, C-b C-f       a page
+    g G, Home End            the first or the last
+    Enter p, or its key      paste it, as TEMPLATE, `paste-buffer -p -b '%%'`
+    t T C-t                  tag it and go down, untag them all, tag them all
+    P                        paste the tagged ones
+    d D                      delete it, or the tagged ones
+    O r                      the next sort order, or turn it about
+    v                        a bigger preview, none, or the usual
+    q Escape C-g             leave
+
+`-Z` zooms the window while the list shows, `-N` starts with no
+preview, and `-f` keeps the buffers its filter is true for.  Searching,
+filtering, help and the editor of tmux's buffer mode are not here.
 
 ## The screen
 

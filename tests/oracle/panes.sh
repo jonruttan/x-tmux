@@ -49,6 +49,10 @@
 #             yellow, M-w copying them, C-b ] typing them to a cat; a
 #             row the pane wrapped copied from C-a to C-e as one line; R's
 #             rectangle drawn and copied by its columns
+#   buffers   C-b # listing them over the pane; C-b = choosing one, the
+#             newest first with its key, the selected row black on yellow
+#             and the preview's box, Down and Enter pasting the second;
+#             C-b - deleting the newest automatic one
 #   windows   C-b c, 1, l, n, p: windows made and shown, the status line
 #             listing them with tmux's flags; a missing number refused for
 #             a moment; C-b & asked, a no keeping the window and a yes
@@ -81,8 +85,9 @@
 #             has-session, display -p, targets, split-window, new-window
 #             and select-layout -t, list-windows and list-panes in their
 #             forms, show-options, rename-session, send-keys' bytes,
-#             kill-session, capture-pane, wait-for and pipe-pane, and the
-#             errors of each
+#             kill-session, capture-pane, wait-for and pipe-pane, the
+#             buffers' set-buffer, list-buffers, delete-buffer and
+#             paste-buffer -b, and the errors of each
 #
 # x-tmux runs from a shell in a tmux pane, each on a socket of its own, -f
 # /dev/null keeping the tester's own tmux.conf out of both.
@@ -460,6 +465,39 @@ sleep 1
 check "paste -- a rectangle copied, its columns on each row" "$(cat "$fx/block")" "bc
 b
 bc"
+
+# buffers: C-b # shows list-buffers over the pane, C-b = a list of them to
+# choose from, the newest first, C-b - deletes the newest automatic one
+xb() { X_LANG_DIR=$fx/langs/ TMUX_TMPDIR=$fx $X -l tmux -- -L oracle "$@"; }
+xb setb -b oracle-named "named one"
+xb setb "oracle newest"
+top=$(xb lsb -F '#{buffer_name}' | head -1)
+tmux send-keys -t "$s" 'clear' Enter
+sleep 1
+tmux send-keys -t "$s" C-b '#'
+wait_for "$top: 13 bytes"
+check "buffers -- C-b # shows list-buffers over the pane" "$(row 1 | sed 's/ *\[0\/[0-9]*\]$//')" "$(xb lsb | head -1)"
+tmux send-keys -t "$s" q
+sleep 1
+tmux send-keys -t "$s" "cat >$fx/chosen" Enter
+sleep 1
+tmux send-keys -t "$s" C-b =
+wait_for '(sort: creation)'
+check "buffers -- C-b = lists the newest first, each led by its key, its time and sample" \
+	"$(row 1 | sed 's/ [0-9][0-9]:[0-9][0-9]: / T: /')|$(row 2 | sed 's/ [0-9][0-9]:[0-9][0-9]: / T: /')" \
+	"(0) $top: T: oracle newest|(1) oracle-named: T: named one"
+check "buffers -- the selected row black on yellow" "$(tmux capture-pane -e -p -t "$s" -S 0 -E 0 | grep -c "43m(0) $top")" "1"
+check "buffers -- the preview's box under the list, titled with the buffer and the order" \
+	"$(row 15 | grep -cF "┌ $top (sort: creation) ─")$(row 16 | grep -cF '│ oracle newest')$(row 29 | grep -c '^└')" "111"
+tmux send-keys -t "$s" Down Enter
+sleep 1
+tmux send-keys -t "$s" Enter C-d
+sleep 1
+check "buffers -- Down and Enter paste the second" "$(cat "$fx/chosen")" "named one"
+tmux send-keys -t "$s" C-b -
+sleep 1
+check "buffers -- C-b - deletes the newest automatic one" "$(xb lsb -F '#{buffer_name}' | head -1)" "oracle-named"
+
 # the screen as the copy checks left it, for attach's
 tmux send-keys -t "$s" 'clear; echo still-here' Enter
 wait_for 'still-here'
@@ -824,6 +862,19 @@ piped() {
 	said $1 pipe-pane -t cap:7 true
 }
 both "pipe-pane's output to a command, -o, closing, -I and a window not there" piped
+buffered() {
+	said $1 deleteb
+	said $1 setb one; said $1 setb -b named "a named"; said $1 setb "two
+lines"; said $1 setb -a -b named "+more"; said $1 setb ""
+	said $1 setb "$(printf 'a\tb\033c\\d')"
+	said $1 setb -b "tab	x" no; said $1 setb -b "" no; said $1 setb -n x -b nosuch; said $1 setb
+	said $1 lsb
+	said $1 lsb -O name; said $1 lsb -O size -r; said $1 lsb -O bogus; said $1 lsb -F '#{buffer_name}' -f '#{==:#{buffer_size},3}'
+	said $1 setb -b buffer1 -n renamed; said $1 setb -n top; said $1 lsb -F '#{buffer_name}'
+	said $1 deleteb; said $1 deleteb -b nosuch; said $1 deleteb -b named; said $1 lsb -F '#{buffer_name}'
+	said $1 pasteb -b nosuch
+}
+both "the buffers: set-buffer, list-buffers' forms, renames, delete-buffer and their errors" buffered
 released() {
 	(sleep 1; $1 kill-server) &
 	said $1 wait-for never
