@@ -27,7 +27,7 @@
 
 (module tmux/vt-jit)
 
-(import tmux/vt vt-make vt-make-history vt-origin! vt-row vt-attrs vt-history-same? vt-cursor vt-out
+(import tmux/vt vt-make vt-make-history vt-origin! vt-now! vt-row vt-attrs vt-history-same? vt-cursor vt-out
   vt-feed-pure! vt-render-pure! vt-feed-compiled! vt-render-compiled! vt-adopt! vt-marks-same?)
 (import x/tool/jit-group jit-group)
 (import x/sys/gc)
@@ -47,7 +47,7 @@
         (pair 'MAP 67) (pair 'RT 70) (pair 'RE 71) (pair 'RH 72) (pair 'RB 73)
         (pair 'HC 74) (pair 'HA 75) (pair 'HX 76) (pair 'HLIM 77) (pair 'HHEAD 78) (pair 'HCOUNT 79)
         (pair 'HD 80) (pair 'STY 81) (pair 'SGRB 82) (pair 'COLON 85)
-        (pair 'LINES 86) (pair 'HL 88) (pair 'LE 89) (pair 'RZ 90)))
+        (pair 'LINES 86) (pair 'HL 88) (pair 'LE 89) (pair 'RZ 90) (pair 'NOW 91) (pair 'HT 92)))
 (def %vj-params 20)
 
 ; A cell's extended slot copied with it when the cell holds a character
@@ -171,13 +171,14 @@
                      (if (and (= ALT 0) (> HLIM 0)) (KEEP-AND-SCROLL) (do (UNWRAP (- TOP 1)) (SCROLL-UP TOP BOT 1)))
                      (if (< ROW (- ROWS 1)) (set ROW (+ ROW 1)) 0))))
           ((eq? (first e) 'KEEP-AND-SCROLL)
-            ; the region up one, as tmux/vt's %scroll-up!: its top row copied
-            ; to the history's newest slot by mode 15, which chains to the
-            ; scroll's mode 11
+            ; the region up one, as tmux/vt's %scroll-up!: its top row given
+            ; the time now and copied to the history's newest slot by mode
+            ; 15, which chains to the scroll's mode 11
             (self '(do (SCROLL-UP TOP BOT 1) (set NMODE 11) (set NK K) (set NJ 0)
                        (set HD (+ HHEAD HCOUNT))
                        (if (< HD HLIM) 0 (set HD (- HD HLIM)))
                        (%mem-set-at! HL HD (LW TOP))
+                       (%mem-set-at! HT HD NOW)
                        (set HD (* HD COLS))
                        (if (< HCOUNT HLIM) (set HCOUNT (+ HCOUNT 1))
                          (set HHEAD (if (< (+ HHEAD 1) HLIM) (+ HHEAD 1) 0)))
@@ -610,6 +611,7 @@
        (if (< at len)
          (do (def n (if (< (- len at) chunk) (- len at) chunk))
              (if (if (< 511 chunk) #t (= (& (int/ at chunk) 7) 0)) (Heap collect) ())
+             (vt-now! a (+ at 1)) (vt-now! b (+ at 1))
              (vt-feed-pure! a (+ base at) n)
              (vt-feed-compiled! (first engine) b (+ base at) n)
              (def na (vt-render-pure! a))
@@ -634,7 +636,7 @@
   (fn (_)
     ; the screen's state is laid out in 8-byte words
     (if (< %word-size 8) (Err raise (lit state) "vt-jit: written for an 8-byte word" ()))
-    (jit-group "x-tmux-vt-11" (fn (_) (list (vt-jit-form) (vt-render-form)))
+    (jit-group "x-tmux-vt-12" (fn (_) (list (vt-jit-form) (vt-render-form)))
       (fn (_ fns replayed?)
         (def engine (pair (first fns) (first (rest fns))))
         (unless replayed?

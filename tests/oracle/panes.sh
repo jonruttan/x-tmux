@@ -38,7 +38,8 @@
 #             gone after a second
 #   resize    the window grown to 100x30: the pane's terminal follows
 #   copy      C-b [ and C-b PgUp: the history paged through, the position
-#             at the top right, q and a page down to the bottom leaving
+#             at the top right after the time the top row was kept, q and
+#             a page down to the bottom leaving
 #   search    C-b [ then C-r: the prompt on the pane's bottom row, each key
 #             searching, the matches black on cyan and the one the cursor
 #             is on black on magenta, Enter keeping it with the count by
@@ -336,14 +337,19 @@ wait_for '29 100'
 check "resize -- the pane's terminal is the window less the status line" "$(screen | grep -c '^29 100$')" "1"
 
 # copy
+kept=$(date +%H:%M)
 tmux send-keys -t "$s" 'clear; seq 1 200' Enter
 wait_for '200'
 tmux send-keys -t "$s" C-b '['
 wait_for '[0/'
 check "copy -- C-b [ shows the position at the top right" "$(row 1 | grep -cE ' \[0/[0-9]+\]$')" "1"
+check "copy -- no time by it while the top row is the screen's" "$(row 1 | grep -cE '[0-9]:[0-9][0-9] \[0/')" "0"
 tmux send-keys -t "$s" PageUp
 wait_for '[27/'
 check "copy -- PgUp is a page, two rows short" "$(row 1 | grep -cE ' \[27/[0-9]+\]$')" "1"
+shown=$(row 1 | sed -n 's/.* \([0-9][0-9]:[0-9][0-9]\) \[27\/.*/\1/p')
+check "copy -- the time the top row was kept by the position" \
+  "$(if [ "$shown" = "$kept" ] || [ "$shown" = "$(date +%H:%M)" ]; then echo kept; else echo "$shown"; fi)" "kept"
 tmux send-keys -t "$s" Up
 sleep 1
 check "copy -- Up moves the cursor, not the page" "$(row 1 | grep -cE ' \[27/[0-9]+\]$')" "1"

@@ -71,11 +71,11 @@
 (import x/sys/date)
 (import tmux/format format-expand format-time format-true?)
 (import tmux/vt vt-make vt-make-history vt-feed! vt-render! vt-out vt-cursor vt-size vt-origin! vt-touch! vt-carry
-  vt-cursor-shown? vt-cursor-keys? vt-bracketed? vt-history vt-alternate)
+  vt-cursor-shown? vt-cursor-keys? vt-bracketed? vt-history vt-now! vt-alternate)
 (import tmux/capture capture-range capture-lines)
 (import tmux/vt-jit vt-jit!)
 (import tmux/copy copy-enter copy-resize copy-view copy-origin! copy-touch! copy-cursor copy-position
-  copy-do copy-selecting? copy-text copy-marks copy-vi? copy-key copy-recall copy-searched copy-search
+  copy-top-time copy-do copy-selecting? copy-text copy-marks copy-vi? copy-key copy-recall copy-searched copy-search
   copy-incremental copy-matches copy-marked? copy-jump)
 (import tmux/layout layout-new layout-rects layout-borders layout-split layout-remove layout-panes
   layout-resize layout-fit layout-size layout-beside layout-relabel layout-names layout-arrange)
@@ -1860,6 +1860,7 @@
         ((str=? name "window_visible_layout")
           (%layout-json w (if (List ref 7 w) (layout-new (List ref 2 w) %cols (%pane-rows)) (List ref 1 w))))
         ((str=? name "history_size") (%num (vt-history (%pane-screen p))))
+        ((str=? name "top_line_time") (if (null? (%pane-copy p)) () (%num (copy-top-time (%pane-copy p)))))
         ((str=? name "history_limit") (%num (%option "history-limit")))
         ((str=? name "pane_dead") "0")
         ((str=? name "pane_pipe") (yes (not (null? (%pipe-of id)))))
@@ -2022,11 +2023,15 @@
               (%esc "[?25h"))))))
 
 ; A copy mode's position, black on yellow at the right of its pane's top
-; row.
+; row, after the time its top row was kept, as tmux's
+; copy-mode-position-format writes it.
 (def %draw-position
   (fn (_ p c)
     (def rect (%pane-rect p))
-    (def text (copy-position c))
+    (def t (copy-top-time c))
+    (def text
+      (Str8 append (if (< 0 t) (Str8 append (format-expand "#{t/p:top_line_time}" (fn (_ name) (%num t))) " ") "")
+        (copy-position c)))
     (%out (Str8 append (%goto (first rect) (+ (List ref 1 rect) (%max 0 (- (List ref 3 rect) (Str8 length text)))))
             (%esc "[0;30;43m") text (%esc "[0m")))))
 ; A copy mode's matches, black on cyan, the one the cursor is on black on
@@ -2455,7 +2460,7 @@
     (def at (str->ptr %buf))
     (def got (%int (ptr-call %c-read (%pane-fd p) at 4096)))
     (if (< 0 got)
-      (do (ptr-set! at got 0 1) (vt-feed! (%pane-screen p) (ptr->int at) got) (%moved! got)
+      (do (ptr-set! at got 0 1) (vt-feed! (vt-now! (%pane-screen p) (Sys now)) (ptr->int at) got) (%moved! got)
           (%pipe-out! (%pane-id p) at got)
           (when (%holds? %tree (%pane-id p)) (set! %touched #t))
           (%name-due! (first (%window-of (%pane-id p)))))

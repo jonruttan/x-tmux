@@ -92,7 +92,9 @@
 ; Word 84 holds the modes a program sets, 85 which parameters followed a
 ; colon.  Words 86 to 88 are the lines' marks: the screen's, the saved
 ; screen's and the history's buffers of them; words 89 and 90 are the
-; compiled engine's.
+; compiled engine's.  Word 91 is the time, in seconds since the epoch, a
+; row kept now is given, and 92 the address of the history's times, a
+; word a row, 0 for none.
 (def %ROWS 0) (def %COLS 8) (def %CP 16) (def %AP 24) (def %DP 32) (def %SP 40)
 (def %OP 48) (def %ONE 56) (def %ROW 64) (def %COL 72) (def %EP 80) (def %ATTR 88)
 (def %STATE 96) (def %NUM 104) (def %NP 112) (def %PRIVATE 120) (def %TOP 128)
@@ -106,7 +108,8 @@
 (def %HC 592) (def %HA 600) (def %HX 608) (def %HLIM 616) (def %HHEAD 624) (def %HCOUNT 632)
 (def %STY 648) (def %SGRB 656) (def %NSTY 664) (def %MODES 672) (def %COLON 680)
 (def %LP 688) (def %SLP 696) (def %HL 704) (def %RZ 720)
-(def %WORDS 91)
+(def %NOW 728) (def %HT 736)
+(def %WORDS 93)
 
 ; The styles a screen keeps, and the bytes a style's SGR slot holds: its
 ; length, then the SGR.
@@ -183,8 +186,9 @@
     (def lines (%buffer (* 8 rows) 0))
     (def saved-lines (%buffer (* 8 rows) 0))
     (def history-lines (%buffer (* 8 limit) 0))
+    (def history-times (%buffer (* 8 limit) 0))
     (%w! s %LP (ptr->int (str->ptr lines))) (%w! s %SLP (ptr->int (str->ptr saved-lines)))
-    (%w! s %HL (ptr->int (str->ptr history-lines)))
+    (%w! s %HL (ptr->int (str->ptr history-lines))) (%w! s %HT (ptr->int (str->ptr history-times)))
     (%w! s %HC (ptr->int (str->ptr history-cells))) (%w! s %HA (ptr->int (str->ptr history-attrs)))
     (%w! s %HX (ptr->int (str->ptr history-ext))) (%w! s %HLIM limit)
     (%w! s %MAP (ptr->int (str->ptr map))) (%w! s %SMAP (ptr->int (str->ptr saved-map)))
@@ -202,7 +206,7 @@
     (%w! s %ATTR 1) (%w! s %NUM -1) (%w! s %BOTTOM (- rows 1))
     (pair (list words cells attrs dirty stop out one saved-cells saved-attrs ext saved-ext marks
             map saved-map scratch history-cells history-attrs history-ext styles sgrs
-            lines saved-lines history-lines)
+            lines saved-lines history-lines history-times)
           s)))
 
 ; A row map in order: row I in buffer row I.
@@ -287,8 +291,8 @@
 ; Whether the screen keeps what scrolls off: the main screen, with a
 ; history.
 (def %keeps? (fn (_ s) (if (= (%w s %ALT) 0) (< 0 (%w s %HLIM)) #f)))
-; Screen row R copied to the history as its newest row, the oldest giving
-; way once it is full.
+; Screen row R copied to the history as its newest row, given the time now,
+; the oldest giving way once it is full.
 (def %keep-row!
   (fn (_ s r)
     (def cols (%w s %COLS))
@@ -299,6 +303,7 @@
     (ptr-call %c-memcpy (int->ptr (+ (%w s %HA) to)) (int->ptr (+ (%w s %AP) from)) cols)
     (ptr-call %c-memcpy (int->ptr (+ (%w s %HX) (* 16 to))) (int->ptr (+ (%w s %EP) (* 16 from))) (* 16 cols))
     (ptr-set-word! (%hw-at s count) 0 (%lw s r))
+    (ptr-set-word! (%ht-at s count) 0 (%w s %NOW))
     (if (< count (%w s %HLIM))
       (%w! s %HCOUNT (+ count 1))
       (%w! s %HHEAD (%history-slot s 1)))
@@ -327,6 +332,8 @@
 (def %lw! (fn (_ s r x) (ptr-set-word! (%lw-at s r) 0 x)))
 ; History row I's word, 0 the oldest.
 (def %hw-at (fn (_ s i) (int->ptr (+ (%w s %HL) (* 8 (%history-slot s i))))))
+; History row I's time, 0 the oldest.
+(def %ht-at (fn (_ s i) (int->ptr (+ (%w s %HT) (* 8 (%history-slot s i))))))
 (def %line-word (fn (_ used size wrap) (+ used (+ (* size %SIZE) wrap))))
 ; Rows A..B-1 given the word X.
 (def %marks!
@@ -1129,9 +1136,11 @@
          (do (%copy-row! t i %HC %HA %HX (%w s %HC) (%w s %HA) (%w s %HX)
                (* (%history-slot s (+ skip i)) (%w s %COLS)) (%min cols (%w s %COLS)))
              (%copy-word! t %HL i (ptr-ref-word (%hw-at s (+ skip i)) 0))
+             (ptr-set-word! (int->ptr (+ (%w t %HT) (* 8 i))) 0 (ptr-ref-word (%ht-at s (+ skip i)) 0))
              (self (+ i 1)))))
      0)
-    (%w! t %HCOUNT n)))
+    (%w! t %HCOUNT n)
+    (%w! t %NOW (%w s %NOW))))
 ; A line's word X put at buffer row R of T's buffer of them at word TL,
 ; held to T's width.
 (def %copy-word!
@@ -1185,6 +1194,11 @@
 ; The rows of history the screen holds.  The alternate screen adds none,
 ; but shows the main screen's above it, as tmux's does.
 (def vt-history (fn (_ h) (%w (rest h) %HCOUNT)))
+; H with the rows it keeps from now given time T, seconds since the epoch,
+; as tmux gives a line the time it enters the history.
+(def vt-now! (fn (_ h t) (%w! (rest h) %NOW t) h))
+; The time history row I was kept, 0 the oldest; 0 for none.
+(def vt-history-time (fn (_ h i) (ptr-ref-word (%ht-at (rest h) i) 0)))
 ; History row I's text and attributes, 0 the oldest.
 (def vt-history-row
   (fn (_ h i)
@@ -1197,8 +1211,8 @@
     ((prim-ref (lit str) (lit byte-sub)) (List ref 16 (first h)) (* (%history-slot s i) (%w s %COLS)) (%w s %COLS))))
 
 ; Whether A's and B's histories, of one width, hold the same rows: each
-; row's cells and attributes, and its text where a character is past
-; ASCII, since a slot no cell uses may hold anything.
+; row's time, cells and attributes, and its text where a character is
+; past ASCII, since a slot no cell uses may hold anything.
 (def vt-history-same?
   (fn (_ a b)
     (def s (rest a))
@@ -1214,7 +1228,7 @@
     (def cols (%w s %COLS))
     (def p (int->ptr (+ (%w s %HC) (* (%history-slot s i) cols))))
     (def q (int->ptr (+ (%w t %HC) (* (%history-slot t i) cols))))
-    (if (= 0 (ptr-call %c-memcmp p q cols))
+    (if (if (= (ptr-ref-word (%ht-at s i) 0) (ptr-ref-word (%ht-at t i) 0)) (= 0 (ptr-call %c-memcmp p q cols)) #f)
       (if (= 0 (ptr-call %c-memcmp (int->ptr (+ (%w s %HA) (* (%history-slot s i) cols)))
                  (int->ptr (+ (%w t %HA) (* (%history-slot t i) cols))) cols))
         (if (= 0 (ptr-call %c-memchr p %WIDE cols))
@@ -1372,7 +1386,7 @@
     (if (null? %engine) (vt-render-pure! h) (vt-render-compiled! (rest %engine) h))))
 
 (provide tmux/vt vt-make vt-make-history vt-feed! vt-render! vt-out vt-cursor vt-size vt-origin!
-  vt-touch! vt-carry vt-row vt-row-length vt-attrs vt-history vt-history-row vt-history-attrs
+  vt-touch! vt-carry vt-row vt-row-length vt-attrs vt-history vt-now! vt-history-time vt-history-row vt-history-attrs
   vt-history-same? vt-view vt-line vt-line-length vt-line-cell vt-line-attr vt-style-word vt-alternate
   vt-line-marks vt-line-wrapped? vt-line-into! vt-marks-same?
   vt-feed-pure! vt-render-pure! vt-feed-compiled! vt-render-compiled! vt-adopt!
