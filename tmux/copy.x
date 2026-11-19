@@ -50,8 +50,8 @@
 (module tmux/copy)
 
 (import x/sys/posix)
-(import tmux/vt vt-carry vt-size vt-cursor vt-origin! vt-touch! vt-history vt-view vt-row-length
-  vt-line vt-line-length vt-line-marks vt-line-wrapped? vt-line-into! vt-line-cell)
+(import tmux/vt vt-carry vt-size vt-cursor vt-origin! vt-touch! vt-history vt-history-time vt-view
+  vt-row-length vt-line vt-line-length vt-line-marks vt-line-wrapped? vt-line-into! vt-line-cell)
 
 (import x/core/doors ptr-ref ptr-set! ptr-ref-word ptr-set-word! ptr-call ffi-dlsym ffi-dlopen str-make str->ptr
   int+ int- int* int< int=
@@ -155,6 +155,10 @@
     (Str8 append "[" (%num (%off c)) "/" (%num (%history c)) "]"
       ((fn (_ n) (if (if (null? n) #f (< 0 (first n))) (Str8 append " (" (%num (first n)) (if (rest n) "+" "") " results)") ""))
        (%count c)))))
+; The time C's top row was kept in the history, seconds since the epoch,
+; tmux's top_line_time; 0 for a row of the screen.
+(def copy-top-time
+  (fn (_ c) (if (< 0 (%off c)) (vt-history-time (%snap c) (- (%history c) (%off c))) 0)))
 
 ; --- moves ----------------------------------------------------------------
 
@@ -1187,5 +1191,5 @@
       (pair () i))))
 
 (provide tmux/copy copy-enter copy-resize copy-view copy-origin! copy-touch! copy-cursor copy-position
-  copy-do copy-selecting? copy-text copy-marks copy-vi? copy-key copy-recall copy-searched copy-search
+  copy-top-time copy-do copy-selecting? copy-text copy-marks copy-vi? copy-key copy-recall copy-searched copy-search
   copy-incremental copy-matches copy-marked? copy-count-limit! copy-jump)

@@ -86,3 +86,18 @@ sequences.
 ```
 ---
     (((0 "日本x") ('cursor 0 5)) ((0 "éx") ('cursor 0 2)) ((0 " X本") ('cursor 0 2)) ((0 "X 本") ('cursor 0 1)) ((0 "a�xb") ('cursor 0 4)) ((0 "❤️     #") ('cursor 0 8)) ((0 "本    #") ('cursor 0 8)) ((0 "😀") (1 "                                                                              日") ('cursor 1 80)))
+
+## the history's times
+
+### the compiled engine gives each row it keeps the time set before the read
+
+```tmux
+(import tmux/vt vt-now! vt-history-time)
+(do (vt-jit!)
+    (def h (vt-make 24 80))
+    (spec-feed! vt-feed! (vt-now! h 1000) (spec-lines 1 30))
+    (spec-feed! vt-feed! (vt-now! h 2000) (Str8 append "\r\n" (spec-lines 31 40)))
+    (write (List map (fn (_ i) (vt-history-time h i)) (List range 0 (vt-history h)))))
+```
+---
+    (1000 1000 1000 1000 1000 1000 2000 2000 2000 2000 2000 2000 2000 2000 2000 2000)

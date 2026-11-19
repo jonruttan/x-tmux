@@ -508,3 +508,39 @@ with vi's keys and then emacs's.
 ```
 ---
     (('rectangle-toggle) ('rectangle-toggle 'rectangle-toggle))
+
+## the history's times
+
+A row is given the time it is kept in the history, as tmux 3.8 gives a
+line the time it scrolls off; copy mode shows the top row's time before
+the position, tmux's copy-mode-position-format.  Times here are small
+numbers set before each read in place of the clock.
+
+### each row kept has the time of the read that kept it; a resize keeps them; ED 3 empties the history
+
+```tmux
+(import tmux/vt vt-now! vt-history-time)
+(do (def h (vt-make 24 80))
+    (spec-feed! vt-feed-pure! (vt-now! h 1000) (spec-lines 1 30))
+    (spec-feed! vt-feed-pure! (vt-now! h 2000) (Str8 append "\r\n" (spec-lines 31 40)))
+    (def times (fn (_ h) (List map (fn (_ i) (vt-history-time h i)) (List range 0 (vt-history h)))))
+    (def r (vt-carry h 20 70))
+    (write (list (times h) (times r) (vt-history (spec-feed! vt-feed-pure! h "^[3J")))))
+```
+---
+    ((1000 1000 1000 1000 1000 1000 2000 2000 2000 2000 2000 2000 2000 2000 2000 2000) (1000 1000 1000 1000 1000 1000 2000 2000 2000 2000 2000 2000 2000 2000 2000 2000) 0)
+
+### copy mode's top row's time: none at the bottom, where the top row is the screen's
+
+```tmux
+(import tmux/vt vt-now!)
+(import tmux/copy copy-top-time)
+(do (def h (vt-make 24 80))
+    (spec-feed! vt-feed-pure! (vt-now! h 1000) (spec-lines 1 30))
+    (spec-feed! vt-feed-pure! (vt-now! h 2000) (Str8 append "\r\n" (spec-lines 31 40)))
+    (def c (copy-enter h #f #f))
+    (write (List map (fn (_ c) (list (copy-position c) (copy-top-time c)))
+             (list c (copy-do c 'halfpage-up) (copy-do c 'history-top) (copy-do (copy-do c 'history-top) 'halfpage-down)))))
+```
+---
+    (("[0/16]" 0) ("[12/16]" 1000) ("[16/16]" 1000) ("[4/16]" 2000))

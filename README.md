@@ -132,7 +132,8 @@ last session.
 
 Each pane keeps the 2000 rows that scroll off its top, as tmux keeps its
 history.  Copy mode shows the pane as it was when the mode began, history
-and all, with tmux's position at its top right, and moves through it as
+and all, with tmux's position at its top right -- led, when the top row
+is the history's, by the time that row entered it -- and moves through it as
 tmux's does, with tmux's keys: emacs's, or vi's when `VISUAL` or `EDITOR`
 names vi.
 
@@ -208,9 +209,6 @@ emacs's keys and vi's alike:
 
 A jump stays on its line, the rows a wrap joins, and with emacs's keys
 lets the matches go, as a move does.
-
-Not yet: the time a row entered the history, which tmux shows beside
-the position.
 
 ## The paste buffers
 
