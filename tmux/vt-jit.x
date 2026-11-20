@@ -483,7 +483,7 @@
 
 ; --- the exercise: every sequence the screen reads, at random ------------
 
-(import x/core/doors str-make str->ptr ptr->int ptr-set! ptr-call int% int/)
+(import x/core/doors str-make str->ptr ptr->int ptr-ref ptr-set! ptr-call str-byte-len ffi-dlopen ffi-dlsym int% int/)
 
 ; The generator's next state, a 31-bit linear congruence.
 (def %lcg (fn (_ x) (& (+ (* x 1103515245) 12345) 2147483647)))
@@ -503,8 +503,8 @@
         "38;2;10;200;30" "48:2::1:2:3" "38:5:99" "4:3" "4:0" "92;103" "" ">4;1"))
 (def %text
   (fn (_ p at t)
-    ((fn (self i at) (if (= i ((prim-ref (lit str) (lit byte-len)) t)) at
-                       (self (+ i 1) (%put p at ((prim-ref (lit ptr) (lit ref)) ((prim-ref (lit str) (lit ->ptr)) t) i 1)))))
+    ((fn (self i at) (if (= i (str-byte-len t)) at
+                       (self (+ i 1) (%put p at (ptr-ref (str->ptr t) i 1)))))
      0 at)))
 (def %pick (fn (self xs i) (if (= i 0) (first xs) (self (rest xs) (- i 1)))))
 
@@ -607,6 +607,7 @@
     (def b (vt-origin! (vt-make-history 24 80 40) 2 41))
     (def base (ptr->int (str->ptr (first ex))))
     (def len (rest ex))
+    (%resolve!)
     ((fn (self at)
        (if (< at len)
          (do (def n (if (< (- len at) chunk) (- len at) chunk))
@@ -616,14 +617,15 @@
              (vt-feed-compiled! (first engine) b (+ base at) n)
              (def na (vt-render-pure! a))
              (def nb (vt-render-compiled! (rest engine) b))
-             (if (if (vt-same? a b) (if (= na nb) (= 0 (ptr-call (%memcmp) (vt-out a) (vt-out b) na)) #f) #f)
+             (if (if (vt-same? a b) (if (= na nb) (= 0 (ptr-call %c-memcmp (vt-out a) (vt-out b) na)) #f) #f)
                (self (+ at n))
                (+ at n)))
          #t))
      0)))
 ; libc's memcmp, looked up when it is asked for: a handle is a fact of the
 ; process, and a state image is written by another one
-(def %memcmp (fn (_) ((prim-ref (lit ffi) (lit dlsym)) ((prim-ref (lit ffi) (lit dlopen)) () 1) "memcmp")))
+(def %c-memcmp ())
+(def %resolve! (fn (_) (set! %c-memcmp (ffi-dlsym (ffi-dlopen () 1) "memcmp"))))
 
 ; --- the build -----------------------------------------------------------
 

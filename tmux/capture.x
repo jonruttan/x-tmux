@@ -34,7 +34,9 @@
 (import tmux/vt vt-line vt-line-attr vt-line-marks vt-history vt-size vt-style-word)
 (import x/core/doors ptr-ref ptr-set! str-make str->ptr str-byte-len str-byte-sub)
 
-(def %num (fn (_ n) ((prim-ref (lit convert) (lit to)) n (Type named STRING) 10)))
+(import tmux/num tmux-num)
+
+(def %num tmux-num)
 (def %esc (fn (_) ((fn (_ s) (ptr-set! (str->ptr s) 0 27 1) s) (str-make 1))))
 
 ; TEXT as a number, a leading - let be; nil when it is not one.

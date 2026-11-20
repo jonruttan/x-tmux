@@ -56,6 +56,7 @@
 (import x/core/doors ptr-ref ptr-set! ptr-ref-word ptr-set-word! ptr-call ffi-dlsym ffi-dlopen str-make str->ptr
   int+ int- int* int< int=
   ptr->int int->ptr str-byte-sub int/ int%)
+(import tmux/num tmux-num)
 (def %min (fn (_ a b) (if (< a b) a b)))
 (def %max (fn (_ a b) (if (< a b) b a)))
 
@@ -149,7 +150,7 @@
 (def copy-origin! (fn (_ c row col) (vt-origin! (%snap c) row col) (vt-origin! (%view c) row col) c))
 (def copy-touch! (fn (_ c) (vt-touch! (%view c)) c))
 (def copy-cursor (fn (_ c) (pair (%cy c) (%cx c))))
-(def %num (fn (_ n) ((prim-ref (lit convert) (lit to)) n (Type named STRING) 10)))
+(def %num tmux-num)
 (def copy-position
   (fn (_ c)
     (Str8 append "[" (%num (%off c)) "/" (%num (%history c)) "]"
@@ -546,13 +547,23 @@
     (def box (List ref 4 (first c)))
     (when (null? (Vector ref 0 box)) (Vector set! 0 (%read c) box))
     (Vector ref 0 box)))
+; libc, looked up as a text is read: a handle is a fact of the process.
+(def %c-memcpy ()) (def %c-strstr ()) (def %c-strcasestr ()) (def %c-strcspn ()) (def %c-memset ())
+(def %resolve!
+  (fn (_)
+    (def lib (ffi-dlopen () 1))
+    (set! %c-memcpy (ffi-dlsym lib "memcpy"))
+    (set! %c-strstr (ffi-dlsym lib "strstr"))
+    (set! %c-strcasestr (ffi-dlsym lib "strcasestr"))
+    (set! %c-strcspn (ffi-dlsym lib "strcspn"))
+    (set! %c-memset (ffi-dlsym lib "memset"))))
 (def %read
   (fn (_ c)
+    (%resolve!)
     (def snap (%snap c))
     (def cols (%cols c))
     (def n (+ (%final c) 1))
-    (def lib (ffi-dlopen () 1))
-    (def memcpy (ffi-dlsym lib "memcpy"))
+    (def memcpy %c-memcpy)
     (def starts (str-make (* 8 (+ n 1))))
     (def flags (str-make n))
     (def offs (Vector make n ()))
@@ -569,8 +580,8 @@
        (ptr-set-word! sp (* 8 r) at)
        (if (= r n)
          (do (ptr-set! (at! buf at) 0 0 1)
-             (list (ptr->int (str->ptr buf)) sp cols n fp (ffi-dlsym lib "strstr") (ffi-dlsym lib "strcasestr")
-               (ffi-dlsym lib "strcspn") offs buf starts flags (ffi-dlsym lib "memset")))
+             (list (ptr->int (str->ptr buf)) sp cols n fp %c-strstr %c-strcasestr
+               %c-strcspn offs buf starts flags %c-memset))
          (do (def bc (room buf cap at (+ cols 2)))
              (def len
                (if (vt-line-into! snap r (at! (first bc) at)) (do (ptr-set! fp r 0 1) cols)

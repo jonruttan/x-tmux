@@ -31,11 +31,12 @@
 
 (import tmux/vt vt-make vt-feed!)
 (import tmux/width char-width)
-(import x/core/doors str-byte-len str-byte-sub str->ptr ptr-ref int/)
+(import x/core/doors str-byte-len str-byte-sub str->ptr ptr-ref ptr-set! str-make int/)
+(import tmux/num tmux-num)
 
 (def %min (fn (_ a b) (if (< a b) a b)))
 (def %max (fn (_ a b) (if (< a b) b a)))
-(def %num (fn (_ n) ((prim-ref (lit convert) (lit to)) n (Type named STRING) 10)))
+(def %num tmux-num)
 
 (def %items (fn (_ t) (first t)))
 (def %current (fn (_ t) (List ref 1 t)))
@@ -143,7 +144,7 @@
 ; M-z, or nil.
 (def %key
   (fn (_ i) (match ((< i 10) (%num i)) ((< i 36) (Str8 append "M-" (%byte (+ 97 (- i 10))))) (#t ()))))
-(def %byte (fn (_ b) ((fn (_ s) ((prim-ref (lit ptr) (lit set!)) (str->ptr s) 0 b 1) s) ((prim-ref (lit str) (lit make)) 1))))
+(def %byte (fn (_ b) ((fn (_ s) (ptr-set! (str->ptr s) 0 b 1) s) (str-make 1))))
 
 ; T after KEY, tmux's mode_tree_key: (T DONE KEY).
 (def tree-key
