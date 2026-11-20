@@ -88,28 +88,32 @@
 (import tmux/tree tree-enter tree-build tree-key tree-up tree-down tree-resize tree-current tree-tagged tree-screen)
 
 (import x/core/doors str-make str->ptr ptr->str ptr->int int->ptr ptr-ref ptr-set! ptr-ref-word ptr-set-word! ptr-call str-byte-len
-  int=)
-(def %num (fn (_ n) ((prim-ref (lit convert) (lit to)) n (Type named STRING) 10)))
-(def %to-int (fn (_ s) ((prim-ref (lit convert) (lit to)) s (Type named INTEGER) 10)))
+  int= ffi-dlopen ffi-dlsym)
+(import tmux/num tmux-num tmux-int)
+(def %num tmux-num)
+(def %to-int (fn (_ s) (tmux-int s 10)))
 (def %int (fn (_ r) (if (> r 2147483647) (- r 4294967296) r)))
 (def %min (fn (_ a b) (if (< a b) a b)))
 (def %max (fn (_ a b) (if (< a b) b a)))
-(def %libc (fn (_ name) ((prim-ref (lit ffi) (lit dlsym)) ((prim-ref (lit ffi) (lit dlopen)) () 1) name)))
 
 ; libc's doors, looked up as the server starts: a handle is a fact of the
 ; process, and a state image is written by another
 (def %c-read ()) (def %c-write ()) (def %c-waitpid ()) (def %c-kill ()) (def %c-memcpy ())
-(def %c-tcgetpgrp ())
+(def %c-tcgetpgrp ()) (def %c-strcmp ()) (def %c-time ()) (def %c-ctime ())
 (def %resolve!
   (fn (_)
-    (set! %c-tcgetpgrp (%libc "tcgetpgrp"))
-    (set! %c-read (%libc "read"))
-    (set! %c-write (%libc "write"))
-    (set! %c-waitpid (%libc "waitpid"))
-    (set! %c-kill (%libc "kill"))
-    (set! %c-memcpy (%libc "memcpy"))
+    (def lib (ffi-dlopen () 1))
+    (set! %c-tcgetpgrp (ffi-dlsym lib "tcgetpgrp"))
+    (set! %c-read (ffi-dlsym lib "read"))
+    (set! %c-write (ffi-dlsym lib "write"))
+    (set! %c-waitpid (ffi-dlsym lib "waitpid"))
+    (set! %c-kill (ffi-dlsym lib "kill"))
+    (set! %c-memcpy (ffi-dlsym lib "memcpy"))
+    (set! %c-strcmp (ffi-dlsym lib "strcmp"))
+    (set! %c-time (ffi-dlsym lib "time"))
+    (set! %c-ctime (ffi-dlsym lib "ctime"))
     (def buf (str-make 256))
-    (ptr-call (%libc "gethostname") (str->ptr buf) 255)
+    (ptr-call (ffi-dlsym lib "gethostname") (str->ptr buf) 255)
     (set! %host ((fn (self i) (if (= (ptr-ref (str->ptr buf) i 1) 0) (Str8 sub 0 i buf) (self (+ i 1)))) 0))
     (set! %host-short ((fn (_ parts) (if (null? parts) %host (first parts))) (Str8 split "." %host)))))
 
@@ -1175,7 +1179,7 @@
   (fn (_ state style base)
     (def names (lit ("black" "red" "green" "yellow" "blue" "magenta" "cyan" "white")))
     (def at (fn (self xs k c) (match ((null? xs) ()) ((str=? (first xs) c) k) (#t (self (rest xs) (+ k 1) c)))))
-    (def hex (fn (_ s) (guard (e ()) ((prim-ref (lit convert) (lit to)) s (Type named INTEGER) 16))))
+    (def hex (fn (_ s) (guard (e ()) (tmux-int s 16))))
     ; colour C as SGR's parameter, FROM 30 for the foreground, 40 the
     ; background, OWN BASE's
     (def colour
@@ -2612,8 +2616,7 @@
 (def %by-name
   (fn (_)
     (%stash!)
-    (def strcmp (%libc "strcmp"))
-    (def before? (fn (_ a b) (< (%int (ptr-call strcmp (str->ptr (%record-name a)) (str->ptr (%record-name b)))) 0)))
+    (def before? (fn (_ a b) (< (%int (ptr-call %c-strcmp (str->ptr (%record-name a)) (str->ptr (%record-name b)))) 0)))
     (List fold
       (fn (_ acc s)
         ((fn (self xs) (match ((null? xs) (list s)) ((before? s (first xs)) (pair s xs)) (#t (pair (first xs) (self (rest xs))))))
@@ -2949,7 +2952,7 @@
     (%redraw!)
     (%settle!)))
 
-(def %now (fn (_) (ptr-call (%libc "time") 0)))
+(def %now (fn (_) (ptr-call %c-time 0)))
 
 ; A new session: COLS TAB ROWS TAB DETACHED TAB NAME TAB CWD.
 (def %new!
@@ -3014,7 +3017,7 @@
     (def cell (str-make 9))
     (ptr-set-word! (str->ptr cell) 0 t)
     (when (< %word-size 8) (ptr-set-word! (str->ptr cell) %word-size (if (< t 0) -1 0)))
-    (def s (ptr->str (ptr-call (%libc "ctime") (str->ptr cell))))
+    (def s (ptr->str (ptr-call %c-ctime (str->ptr cell))))
     (Str8 trim-right s)))
 
 ; Every session ended and the server with them.

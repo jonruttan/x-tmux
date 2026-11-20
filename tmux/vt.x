@@ -54,7 +54,8 @@
 
 (import tmux/width char-width)
 
-(import x/core/doors str-make str->ptr ptr->int int->ptr ptr-ref ptr-set! ptr-ref-word ptr-set-word! ptr-call ffi-dlsym ffi-dlopen int/ int%)
+(import x/core/doors str-make str->ptr ptr->int int->ptr ptr-ref ptr-set! ptr-ref-word ptr-set-word! ptr-call ffi-dlsym ffi-dlopen
+  str-byte-sub int/ int%)
 (def %min (fn (_ a b) (if (< a b) a b)))
 (def %max (fn (_ a b) (if (< a b) b a)))
 
@@ -1056,7 +1057,7 @@
     (def n (ptr-ref (int->ptr slot) 0 1))
     (def s (str-make (- n 2)))
     (ptr-call %c-memcpy (str->ptr s) (int->ptr (+ slot 3)) (- n 3))
-    ((prim-ref (lit str) (lit byte-sub)) s 0 (- n 3))))
+    (str-byte-sub s 0 (- n 3))))
 ; Whether the program shows the cursor (?25), wants its cursor keys as
 ; SS3 (?1), and its pastes bracketed (?2004).
 (def vt-cursor-shown? (fn (_ h) (= 0 (& (%w (rest h) %MODES) %HIDDEN))))
@@ -1172,7 +1173,7 @@
     (def buf (str-make (+ 1 (* 14 (- to from)))))
     (def p (ptr->int (str->ptr buf)))
     (def n ((fn (self c at) (if (= c to) at (self (+ c 1) (%text-cell! cells ext c at)))) from p))
-    ((prim-ref (lit str) (lit byte-sub)) buf 0 (- n p))))
+    (str-byte-sub buf 0 (- n p))))
 (def %text-cell!
   (fn (_ cells ext c at)
     (def b (ptr-ref (int->ptr cells) c 1))
@@ -1189,7 +1190,7 @@
 (def vt-attrs
   (fn (_ h r)
     (def s (rest h))
-    ((prim-ref (lit str) (lit byte-sub)) (List ref 2 (first h)) (* (%row s r) (%w s %COLS)) (%w s %COLS))))
+    (str-byte-sub (List ref 2 (first h)) (* (%row s r) (%w s %COLS)) (%w s %COLS))))
 
 ; The rows of history the screen holds.  The alternate screen adds none,
 ; but shows the main screen's above it, as tmux's does.
@@ -1208,7 +1209,7 @@
 (def vt-history-attrs
   (fn (_ h i)
     (def s (rest h))
-    ((prim-ref (lit str) (lit byte-sub)) (List ref 16 (first h)) (* (%history-slot s i) (%w s %COLS)) (%w s %COLS))))
+    (str-byte-sub (List ref 16 (first h)) (* (%history-slot s i) (%w s %COLS)) (%w s %COLS))))
 
 ; Whether A's and B's histories, of one width, hold the same rows: each
 ; row's time, cells and attributes, and its text where a character is

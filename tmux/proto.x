@@ -31,15 +31,27 @@
 (module tmux/proto)
 
 
-(import x/core/doors str-make str->ptr ptr->int int->ptr ptr-ref ptr-set! ptr-call str-byte-len str-byte-sub)
-(def %libc (fn (_ name) ((prim-ref (lit ffi) (lit dlsym)) ((prim-ref (lit ffi) (lit dlopen)) () 1) name)))
+(import x/core/doors str-make str->ptr ptr->int int->ptr ptr-ref ptr-set! ptr-call str-byte-len str-byte-sub
+  ffi-dlopen ffi-dlsym)
+
+; libc, looked up when a connection is made, as tmux/vt looks it up when
+; a screen is: a handle is a fact of the process, and every message sent
+; or read calls these.
+(def %c-write ()) (def %c-read ()) (def %c-memmove ()) (def %c-memcpy ())
+(def %resolve!
+  (fn (_)
+    (def lib (ffi-dlopen () 1))
+    (set! %c-write (ffi-dlsym lib "write"))
+    (set! %c-read (ffi-dlsym lib "read"))
+    (set! %c-memmove (ffi-dlsym lib "memmove"))
+    (set! %c-memcpy (ffi-dlsym lib "memcpy"))))
 (def %int (fn (_ r) (if (> r 2147483647) (- r 4294967296) r)))
 
 ; The most a connection holds unread.
 (def %capacity 262144)
 
 ; A connection: (FD BUFFER FILL), FILL a one-slot list.
-(def proto-conn (fn (_ fd) (list fd (str-make (+ %capacity 1)) (list 0))))
+(def proto-conn (fn (_ fd) (%resolve!) (list fd (str-make (+ %capacity 1)) (list 0))))
 (def proto-fd (fn (_ c) (first c)))
 
 ; N bytes at pointer P sent as a message of TYPE (a character code): the
@@ -56,7 +68,7 @@
   (fn (self fd p n)
     (if (= n 0) #t
       ((fn (_ w) (if (< w 1) #f (self fd (+ p w) (- n w))))
-       (%int (ptr-call (%libc "write") fd (int->ptr p) n))))))
+       (%int (ptr-call %c-write fd (int->ptr p) n))))))
 
 (def proto-send-text! (fn (_ fd type s) (proto-send! fd type (str->ptr s) (str-byte-len s))))
 
@@ -68,7 +80,7 @@
     (def room (- %capacity fill))
     (if (= room 0) -1
       ((fn (_ got) (if (< 0 got) (%set-first! (List ref 2 c) (+ fill got)) ()) got)
-       (%int (ptr-call (%libc "read") (first c) (int->ptr (+ (ptr->int (str->ptr (List ref 1 c))) fill)) room))))))
+       (%int (ptr-call %c-read (first c) (int->ptr (+ (ptr->int (str->ptr (List ref 1 c))) fill)) room))))))
 
 ; Each whole message the connection holds handed to (F TYPE ADDRESS COUNT),
 ; in order, and dropped; a message read in part is kept.
@@ -87,7 +99,7 @@
                (| (<< (ptr-ref buf (+ at 3) 1) 8) (ptr-ref buf (+ at 4) 1)))))))
        0))
     (if (< 0 used)
-      (do (ptr-call (%libc "memmove") buf (int->ptr (+ (ptr->int buf) used)) (- fill used))
+      (do (ptr-call %c-memmove buf (int->ptr (+ (ptr->int buf) used)) (- fill used))
           (%set-first! (List ref 2 c) (- fill used)))
       ())))
 
@@ -95,7 +107,7 @@
 (def proto-text
   (fn (_ p n)
     (def s (str-make (+ n 1)))
-    (ptr-call (%libc "memcpy") (str->ptr s) (int->ptr p) n)
+    (ptr-call %c-memcpy (str->ptr s) (int->ptr p) n)
     (ptr-set! (str->ptr s) n 0 1)
     (str-byte-sub s 0 n)))
 

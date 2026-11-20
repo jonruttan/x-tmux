@@ -39,11 +39,20 @@
 (import tmux/client tmux-new tmux-attach tmux-ask tmux-command)
 
 (def %clock (prim-ref (lit sys) (lit clock)))
-(import x/core/doors str-make str->ptr ptr->int ptr-set! ptr-call str-byte-len)
-(def %libc (fn (_ name) ((prim-ref (lit ffi) (lit dlsym)) ((prim-ref (lit ffi) (lit dlopen)) () 1) name)))
-(def %num (fn (_ n) ((prim-ref (lit convert) (lit to)) n (Type named STRING) 10)))
-(def %int (fn (_ s) ((prim-ref (lit convert) (lit to)) s (Type named INTEGER) 10)))
-(def %write (fn (_ fd s) (ptr-call (%libc "write") fd (str->ptr s) (str-byte-len s))))
+(import x/core/doors str-make str->ptr ptr->int ptr-set! ptr-call str-byte-len ffi-dlopen ffi-dlsym)
+(import tmux/num tmux-num tmux-int)
+; libc, looked up as tmux-main starts: a handle is a fact of the process.
+(def %c-open ()) (def %c-read ()) (def %c-write ()) (def %c-close ())
+(def %resolve!
+  (fn (_)
+    (def lib (ffi-dlopen () 1))
+    (set! %c-open (ffi-dlsym lib "open"))
+    (set! %c-read (ffi-dlsym lib "read"))
+    (set! %c-write (ffi-dlsym lib "write"))
+    (set! %c-close (ffi-dlsym lib "close"))))
+(def %num tmux-num)
+(def %int (fn (_ s) (tmux-int s 10)))
+(def %write (fn (_ fd s) (ptr-call %c-write fd (str->ptr s) (str-byte-len s))))
 (def %say (fn (_ s) (%write 1 s)))
 
 ; FILE's reads, each (EACH ADDRESS LENGTH), NUL-terminated.  x collects
@@ -51,17 +60,16 @@
 ; is collected every sixteenth read.
 (def %reads
   (fn (_ path each)
-    (def fd (ptr-call (%libc "open") (str->ptr path) 0))
+    (def fd (ptr-call %c-open (str->ptr path) 0))
     (def buf (str-make 4097))
     (def p (str->ptr buf))
-    (def rd (%libc "read"))
     ((fn (self i)
-       (def got (ptr-call rd fd p 4096))
+       (def got (ptr-call %c-read fd p 4096))
        (when (< 0 got)
          (do (when (= (& i 15) 15) (Heap collect))
              (ptr-set! p got 0 1) (each (ptr->int p) got) (self (+ i 1)))))
      0)
-    (ptr-call (%libc "close") fd)))
+    (ptr-call %c-close fd)))
 
 (def %check
   (fn (_ path)
@@ -119,7 +127,7 @@
 (def %exercise
   (fn (_ seed n)
     (def ex (vt-exercise seed n))
-    (ptr-call (%libc "write") 1 (str->ptr (first ex)) (rest ex))
+    (ptr-call %c-write 1 (str->ptr (first ex)) (rest ex))
     0))
 
 (def %usage
@@ -175,6 +183,7 @@
 ; The command line run; answers the exit status.
 (def tmux-main
   (fn (_ ops)
+    (%resolve!)
     (def arg (fn (_ i) (if (< i (List length ops)) (List ref i ops) ())))
     ; the launcher pipes the program to the engine on fd 0 and parks the
     ; user's terminal on fd 3, as x-ash and the REPL reclaim it

@@ -41,8 +41,9 @@
 (def %pref (prim-ref (lit ptr) (lit ref)))
 (def %blen (prim-ref (lit str) (lit byte-len)))
 (def %bsub (prim-ref (lit str) (lit byte-sub)))
-(def %num (fn (_ n) ((prim-ref (lit convert) (lit to)) n (Type named STRING) 10)))
-(def %int (fn (_ s) (guard (e ()) ((prim-ref (lit convert) (lit to)) s (Type named INTEGER) 10))))
+(import tmux/num tmux-num tmux-int)
+(def %num tmux-num)
+(def %int (fn (_ s) (guard (e ()) (tmux-int s 10))))
 
 ; Byte I of S, or 0 past its end.
 (def %at (fn (_ s i) (if (< i (%blen s)) (%pref (%ptr s) i 1) 0)))

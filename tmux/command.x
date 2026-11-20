@@ -93,6 +93,7 @@
 
 (def %char (fn (_ s i) (Str8 sub i 1 s)))
 (import x/core/doors str-byte-len str-byte-sub)
+(import tmux/num tmux-num)
 (def %prefix? (fn (_ p s) (if (<= (str-byte-len p) (str-byte-len s)) (str=? p (str-byte-sub s 0 (str-byte-len p))) #f)))
 (def %has? (fn (_ letters c) (not (null? (List find (fn (_ x) (str=? x c)) (%letters letters))))))
 (def %letters
@@ -250,7 +251,7 @@
         (list #f (Str8 append "command " name ": too many arguments (need at most " (%str (List ref 4 spec)) ")")))
       (#t (list #t (list name flags args))))))
 
-(def %str (fn (_ n) ((prim-ref (lit convert) (lit to)) n (Type named STRING) 10)))
+(def %str tmux-num)
 
 ; LINE read as tmux reads a command line: (#t ((NAME FLAGS ARGS) ...)),
 ; or (#f MESSAGE) for the first thing that does not read.  A command of

@@ -25,7 +25,9 @@
 
 (import x/core/doors str-byte-len str-byte-sub str->ptr ptr-ref int/ int%)
 
-(def %num (fn (_ n) ((prim-ref (lit convert) (lit to)) n (Type named STRING) 10)))
+(import tmux/num tmux-num)
+
+(def %num tmux-num)
 
 (def paste-empty (list () 0 0))
 
