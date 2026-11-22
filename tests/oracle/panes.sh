@@ -98,6 +98,11 @@
 set -u
 X=${X:-x}
 BUNDLE="$(cd "$(dirname "$0")/../.." && pwd)"
+# Every shell a pane starts is interactive and records the keys sent to
+# it.  Both servers hand this to their panes, so none of it reaches the
+# tester's history file, which a shell with no rc file also cuts to its
+# default length on exit.
+export HISTFILE=/dev/null
 # A run stopped by a kill, the guard's, never reaches its trap, and its
 # servers live on: tmux's on sockets named for its pid, x-tmux's in its
 # directory, which holds its pid.  Each of a run that is gone is ended
