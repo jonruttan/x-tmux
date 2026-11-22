@@ -116,14 +116,14 @@ done
 for d in "${TMPDIR:-/tmp}"/x-tmux-oracle.*; do
 	[ -f "$d/pid" ] && gone "$(cat "$d/pid")" || continue
 	for l in oracle oracle-sh; do
-		X_LANG_DIR=$d/langs/ TMUX_TMPDIR=$d $X -l tmux -- -L $l kill-server 2>/dev/null
+		X_BUNDLE_DIR=$d/bundles/ TMUX_TMPDIR=$d $X -l tmux -- -L $l kill-server 2>/dev/null
 	done
 	rm -rf "$d"
 done
 fx=$(mktemp -d "${TMPDIR:-/tmp}/x-tmux-oracle.XXXXXX")
 echo $$ >"$fx/pid"
-mkdir -p "$fx/langs"
-ln -s "$BUNDLE" "$fx/langs/x-tmux"
+mkdir -p "$fx/bundles"
+ln -s "$BUNDLE" "$fx/bundles/x-tmux"
 s=xtmux-oracle-$$
 c=/tmp/xtc$$
 r=xtmux-oracle-sh-$$
@@ -133,7 +133,7 @@ r=xtmux-oracle-sh-$$
 # in this one.
 o=xtmux-oracle-outer-$$
 tmux() { env -u TMUX -u TMUX_PANE tmux -L "$o" -f /dev/null "$@"; }
-trap 'tmux kill-server 2>/dev/null; X_LANG_DIR=$fx/langs/ TMUX_TMPDIR=$fx $X -l tmux -- -L oracle kill-server 2>/dev/null; env tmux -L $r kill-server 2>/dev/null; X_LANG_DIR=$fx/langs/ TMUX_TMPDIR=$fx $X -l tmux -- -L oracle-sh kill-server 2>/dev/null; rm -f "$c" "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$o" "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$r"; rm -rf "$fx"' EXIT
+trap 'tmux kill-server 2>/dev/null; X_BUNDLE_DIR=$fx/bundles/ TMUX_TMPDIR=$fx $X -l tmux -- -L oracle kill-server 2>/dev/null; env tmux -L $r kill-server 2>/dev/null; X_BUNDLE_DIR=$fx/bundles/ TMUX_TMPDIR=$fx $X -l tmux -- -L oracle-sh kill-server 2>/dev/null; rm -f "$c" "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$o" "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$r"; rm -rf "$fx"' EXIT
 failed=0
 
 screen() { tmux capture-pane -p -t "$s" | sed 's/ *$//'; }
@@ -154,7 +154,7 @@ check() {
 # The pane gets the tester's PATH: the shell tmux starts it with may put
 # another x first.
 tmux new-session -d -s "$s" -x 80 -y 24 \
-	"env PATH='$PATH' SHELL=/bin/sh PS1='$ ' VISUAL= EDITOR= X_LANG_DIR=$fx/langs/ TMUX_TMPDIR=$fx /bin/sh"
+	"env PATH='$PATH' SHELL=/bin/sh PS1='$ ' VISUAL= EDITOR= X_BUNDLE_DIR=$fx/bundles/ TMUX_TMPDIR=$fx /bin/sh"
 xt="$X -l tmux -- -L oracle -f /dev/null"
 # The name tmux gives a window whose program is /bin/sh, which x-tmux's
 # panes run: x-tmux names its windows as tmux does.
@@ -479,7 +479,7 @@ bc"
 
 # buffers: C-b # shows list-buffers over the pane, C-b = a list of them to
 # choose from, the newest first, C-b - deletes the newest automatic one
-xb() { X_LANG_DIR=$fx/langs/ TMUX_TMPDIR=$fx $X -l tmux -- -L oracle "$@"; }
+xb() { X_BUNDLE_DIR=$fx/bundles/ TMUX_TMPDIR=$fx $X -l tmux -- -L oracle "$@"; }
 xb setb -b oracle-named "named one"
 xb setb "oracle newest"
 top=$(xb lsb -F '#{buffer_name}' | head -1)
@@ -763,7 +763,7 @@ wait_for 'BAD 0'
 # and so is history_size: a shell's prompt reaches tmux's history or not by
 # when it is drawn against the split.
 real() { env -u TMUX -u TMUX_PANE SHELL=/bin/sh tmux -L "$r" -f /dev/null "$@"; }
-mine() { env -u TMUX -u TMUX_PANE SHELL=/bin/sh X_LANG_DIR=$fx/langs/ TMUX_TMPDIR=$fx $X -l tmux -- -L oracle-sh -f /dev/null "$@"; }
+mine() { env -u TMUX -u TMUX_PANE SHELL=/bin/sh X_BUNDLE_DIR=$fx/bundles/ TMUX_TMPDIR=$fx $X -l tmux -- -L oracle-sh -f /dev/null "$@"; }
 said() { "$@" 2>&1; echo "rc $?"; }
 both() { check "shell -- $1" "$($2 mine)" "$($2 real)"; }
 sized() { if [ "$1" = real ]; then echo "-x 80 -y 23"; fi; }
