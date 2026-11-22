@@ -14,9 +14,9 @@ lang.
 
 ## Install
 
-It needs x-lang at the release `lang.xon` declares.
+It needs x-lang at the release `bundle.xon` declares.
 
-    make install    copies the bundle to <share>/langs/tmux and writes
+    make install    copies the bundle to <share>/bundles/tmux and writes
                     its boot image
 
 ## Sessions
