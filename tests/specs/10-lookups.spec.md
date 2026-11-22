@@ -42,11 +42,11 @@ its file and the top-level name it is in.
               (#t ())))
           ((lookup? f) (list (list file (first f))))
           (#t ()))))
-    (def files (List filter (fn (_ n) (not (null? (Str8 index-of ".x" n)))) (File list-dir "tmux")))
+    (def files (List filter (fn (_ n) (not (null? (Str8 index-of ".x" n)))) (File list-dir "lib/tmux")))
     (write
       (List fold
         (fn (_ acc n)
-          (def forms (tok-read-str (%base) (Str8 append (File read-all (Str8 append "tmux/" n)) " ")))
+          (def forms (tok-read-str (%base) (Str8 append (File read-all (Str8 append "lib/tmux/" n)) " ")))
           (Heap collect)
           (List append acc (List fold (fn (_ a f) (List append a (offences n f))) () forms)))
         () files)))
