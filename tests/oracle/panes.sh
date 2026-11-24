@@ -38,9 +38,22 @@
 #             gone after a second
 #   resize    the window grown to 100x30: the pane's terminal follows
 #   copy      C-b [ and C-b PgUp: the history paged through, the position
-#             at the top right, q and a page down to the bottom leaving
+#             at the top right after the time the top row was kept, q and
+#             a page down to the bottom leaving
+#   search    C-b [ then C-r: the prompt on the pane's bottom row, each key
+#             searching, the matches black on cyan and the one the cursor
+#             is on black on magenta, Enter keeping it with the count by
+#             the position, q leaving
+#   jumps     F asking for one key on the pane's bottom row, the key the
+#             answer; F, f and T moving the cursor by it on its row
 #   paste     two rows selected with emacs's keys and drawn black on
-#             yellow, M-w copying them, C-b ] typing them to a cat
+#             yellow, M-w copying them, C-b ] typing them to a cat; a
+#             row the pane wrapped copied from C-a to C-e as one line; R's
+#             rectangle drawn and copied by its columns
+#   buffers   C-b # listing them over the pane; C-b = choosing one, the
+#             newest first with its key, the selected row black on yellow
+#             and the preview's box, Down and Enter pasting the second;
+#             C-b - deleting the newest automatic one
 #   windows   C-b c, 1, l, n, p: windows made and shown, the status line
 #             listing them with tmux's flags; a missing number refused for
 #             a moment; C-b & asked, a no keeping the window and a yes
@@ -73,23 +86,54 @@
 #             has-session, display -p, targets, split-window, new-window
 #             and select-layout -t, list-windows and list-panes in their
 #             forms, show-options, rename-session, send-keys' bytes,
-#             kill-session, and the errors of each
+#             kill-session, capture-pane, wait-for and pipe-pane, the
+#             buffers' set-buffer, list-buffers, delete-buffer and
+#             paste-buffer -b, and the errors of each
 #
-# x-tmux runs from a shell in the tmux pane, on a socket of its own, -f
-# /dev/null keeping the tester's own tmux.conf out of it.
+# x-tmux runs from a shell in a tmux pane, each on a socket of its own, -f
+# /dev/null keeping the tester's own tmux.conf out of both.
 #
 # The real tmux is the oracle twice over: it runs the test, and the sizes
 # and layouts asserted are the ones it gives its own panes.
 set -u
 X=${X:-x}
 BUNDLE="$(cd "$(dirname "$0")/../.." && pwd)"
+# Every shell a pane starts is interactive and records the keys sent to
+# it.  Both servers hand this to their panes, so none of it reaches the
+# tester's history file, which a shell with no rc file also cuts to its
+# default length on exit.
+export HISTFILE=/dev/null
+# A run stopped by a kill, the guard's, never reaches its trap, and its
+# servers live on: tmux's on sockets named for its pid, x-tmux's in its
+# directory, which holds its pid.  Each of a run that is gone is ended
+# first, a pid counting as the run's only while it is a panes.sh.
+gone() { ! ps -o command= -p "$1" 2>/dev/null | grep -q 'oracle/panes\.sh'; }
+for k in "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)"/xtmux-oracle-*; do
+	[ -S "$k" ] && gone "${k##*-}" || continue
+	env -u TMUX -u TMUX_PANE tmux -S "$k" kill-server 2>/dev/null
+	rm -f "$k"
+done
+for d in "${TMPDIR:-/tmp}"/x-tmux-oracle.*; do
+	[ -f "$d/pid" ] && gone "$(cat "$d/pid")" || continue
+	for l in oracle oracle-sh; do
+		X_BUNDLE_DIR=$d/bundles/ TMUX_TMPDIR=$d $X -l tmux -- -L $l kill-server 2>/dev/null
+	done
+	rm -rf "$d"
+done
 fx=$(mktemp -d "${TMPDIR:-/tmp}/x-tmux-oracle.XXXXXX")
-mkdir -p "$fx/langs"
-ln -s "$BUNDLE" "$fx/langs/x-tmux"
+echo $$ >"$fx/pid"
+mkdir -p "$fx/bundles"
+ln -s "$BUNDLE" "$fx/bundles/x-tmux"
 s=xtmux-oracle-$$
 c=/tmp/xtc$$
 r=xtmux-oracle-sh-$$
-trap 'tmux kill-session -t $s 2>/dev/null; X_LANG_DIR=$fx/langs/ TMUX_TMPDIR=$fx $X -l tmux -- -L oracle kill-server 2>/dev/null; tmux -L $r kill-server 2>/dev/null; X_LANG_DIR=$fx/langs/ TMUX_TMPDIR=$fx $X -l tmux -- -L oracle-sh kill-server 2>/dev/null; rm -f "$c"; rm -rf "$fx"' EXIT
+# The tmux the test runs in, on a socket of its own with no tmux.conf: the
+# tester's server, its sessions and the panes a client of theirs shows are
+# never sent a key, and a session the tester's config restores never lands
+# in this one.
+o=xtmux-oracle-outer-$$
+tmux() { env -u TMUX -u TMUX_PANE tmux -L "$o" -f /dev/null "$@"; }
+trap 'tmux kill-server 2>/dev/null; X_BUNDLE_DIR=$fx/bundles/ TMUX_TMPDIR=$fx $X -l tmux -- -L oracle kill-server 2>/dev/null; env tmux -L $r kill-server 2>/dev/null; X_BUNDLE_DIR=$fx/bundles/ TMUX_TMPDIR=$fx $X -l tmux -- -L oracle-sh kill-server 2>/dev/null; rm -f "$c" "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$o" "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$r"; rm -rf "$fx"' EXIT
 failed=0
 
 screen() { tmux capture-pane -p -t "$s" | sed 's/ *$//'; }
@@ -110,7 +154,7 @@ check() {
 # The pane gets the tester's PATH: the shell tmux starts it with may put
 # another x first.
 tmux new-session -d -s "$s" -x 80 -y 24 \
-	"env PATH='$PATH' SHELL=/bin/sh PS1='$ ' VISUAL= EDITOR= X_LANG_DIR=$fx/langs/ TMUX_TMPDIR=$fx /bin/sh"
+	"env PATH='$PATH' SHELL=/bin/sh PS1='$ ' VISUAL= EDITOR= X_BUNDLE_DIR=$fx/bundles/ TMUX_TMPDIR=$fx /bin/sh"
 xt="$X -l tmux -- -L oracle -f /dev/null"
 # The name tmux gives a window whose program is /bin/sh, which x-tmux's
 # panes run: x-tmux names its windows as tmux does.
@@ -173,7 +217,7 @@ tmux send-keys -t "$s" 'stty size' Enter
 wait_for '23 39'
 check "split -h -- the new pane is 39 wide, as tmux's is" "$(screen | grep -c '23 39$')" "1"
 blank40=$(printf '%40s' '')
-check "split -h -- the border is column 41" "$(row 5)" "$blank40│"
+check "split -h -- the border is column 41" "$(row 5)" "${blank40}│"
 
 # split -v
 tmux send-keys -t "$s" C-b '"'
@@ -181,7 +225,7 @@ sleep 2
 tmux send-keys -t "$s" 'stty size' Enter
 wait_for '11 39'
 check "split -v -- the new pane is 11 rows of 39" "$(screen | grep -c '11 39$')" "1"
-check "split -v -- the border row is 12, right of the column" "$(row 12)" "$blank40│$(printf '─%.0s' $(seq 1 39))"
+check "split -v -- the border row is 12, right of the column" "$(row 12)" "${blank40}│$(printf '─%.0s' $(seq 1 39))"
 
 # next
 tmux send-keys -t "$s" C-b o
@@ -298,14 +342,19 @@ wait_for '29 100'
 check "resize -- the pane's terminal is the window less the status line" "$(screen | grep -c '^29 100$')" "1"
 
 # copy
+kept=$(date +%H:%M)
 tmux send-keys -t "$s" 'clear; seq 1 200' Enter
 wait_for '200'
 tmux send-keys -t "$s" C-b '['
 wait_for '[0/'
 check "copy -- C-b [ shows the position at the top right" "$(row 1 | grep -cE ' \[0/[0-9]+\]$')" "1"
+check "copy -- no time by it while the top row is the screen's" "$(row 1 | grep -cE '[0-9]:[0-9][0-9] \[0/')" "0"
 tmux send-keys -t "$s" PageUp
 wait_for '[27/'
 check "copy -- PgUp is a page, two rows short" "$(row 1 | grep -cE ' \[27/[0-9]+\]$')" "1"
+shown=$(row 1 | sed -n 's/.* \([0-9][0-9]:[0-9][0-9]\) \[27\/.*/\1/p')
+check "copy -- the time the top row was kept by the position" \
+  "$(if [ "$shown" = "$kept" ] || [ "$shown" = "$(date +%H:%M)" ]; then echo kept; else echo "$shown"; fi)" "kept"
 tmux send-keys -t "$s" Up
 sleep 1
 check "copy -- Up moves the cursor, not the page" "$(row 1 | grep -cE ' \[27/[0-9]+\]$')" "1"
@@ -320,6 +369,55 @@ check "copy -- after C-b PgUp, a page down to the bottom leaves" "$(screen | gre
 tmux send-keys -t "$s" 'echo still-here' Enter
 wait_for 'still-here'
 check "copy -- keys reach the shell again" "$(screen | grep -c '^still-here$')" "1"
+
+# search
+tmux send-keys -t "$s" 'clear; seq 1 199; echo s""200' Enter
+wait_for 's200'
+tmux send-keys -t "$s" C-b '['
+wait_for '[0/'
+tmux send-keys -t "$s" C-r
+sleep 1
+check "search -- C-r asks on the pane's bottom row" "$(row 29)" "(search up)"
+tmux send-keys -t "$s" 199
+sleep 2
+# a row captured alone starts from no attribute, so its own colours show
+match() { tmux capture-pane -e -p -t "$s" -S "$1" -E "$1" | grep -c "$2"; }
+check "search -- each key searches, the match the cursor is on black on magenta" "$(match 26 '30m.*45m') $(row 27)" "1 199"
+tmux send-keys -t "$s" Enter
+sleep 1
+check "search -- Enter keeps the match, the prompt gone, the count by the position" \
+  "$(match 26 '45m') $(screen | grep -c '^(search') $(row 1 | grep -cE ' \[0/[0-9]+\] \([0-9]+ results\)$')" "1 0 1"
+tmux send-keys -t "$s" C-r 1 8
+sleep 3
+check "search -- the other matches black on cyan, the count by the position" \
+  "$(match 7 '30m.*46m') $(match 15 '30m.*46m') $(match 16 '30m.*45m') $(row 1 | grep -cE ' \([0-9]+ results\)$')" "1 1 1 1"
+tmux send-keys -t "$s" Escape
+sleep 1
+tmux send-keys -t "$s" q
+sleep 1
+check "search -- q leaves, the matches gone" "$(screen | grep -c '\[[0-9]*/[0-9]*\]') $(match 7 '46m')" "0 0"
+
+# jumps
+tmux send-keys -t "$s" 'clear; echo jump-here x' Enter
+wait_for 'jump-here x'
+tmux send-keys -t "$s" C-b '['
+wait_for '[0/'
+cursor() { tmux display -p -t "$s" '#{cursor_x}'; }
+tmux send-keys -t "$s" Up F
+sleep 1
+check "jumps -- F asks on the pane's bottom row" "$(row 29)" "(jump backward)"
+tmux send-keys -t "$s" j
+sleep 1
+check "jumps -- the key typed is the answer: the cursor on the j, the prompt gone" \
+  "$(cursor) $(screen | grep -c '^(jump')" "0 0"
+tmux send-keys -t "$s" f x
+sleep 1
+check "jumps -- f on to the x" "$(cursor)" "10"
+tmux send-keys -t "$s" T h
+sleep 1
+check "jumps -- T back to the cell after the h" "$(cursor)" "6"
+tmux send-keys -t "$s" q
+sleep 1
 
 # paste
 tmux send-keys -t "$s" 'clear; echo one-two; echo three' Enter
@@ -342,6 +440,75 @@ tmux send-keys -t "$s" Enter C-d
 sleep 1
 check "paste -- C-b ] types the newest buffer, a newline a carriage return" "$(cat "$fx/pasted")" "one-two
 three"
+# a row of 150 that the 100-wide pane wraps, selected from its start to its end
+tmux send-keys -t "$s" "clear; printf '%0150d\\n' 0" Enter
+sleep 1
+tmux send-keys -t "$s" C-b '['
+wait_for '[0/'
+tmux send-keys -t "$s" Up Up C-a C-Space C-e M-w
+sleep 1
+tmux send-keys -t "$s" "cat >$fx/joined" Enter
+sleep 1
+tmux send-keys -t "$s" C-b ']'
+sleep 1
+tmux send-keys -t "$s" Enter C-d
+sleep 1
+check "paste -- a wrapped row copied as one line" "$(cat "$fx/joined")" "$(printf '%0150d' 0)"
+# a rectangle, R with emacs's keys: drawn from its left end to its right
+# on each row, past a short row's end; copied short of the cursor's column
+tmux send-keys -t "$s" "clear; printf 'abcdef\\nab\\nabcdefghij\\n'" Enter
+wait_for 'abcdefghij'
+tmux send-keys -t "$s" C-b '['
+wait_for '[0/'
+tmux send-keys -t "$s" Up Up Up C-a C-f C-Space R Down Down C-f C-f
+sleep 1
+# the text drawn black on yellow in row R
+drawn() { tmux capture-pane -e -p -t "$s" -S "$1" -E "$1" | grep -o '43m[^[:cntrl:]]*' | head -1 | sed 's/^43m\(.*\)/[\1]/'; }
+check "paste -- a rectangle drawn on each of its rows" "$(drawn 0)$(drawn 1)$(drawn 2)$(drawn 3)" "[bcd][b  ][bcd]"
+tmux send-keys -t "$s" M-w
+sleep 1
+tmux send-keys -t "$s" "cat >$fx/block" Enter
+sleep 1
+tmux send-keys -t "$s" C-b ']'
+sleep 1
+tmux send-keys -t "$s" Enter C-d
+sleep 1
+check "paste -- a rectangle copied, its columns on each row" "$(cat "$fx/block")" "bc
+b
+bc"
+
+# buffers: C-b # shows list-buffers over the pane, C-b = a list of them to
+# choose from, the newest first, C-b - deletes the newest automatic one
+xb() { X_BUNDLE_DIR=$fx/bundles/ TMUX_TMPDIR=$fx $X -l tmux -- -L oracle "$@"; }
+xb setb -b oracle-named "named one"
+xb setb "oracle newest"
+top=$(xb lsb -F '#{buffer_name}' | head -1)
+tmux send-keys -t "$s" 'clear' Enter
+sleep 1
+tmux send-keys -t "$s" C-b '#'
+wait_for "$top: 13 bytes"
+check "buffers -- C-b # shows list-buffers over the pane" "$(row 1 | sed 's/ *\[0\/[0-9]*\]$//')" "$(xb lsb | head -1)"
+tmux send-keys -t "$s" q
+sleep 1
+tmux send-keys -t "$s" "cat >$fx/chosen" Enter
+sleep 1
+tmux send-keys -t "$s" C-b =
+wait_for '(sort: creation)'
+check "buffers -- C-b = lists the newest first, each led by its key, its time and sample" \
+	"$(row 1 | sed 's/ [0-9][0-9]:[0-9][0-9]: / T: /')|$(row 2 | sed 's/ [0-9][0-9]:[0-9][0-9]: / T: /')" \
+	"(0) $top: T: oracle newest|(1) oracle-named: T: named one"
+check "buffers -- the selected row black on yellow" "$(tmux capture-pane -e -p -t "$s" -S 0 -E 0 | grep -c "43m(0) $top")" "1"
+check "buffers -- the preview's box under the list, titled with the buffer and the order" \
+	"$(row 15 | grep -cF "┌ $top (sort: creation) ─")$(row 16 | grep -cF '│ oracle newest')$(row 29 | grep -c '^└')" "111"
+tmux send-keys -t "$s" Down Enter
+sleep 1
+tmux send-keys -t "$s" Enter C-d
+sleep 1
+check "buffers -- Down and Enter paste the second" "$(cat "$fx/chosen")" "named one"
+tmux send-keys -t "$s" C-b -
+sleep 1
+check "buffers -- C-b - deletes the newest automatic one" "$(xb lsb -F '#{buffer_name}' | head -1)" "oracle-named"
+
 # the screen as the copy checks left it, for attach's
 tmux send-keys -t "$s" 'clear; echo still-here' Enter
 wait_for 'still-here'
@@ -596,7 +763,7 @@ wait_for 'BAD 0'
 # and so is history_size: a shell's prompt reaches tmux's history or not by
 # when it is drawn against the split.
 real() { env -u TMUX -u TMUX_PANE SHELL=/bin/sh tmux -L "$r" -f /dev/null "$@"; }
-mine() { env -u TMUX -u TMUX_PANE SHELL=/bin/sh X_LANG_DIR=$fx/langs/ TMUX_TMPDIR=$fx $X -l tmux -- -L oracle-sh -f /dev/null "$@"; }
+mine() { env -u TMUX -u TMUX_PANE SHELL=/bin/sh X_BUNDLE_DIR=$fx/bundles/ TMUX_TMPDIR=$fx $X -l tmux -- -L oracle-sh -f /dev/null "$@"; }
 said() { "$@" 2>&1; echo "rc $?"; }
 both() { check "shell -- $1" "$($2 mine)" "$($2 real)"; }
 sized() { if [ "$1" = real ]; then echo "-x 80 -y 23"; fi; }
@@ -664,7 +831,66 @@ wrong() {
 	said $1 has -t games
 }
 both "errors, and kill-session" wrong
-mine kill-server
-real kill-server
+captured() {
+	$1 new -d -s cap $(sized $1)
+	# the screen cleared by the printf, so its rows are 0 to 2 whatever
+	# the prompt
+	$1 send -t cap "printf '\\033[H\\033[2Ja\\033[1mb\\033[0m  c\\n\\033[44m  \\033[m\\nx\\\\\\\\y\\n'" Enter
+	sleep 2
+	said $1 capture-pane -p -t cap -S 0 -E 2; said $1 capture-pane -pe -t cap -S 0 -E 1
+	said $1 capture-pane -pC -t cap -S 2 -E 2; said $1 capture-pane -p -t cap -S 2 -E 1
+	said $1 capture-pane -t cap -S 0 -E 0
+	said $1 capture-pane -pa -t cap; said $1 capture-pane -paq -t cap
+	said $1 capture-pane -p -t nope
+	# a row of 100 that wraps, and one with spaces written after its text
+	$1 send -t cap "printf '\\033[H\\033[2J%0100d\\nab  \\n'" Enter
+	sleep 2
+	said $1 capture-pane -pJ -t cap -S 0 -E 2; said $1 capture-pane -pN -t cap -S 0 -E 2
+	said $1 capture-pane -pJe -t cap -S 0 -E 2
+}
+both "capture-pane's lines, -e, -C, a buffer, -a, a pane not there, -J and -N" captured
+waited() {
+	said $1 wait-for; said $1 wait-for -U ch; said $1 wait-for -S ch; said $1 wait-for ch
+	(sleep 1; $1 wait-for -S go) &
+	said $1 wait-for go
+	said $1 wait-for -L lk; (sleep 1; $1 wait-for -U lk) &
+	said $1 wait-for -L lk; said $1 wait-for -U lk
+	wait
+}
+both "wait-for's signals and locks, and its errors" waited
+piped() {
+	f=$fx/pipe.$1
+	said $1 pipe-pane -t cap "cat >$f"; said $1 display -p -t cap '#{pane_pipe}'
+	$1 send -t cap "echo piped-$1" Enter
+	sleep 2
+	said $1 pipe-pane -o -t cap 'cat >/dev/null'; said $1 display -p -t cap '#{pane_pipe}'
+	said $1 pipe-pane -o -t cap 'cat >/dev/null'; said $1 display -p -t cap '#{pane_pipe}'
+	said $1 pipe-pane -t cap; said $1 display -p -t cap '#{pane_pipe}'
+	grep -c "^piped-$1" "$f"
+	said $1 pipe-pane -I -t cap "echo echo from-$1"
+	sleep 2
+	$1 capture-pane -p -t cap | grep -c "^from-$1"
+	said $1 pipe-pane -t cap:7 true
+}
+both "pipe-pane's output to a command, -o, closing, -I and a window not there" piped
+buffered() {
+	said $1 deleteb
+	said $1 setb one; said $1 setb -b named "a named"; said $1 setb "two
+lines"; said $1 setb -a -b named "+more"; said $1 setb ""
+	said $1 setb "$(printf 'a\tb\033c\\d')"
+	said $1 setb -b "tab	x" no; said $1 setb -b "" no; said $1 setb -n x -b nosuch; said $1 setb
+	said $1 lsb
+	said $1 lsb -O name; said $1 lsb -O size -r; said $1 lsb -O bogus; said $1 lsb -F '#{buffer_name}' -f '#{==:#{buffer_size},3}'
+	said $1 setb -b buffer1 -n renamed; said $1 setb -n top; said $1 lsb -F '#{buffer_name}'
+	said $1 deleteb; said $1 deleteb -b nosuch; said $1 deleteb -b named; said $1 lsb -F '#{buffer_name}'
+	said $1 pasteb -b nosuch
+}
+both "the buffers: set-buffer, list-buffers' forms, renames, delete-buffer and their errors" buffered
+released() {
+	(sleep 1; $1 kill-server) &
+	said $1 wait-for never
+	wait
+}
+both "kill-server lets a waiter go" released
 
 exit $failed

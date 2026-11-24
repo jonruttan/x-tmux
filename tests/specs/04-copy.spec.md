@@ -170,3 +170,377 @@ each run of commands, its keys sent there to a pane of the same lines.
 ```
 ---
     (('clear-selection 'copy 'copy-end-of-line 'copy) ('begin-selection 'copy 'copy 'select-line 'other-end 'copy-end-of-line 'append 'clear-selection))
+
+## wrapped rows
+
+### a row the terminal wrapped is one line with the next: a selection goes on into it, the line's start and end are its rows', and C-k copies to its end
+
+```tmux
+(do (def h (spec-feed! vt-feed-pure! (vt-make-history 6 20 100) "abcdefghijklmnopqrstuvwxyz0123\r\nshort\r\n"))
+    (def run (fn (_ vi cmds) (List fold copy-do (copy-do (copy-enter h #f vi) 'history-top) cmds)))
+    (def take
+      (fn (_ vi cmds) (copy-text (run vi (List reverse (rest (List reverse cmds)))) (first (List reverse cmds)))))
+    (write (list (take #f (list 'right 'right 'begin-selection 'down 'copy))
+                 (take #f (list 'right 'right 'copy-end-of-line))
+                 (take #f (list 'begin-selection 'end-of-line 'copy))
+                 (take #f (list 'down 'begin-selection 'up 'copy))
+                 (copy-cursor (run #f (list 'end-of-line)))
+                 (copy-cursor (run #f (list 'down 'right 'right 'right 'start-of-line))))))
+```
+---
+    ("cdefghijklmnopqrstuv" "cdefghijklmnopqrstuvwxyz0123" "abcdefghijklmnopqrstuvwxyz0123" "abcdefghijklmnopqrst" (1 . 10) (0 . 0))
+
+### vi: V takes the whole line, from the row it began on to the cursor's; a selection's last row runs past its end
+
+```tmux
+(do (def h (spec-feed! vt-feed-pure! (vt-make-history 6 20 100) "abcdefghijklmnopqrstuvwxyz0123\r\nshort\r\n"))
+    (def run (fn (_ vi cmds) (List fold copy-do (copy-do (copy-enter h #f vi) 'history-top) cmds)))
+    (def take
+      (fn (_ vi cmds) (copy-text (run vi (List reverse (rest (List reverse cmds)))) (first (List reverse cmds)))))
+    (write (list (take #t (list 'down 'select-line 'copy))
+                 (take #t (list 'begin-selection 'down 'down 'copy))
+                 (take #t (list 'right 'right 'copy-end-of-line))
+                 (take #t (list 'begin-selection 'end-of-line 'copy))
+                 (take #t (list 'down 'down 'select-line 'up 'copy))
+                 (take #t (list 'select-line 'down 'down 'copy))
+                 (take #t (list 'down 'down 'begin-selection 'up 'copy))
+                 (copy-cursor (run #t (list 'end-of-line)))
+                 (copy-cursor (run #t (list 'down 'select-line 'up)))
+                 (copy-cursor (run #t (list 'down 'down 'select-line 'up))))))
+```
+---
+    ("abcdefghijklmnopqrstuvwxyz0123\n" "abcdefghijklmnopqrstuvwxyz0123\ns" "cdefghijklmnopqrstuvwxyz0123" "abcdefghijklmnopqrstuvwxyz0123" "uvwxyz0123\nshort\n" "abcdefghijklmnopqrstuvwxyz0123\nshort\n\n" "uvwxyz0123\ns" (1 . 9) (0 . 19) (1 . 0))
+
+### a wrapped row keeps the spaces it holds
+
+```tmux
+(do (def h (spec-feed! vt-feed-pure! (vt-make-history 6 20 100) "abcdefghijklmnopqr  xyz\r\nnext\r\n"))
+    (def run (fn (_ vi cmds) (List fold copy-do (copy-do (copy-enter h #f vi) 'history-top) cmds)))
+    (def take
+      (fn (_ vi cmds) (copy-text (run vi (List reverse (rest (List reverse cmds)))) (first (List reverse cmds)))))
+    (write (list (take #f (list 'begin-selection 'down 'end-of-line 'copy))
+                 (take #t (list 'begin-selection 'down 'end-of-line 'copy))
+                 (take #f (list 'right 'copy-end-of-line))
+                 (take #t (list 'select-line 'copy)))))
+```
+---
+    ("abcdefghijklmnopqr  xyz" "abcdefghijklmnopqr  xyz" "bcdefghijklmnopqr  xyz" "abcdefghijklmnopqr  xyz\n")
+
+## search
+
+A 20x6 pane, as tmux 3.8's searched with send -X: after each search, the
+cursor's column and row and the position, its count of the matches.
+
+### vi: n and N search again its way and the other, from the end round to the start; the cursor goes to a match's start
+
+```tmux
+(do (copy-count-limit! 0)
+    (def h (spec-feed! vt-feed-pure! (vt-make-history 6 20 100) "abc one\r\nxx abc\r\nabc abc abc\r\nnone\r\n"))
+    (def at (fn (_ c) (list (rest (copy-cursor c)) (first (copy-cursor c)) (copy-position c))))
+    (def steps
+      (fn (_ c fs) (rest (List fold (fn (_ acc f) ((fn (_ n) (pair n (List append (rest acc) (list (at n))))) (do (Heap collect) (f (first acc)))))
+                           (pair c ()) fs))))
+    (def again (fn (_ c) (copy-do c 'search-again)))
+    (write (steps (copy-enter h #f #t)
+             (list (fn (_ c) (copy-search c "abc" #f #t)) again again again (fn (_ c) (copy-do c 'search-reverse))
+                   (fn (_ c) (copy-search c "abc" #t #t)) again again again again again))))
+```
+---
+    ((8 2 "[0/0] (5 results)") (4 2 "[0/0] (5 results)") (0 2 "[0/0] (5 results)") (3 1 "[0/0] (5 results)") (0 2 "[0/0] (5 results)") (4 2 "[0/0] (5 results)") (8 2 "[0/0] (5 results)") (0 0 "[0/0] (5 results)") (3 1 "[0/0] (5 results)") (0 2 "[0/0] (5 results)") (4 2 "[0/0] (5 results)"))
+
+### emacs: a search down puts the cursor past the match; a move lets the matches go, and the next search does not count them
+
+```tmux
+(do (copy-count-limit! 0)
+    (def h (spec-feed! vt-feed-pure! (vt-make-history 6 20 100) "abc one\r\nxx abc\r\nabc abc abc\r\nnone\r\n"))
+    (def at (fn (_ c) (list (rest (copy-cursor c)) (first (copy-cursor c)) (copy-position c))))
+    (def steps
+      (fn (_ c fs) (rest (List fold (fn (_ acc f) ((fn (_ n) (pair n (List append (rest acc) (list (at n))))) (do (Heap collect) (f (first acc)))))
+                           (pair c ()) fs))))
+    (def again (fn (_ c) (copy-do c 'search-again)))
+    (write (steps (copy-enter h #f #f)
+             (list (fn (_ c) (copy-search c "abc" #f #f)) again (fn (_ c) (copy-do c 'search-reverse))
+                   (fn (_ c) (copy-search c "abc" #t #f)) again again (fn (_ c) (copy-do c 'left)) again))))
+```
+---
+    ((8 2 "[0/0] (5 results)") (4 2 "[0/0] (5 results)") (7 2 "[0/0] (5 results)") (11 2 "[0/0] (5 results)") (3 0 "[0/0] (5 results)") (6 1 "[0/0] (5 results)") (5 1 "[0/0]") (3 2 "[0/0]"))
+
+### emacs's incremental search: = the way it began, + down, - up; new text goes back to where it began; no text lets the matches go
+
+```tmux
+(do (copy-count-limit! 0)
+    (def h (spec-feed! vt-feed-pure! (vt-make-history 6 20 100) "abc one\r\nxx abc\r\nabc abc abc\r\nnone\r\n"))
+    (def at (fn (_ c) (list (rest (copy-cursor c)) (first (copy-cursor c)) (copy-position c))))
+    (def steps
+      (fn (_ c fs) (rest (List fold (fn (_ acc f) ((fn (_ n) (pair n (List append (rest acc) (list (at n))))) (do (Heap collect) (f (first acc)))))
+                           (pair c ()) fs))))
+    (def up (fn (_ arg) (fn (_ c) (copy-incremental c arg #t))))
+    (def down (fn (_ arg) (fn (_ c) (copy-incremental c arg #f))))
+    (write (steps (copy-enter h #f #f)
+             (list (up "=a") (up "=ab") (up "-ab") (up "+ab") (up "=a") (up "=") (down "=x") (down "+x") (down "+x")
+                   (down "-x") (down "=zz")))))
+```
+---
+    ((8 2 "[0/0] (5 results)") (8 2 "[0/0] (5 results)") (4 2 "[0/0] (5 results)") (6 2 "[0/0] (5 results)") (8 2 "[0/0] (5 results)") (0 4 "[0/0]") (1 1 "[0/0] (2 results)") (2 1 "[0/0] (2 results)") (1 1 "[0/0] (2 results)") (0 1 "[0/0] (2 results)") (0 4 "[0/0]"))
+
+### text all in lower case matches either case, else its own; a search that finds nothing lets the matches go
+
+```tmux
+(do (copy-count-limit! 0)
+    (def h (spec-feed! vt-feed-pure! (vt-make-history 6 20 100) "Abc abc ABC\r\nabc\r\n"))
+    (def at (fn (_ c) (list (rest (copy-cursor c)) (first (copy-cursor c)) (copy-position c))))
+    (def steps
+      (fn (_ c fs) (rest (List fold (fn (_ acc f) ((fn (_ n) (pair n (List append (rest acc) (list (at n))))) (do (Heap collect) (f (first acc)))))
+                           (pair c ()) fs))))
+    (def again (fn (_ c) (copy-do c 'search-again)))
+    (write (steps (copy-enter h #f #t)
+             (list (fn (_ c) (copy-search c "abc" #f #t)) again again (fn (_ c) (copy-search c "Abc" #f #t)) again
+                   (fn (_ c) (copy-search c "ABC" #f #t)) (fn (_ c) (copy-search c "aBc" #t #t))))))
+```
+---
+    ((0 1 "[0/0] (4 results)") (8 0 "[0/0] (4 results)") (4 0 "[0/0] (4 results)") (0 0 "[0/0] (1 results)") (0 0 "[0/0] (1 results)") (8 0 "[0/0] (1 results)") (8 0 "[0/0]"))
+
+### a match runs on into the row a wrap joins; vi's next search starts past the match the cursor is on
+
+```tmux
+(do (copy-count-limit! 0)
+    (def h (spec-feed! vt-feed-pure! (vt-make-history 6 20 100) "abcdefghijklmnopqrstuvwxyz0123\r\nqrst\r\n"))
+    (def at (fn (_ c) (list (rest (copy-cursor c)) (first (copy-cursor c)) (copy-position c))))
+    (def steps
+      (fn (_ c fs) (rest (List fold (fn (_ acc f) ((fn (_ n) (pair n (List append (rest acc) (list (at n))))) (do (Heap collect) (f (first acc)))))
+                           (pair c ()) fs))))
+    (def again (fn (_ c) (copy-do c 'search-again)))
+    (write (steps (copy-enter h #f #t)
+             (list (fn (_ c) (copy-search c "stuvw" #f #t)) again (fn (_ c) (copy-search c "s.u" #f #t)) again
+                   (fn (_ c) (copy-search c "qrst" #t #t)) again again))))
+```
+---
+    ((18 0 "[0/0] (1 results)") (18 0 "[0/0] (1 results)") (18 0 "[0/0] (1 results)") (18 0 "[0/0] (1 results)") (0 2 "[0/0] (2 results)") (16 0 "[0/0] (2 results)") (0 2 "[0/0] (2 results)"))
+
+### a regular expression: a line's blanks are its end's; one that does not read finds nothing; up, the last of a line's matches one after another
+
+```tmux
+(do (copy-count-limit! 0)
+    (def h (spec-feed! vt-feed-pure! (vt-make-history 6 20 100) "abc one\r\nxx abc\r\nabc abc abc\r\nnone\r\n"))
+    (def at (fn (_ c) (list (rest (copy-cursor c)) (first (copy-cursor c)) (copy-position c))))
+    (def steps
+      (fn (_ c fs) (rest (List fold (fn (_ acc f) ((fn (_ n) (pair n (List append (rest acc) (list (at n))))) (do (Heap collect) (f (first acc)))))
+                           (pair c ()) fs))))
+    (def again (fn (_ c) (copy-do c 'search-again)))
+    (def up (fn (_ text) (fn (_ c) (copy-search c text #f #t))))
+    (write (steps (copy-enter h #f #t) (list (up "^xx") (up "b+c") again (up "o.e$") (up "(") (up "n[eo]") again again))))
+```
+---
+    ((0 1 "[0/0] (1 results)") (1 0 "[0/0] (5 results)") (9 2 "[0/0] (5 results)") (9 2 "[0/0]") (9 2 "[0/0]") (5 0 "[0/0] (3 results)") (2 3 "[0/0] (3 results)") (0 3 "[0/0] (3 results)"))
+
+### a match in the history scrolls to it, a quarter of the rows above it
+
+```tmux
+(do (copy-count-limit! 0)
+    (def h (spec-feed! vt-feed-pure! (vt-make-history 6 20 100)
+             (Str8 append (spec-lines 1 40) "\r\nend\r\n")))
+    (def at (fn (_ c) (list (rest (copy-cursor c)) (first (copy-cursor c)) (copy-position c))))
+    (def steps
+      (fn (_ c fs) (rest (List fold (fn (_ acc f) ((fn (_ n) (pair n (List append (rest acc) (list (at n))))) (do (Heap collect) (f (first acc)))))
+                           (pair c ()) fs))))
+    (def again (fn (_ c) (copy-do c 'search-again)))
+    (write (steps (copy-enter h #f #t)
+             (list (fn (_ c) (copy-search c "7" #f #t)) again again again again (fn (_ c) (copy-search c "end" #t #t))
+                   (fn (_ c) (copy-search c "^1$" #f #t)) (fn (_ c) (copy-search c "^2" #f #t)) again
+                   (fn (_ c) (copy-do c 'history-bottom)) again))))
+```
+---
+    ((1 0 "[0/36] (4 results)") (1 5 "[15/36] (4 results)") (1 5 "[25/36] (4 results)") (0 5 "[35/36] (4 results)") (1 5 "[5/36] (4 results)") (0 5 "[1/36] (1 results)") (0 5 "[1/36]") (0 5 "[13/36] (11 results)") (0 4 "[13/36] (11 results)") (0 5 "[0/36] (11 results)") (0 5 "[13/36] (11 results)"))
+
+### the matches on the view, the one the cursor is on apart, with emacs's keys after a search down the one before it; a match's rows
+
+```tmux
+(do (copy-count-limit! 0)
+    (def h (spec-feed! vt-feed-pure! (vt-make-history 6 20 100) "abc one\r\nxx abc\r\nabc abc abc\r\nnone\r\n"))
+    (def w (spec-feed! vt-feed-pure! (vt-make-history 6 20 100) "abcdefghijklmnopqrstuvwxyz0123\r\n"))
+    (write (list (copy-matches (copy-search (copy-enter h #f #t) "abc" #f #t))
+                 (copy-matches (copy-search (copy-enter h #f #f) "abc" #t #f))
+                 (copy-matches (copy-search (copy-enter w #f #t) "stuvw" #f #t)))))
+```
+---
+    (((0 0 "abc" #f) (1 3 "abc" #f) (2 0 "abc" #f) (2 4 "abc" #f) (2 8 "abc" #t)) ((0 0 "abc" #t) (1 3 "abc" #f) (2 0 "abc" #f) (2 4 "abc" #f) (2 8 "abc" #f)) ((0 18 "st" #t) (1 0 "uvw" #t)))
+
+### vi's * and #: the word at the cursor searched down or up, a wrap carried, the cursor on a separator taking the word after it; none on a blank row
+
+```tmux
+(do (copy-count-limit! 0)
+    (def h (spec-feed! vt-feed-pure! (vt-make-history 6 20 100) "foo.bar foo\r\nbar_x foo-bar\r\nabcdefghijklmnopqrstfoo\r\n"))
+    (def at (fn (_ c) (list (rest (copy-cursor c)) (first (copy-cursor c)) (copy-position c))))
+    (def steps
+      (fn (_ c fs) (rest (List fold (fn (_ acc f) ((fn (_ n) (pair n (List append (rest acc) (list (at n))))) (do (Heap collect) (f (first acc)))))
+                           (pair c ()) fs))))
+    (def k (fn (_ cmd) (fn (_ c) (copy-do c cmd))))
+    (write (list
+      (steps (copy-enter h #f #t)
+        (list (k 'search-word-down) (k 'up) (k 'search-word-down) (k 'search-word-up) (k 'up) (k 'right) (k 'right) (k 'right)
+              (k 'search-word-down) (k 'search-word-up) (k 'history-top) (k 'search-word-down) (k 'search-word-down)
+              (k 'search-word-up)))
+      (steps (copy-enter h #f #t)
+        (list (k 'history-top) (k 'right) (k 'right) (k 'right) (k 'search-word-down) (k 'search-word-down)
+              (k 'search-word-down) (k 'search-word-up) (k 'end-of-line) (k 'left) (k 'left) (k 'left) (k 'search-word-up)
+              (k 'search-again))))))
+```
+---
+    (((0 4 "[0/0]") (2 3 "[0/0]") (0 2 "[0/0] (1 results)") (0 2 "[0/0] (1 results)") (0 1 "[0/0] (1 results)") (1 1 "[0/0] (1 results)") (2 1 "[0/0] (1 results)") (3 1 "[0/0] (1 results)") (0 1 "[0/0] (1 results)") (0 1 "[0/0] (1 results)") (0 0 "[0/0] (1 results)") (8 0 "[0/0] (4 results)") (6 1 "[0/0] (4 results)") (8 0 "[0/0] (4 results)")) ((0 0 "[0/0]") (1 0 "[0/0]") (2 0 "[0/0]") (3 0 "[0/0]") (4 0 "[0/0] (3 results)") (0 1 "[0/0] (3 results)") (0 1 "[0/0] (1 results)") (0 1 "[0/0] (1 results)") (12 1 "[0/0] (1 results)") (11 1 "[0/0] (1 results)") (10 1 "[0/0] (1 results)") (9 1 "[0/0] (1 results)") (0 1 "[0/0] (3 results)") (4 0 "[0/0] (3 results)")))
+
+### the keys: emacs's C-s C-r n N, vi's / ? n N * #
+
+```tmux
+(write (list (List map (fn (_ t) ((fn (_ b) (first (copy-key (%spec-str->ptr (first b)) 0 (rest b) #f))) (spec-bytes t)))
+               (list "\x13" "\x12" "n" "N"))
+             (List map (fn (_ t) ((fn (_ b) (first (copy-key (%spec-str->ptr (first b)) 0 (rest b) #t))) (spec-bytes t)))
+               (list "/" "?" "n" "N" "*" "#"))))
+```
+---
+    (('incremental-down 'incremental-up 'search-again 'search-reverse) ('prompt-down 'prompt-up 'search-again 'search-reverse 'search-word-down 'search-word-up))
+
+## jumps
+
+A 20x6 pane, as tmux 3.8's jumped with send -X: after each command, the
+cursor's column and row, with vi's keys and then emacs's.
+
+### f F t T to a character on the cursor's line and over its wraps, ; again, , the other way; T with emacs's keys past a row's last cell
+
+```tmux
+(do (def h (spec-feed! vt-feed-pure! (vt-make-history 6 20 100) "abcabc x.y\r\nzzz abc\r\nabcdefghijklmnopqrstuvwxyz\r\n"))
+    (def at (fn (_ c) (list (rest (copy-cursor c)) (first (copy-cursor c)))))
+    (def steps
+      (fn (_ c fs) (rest (List fold (fn (_ acc f) ((fn (_ n) (pair n (List append (rest acc) (list (at n))))) (do (Heap collect) (f (first acc)))))
+                           (pair c ()) fs))))
+    (def k (fn (_ cmd) (fn (_ c) (copy-do c cmd))))
+    (def j (fn (_ cmd ch) (fn (_ c) (copy-jump c cmd ch))))
+    (def first-run
+      (list (k 'history-top) (j 'jump-forward "c") (k 'jump-again) (k 'jump-again) (k 'jump-reverse)
+            (j 'jump-to-forward "c") (k 'jump-again) (j 'jump-to-backward "a") (k 'jump-again) (k 'jump-reverse)
+            (j 'jump-forward "z") (j 'jump-forward "y") (j 'jump-backward "x") (j 'jump-backward "b")
+            (k 'down) (k 'down) (k 'down) (j 'jump-backward "q") (j 'jump-forward "x") (j 'jump-to-backward "s")
+            (j 'jump-to-forward "y") (k 'end-of-line) (j 'jump-to-backward "u") (j 'jump-forward "z")))
+    (def second-run
+      (list (k 'history-top) (k 'down) (k 'down) (k 'end-of-line) (k 'left) (j 'jump-to-forward "u") (k 'jump-reverse)
+            (j 'jump-to-forward "v") (k 'start-of-line) (j 'jump-backward "r") (j 'jump-to-backward "t")
+            (j 'jump-to-backward "t") (j 'jump-forward "u") (j 'jump-to-backward "t")))
+    (write (List map (fn (_ vi) (list (steps (copy-enter h #f vi) first-run) (steps (copy-enter h #f vi) second-run)))
+             (list #t #f))))
+```
+---
+    ((((0 0) (2 0) (5 0) (5 0) (2 0) (4 0) (4 0) (1 0) (1 0) (2 0) (2 0) (9 0) (7 0) (4 0) (4 1) (4 2) (4 3) (16 2) (3 3) (19 2) (3 3) (5 3) (1 3) (5 3)) ((0 0) (0 1) (0 2) (5 3) (4 3) (4 3) (1 3) (1 3) (0 2) (0 2) (0 2) (0 2) (0 3) (0 3))) (((0 0) (2 0) (5 0) (5 0) (2 0) (4 0) (4 0) (1 0) (1 0) (2 0) (2 0) (9 0) (7 0) (4 0) (4 1) (4 2) (4 3) (16 2) (3 3) (19 2) (3 3) (6 3) (1 3) (5 3)) ((0 0) (0 1) (0 2) (6 3) (5 3) (5 3) (1 3) (1 3) (0 2) (0 2) (0 2) (0 2) (0 3) (20 2))))
+
+### the keys, emacs's and vi's alike: f F t T ; ,
+
+```tmux
+(write (List map (fn (_ vi) (List map (fn (_ t) ((fn (_ b) (first (copy-key (%spec-str->ptr (first b)) 0 (rest b) vi))) (spec-bytes t)))
+                              (list "f" "F" "t" "T" ";" ",")))
+         (list #f #t)))
+```
+---
+    (('jump-forward 'jump-backward 'jump-to-forward 'jump-to-backward 'jump-again 'jump-reverse) ('jump-forward 'jump-backward 'jump-to-forward 'jump-to-backward 'jump-again 'jump-reverse))
+
+## rectangles
+
+A 20x6 pane, as tmux 3.8's rectangle-toggle with send -X, and
+copy-selection-no-clear for what a copy takes: after each `at` the
+cursor's column and row, and after each `copy` the selection's text,
+with vi's keys and then emacs's.
+
+### a rectangle's selection keeps the cursor's column up and down, past a row's end; end-of-line goes past the pane's edge; the columns copied from the left end to the right, emacs's leaving out the cursor's at the right
+
+```tmux
+(do (def h (spec-feed! vt-feed-pure! (vt-make-history 6 20 100) "abcdef\r\nab\r\nabcdefghij\r\n"))
+    (def run
+      (fn (_ c steps)
+        (rest (List fold
+                (fn (_ acc s)
+                  (match
+                    ((eq? s 'at) (pair (first acc) (List append (rest acc) (list (list (rest (copy-cursor (first acc))) (first (copy-cursor (first acc))))))))
+                    ((eq? s 'copy) (pair (first acc) (List append (rest acc) (list (copy-text (first acc) 'copy)))))
+                    (#t (pair (copy-do (first acc) s) (rest acc)))))
+                (pair c ()) steps))))
+    (def steps
+      '(history-top right right right right begin-selection rectangle-toggle down at down at copy left left left at copy
+        up at copy end-of-line at copy up at copy other-end at copy rectangle-toggle at copy rectangle-toggle at
+        clear-selection at))
+    (write (List map (fn (_ vi) (run (copy-enter h #f vi) steps)) (list #t #f))))
+```
+---
+    (((4 1) (4 2) "e\n\ne" (1 2) "bcde\nb\nbcde" (1 1) "bcde\nb\n" (20 1) "ef\n\n" (20 0) "ef\n" (4 0) "ef\n" (4 0) "ef\n" (4 0) (4 0)) ((4 1) (4 2) "e\n\ne" (1 2) "bcde\nb\nbcde" (1 1) "bcde\nb" (20 1) "ef\n" (20 0) "ef" (4 0) "ef" (4 0) "ef" (4 0) (4 0)))
+
+### with no selection a rectangle lets vi's cursor stop past a row's last character up and down; toggled off, the cursor goes back to its limit
+
+```tmux
+(do (def h (spec-feed! vt-feed-pure! (vt-make-history 6 20 100) "abcdef\r\nab\r\nabcdefghij\r\n"))
+    (def run
+      (fn (_ c steps)
+        (rest (List fold
+                (fn (_ acc s)
+                  (if (eq? s 'at)
+                    (pair (first acc) (List append (rest acc) (list (list (rest (copy-cursor (first acc))) (first (copy-cursor (first acc)))))))
+                    (pair (copy-do (first acc) s) (rest acc))))
+                (pair c ()) steps))))
+    (def steps
+      '(history-top rectangle-toggle end-of-line at down at down at up at up at rectangle-toggle at begin-selection
+        rectangle-toggle down down end-of-line at rectangle-toggle at clear-selection at))
+    (write (List map (fn (_ vi) (run (copy-enter h #f vi) steps)) (list #t #f))))
+```
+---
+    (((5 0) (2 1) (5 2) (2 1) (5 0) (5 0) (20 2) (9 2) (9 2)) ((6 0) (2 1) (10 2) (2 1) (6 0) (6 0) (20 2) (10 2) (10 2)))
+
+### drawn from its left end to its right on each of its rows, the cursor's column and all, either way round
+
+```tmux
+(do (def h (spec-feed! vt-feed-pure! (vt-make-history 6 20 100) "abcdef\r\nab\r\nabcdefghij\r\n"))
+    (def go (fn (_ c cmds) (List fold (fn (_ c s) (copy-do c s)) c cmds)))
+    (write (list (copy-marks (go (copy-enter h #f #t) '(history-top right begin-selection rectangle-toggle down down right right)))
+                 (copy-marks (go (copy-enter h #f #f) '(history-top right right right begin-selection rectangle-toggle down left left))))))
+```
+---
+    (((0 1 "bcd") (1 1 "b  ") (2 1 "bcd")) ((0 1 "bcd") (1 1 "b  ")))
+
+### the keys: emacs's R, vi's v and C-v
+
+```tmux
+(write (list (List map (fn (_ t) ((fn (_ b) (first (copy-key (%spec-str->ptr (first b)) 0 (rest b) #f))) (spec-bytes t))) (list "R"))
+             (List map (fn (_ t) ((fn (_ b) (first (copy-key (%spec-str->ptr (first b)) 0 (rest b) #t))) (spec-bytes t))) (list "v" "\x16"))))
+```
+---
+    (('rectangle-toggle) ('rectangle-toggle 'rectangle-toggle))
+
+## the history's times
+
+A row is given the time it is kept in the history, as tmux 3.8 gives a
+line the time it scrolls off; copy mode shows the top row's time before
+the position, tmux's copy-mode-position-format.  Times here are small
+numbers set before each read in place of the clock.
+
+### each row kept has the time of the read that kept it; a resize keeps them; ED 3 empties the history
+
+```tmux
+(import tmux/vt vt-now! vt-history-time)
+(do (def h (vt-make 24 80))
+    (spec-feed! vt-feed-pure! (vt-now! h 1000) (spec-lines 1 30))
+    (spec-feed! vt-feed-pure! (vt-now! h 2000) (Str8 append "\r\n" (spec-lines 31 40)))
+    (def times (fn (_ h) (List map (fn (_ i) (vt-history-time h i)) (List range 0 (vt-history h)))))
+    (def r (vt-carry h 20 70))
+    (write (list (times h) (times r) (vt-history (spec-feed! vt-feed-pure! h "^[3J")))))
+```
+---
+    ((1000 1000 1000 1000 1000 1000 2000 2000 2000 2000 2000 2000 2000 2000 2000 2000) (1000 1000 1000 1000 1000 1000 2000 2000 2000 2000 2000 2000 2000 2000 2000 2000) 0)
+
+### copy mode's top row's time: none at the bottom, where the top row is the screen's
+
+```tmux
+(import tmux/vt vt-now!)
+(import tmux/copy copy-top-time)
+(do (def h (vt-make 24 80))
+    (spec-feed! vt-feed-pure! (vt-now! h 1000) (spec-lines 1 30))
+    (spec-feed! vt-feed-pure! (vt-now! h 2000) (Str8 append "\r\n" (spec-lines 31 40)))
+    (def c (copy-enter h #f #f))
+    (write (List map (fn (_ c) (list (copy-position c) (copy-top-time c)))
+             (list c (copy-do c 'halfpage-up) (copy-do c 'history-top) (copy-do (copy-do c 'history-top) 'halfpage-down)))))
+```
+---
+    (("[0/16]" 0) ("[12/16]" 1000) ("[16/16]" 1000) ("[4/16]" 2000))

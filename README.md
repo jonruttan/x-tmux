@@ -1,8 +1,25 @@
 # x-tmux
 
-A terminal multiplexer on x-lang, after tmux, as a lang bundle.
+<p align="center"><img src="docs/bitwise-banner.svg" alt="x-tmux, with Bitwise the owl" width="100%"></p>
+
+A terminal multiplexer written in
+[x-lang](https://github.com/jonruttan/x-lang), after tmux, loaded as a
+lang.
 
     x -l tmux -- [COMMAND [ARGS]]
+
+    x -l tmux -- new        # a session; C-b d detaches
+    x -l tmux -- ls         # the sessions the server keeps
+    x -l tmux -- attach     # back into one
+
+## Install
+
+It needs x-lang at the release `bundle.xon` declares.
+
+    make install    copies the bundle to <share>/bundles/tmux and writes
+                    its boot image
+
+## Sessions
 
 `new-session` (or `new`) makes a session and shows it on the terminal it
 runs in: numbered windows of panes, each a shell on a pseudo-terminal,
@@ -52,6 +69,9 @@ The prefix is C-b, and after it, as tmux binds its keys:
     [     copy mode
     PgUp  copy mode, a page up; a page down to the bottom leaves it
     ]     paste the newest buffer
+    #     list the buffers
+    =     choose a buffer to paste
+    -     delete the newest buffer
     C-b   a C-b to the pane
 
 A new window takes the lowest free number and starts its shell where the
@@ -60,7 +80,7 @@ and the one shown before it `-`; closing the shown window shows that one.
 The status line's parts and styles are options, below.
 A question on the status line takes `y` for yes and any other key for no.
 A window is named after its active pane's foreground program, `[tmux]`
-while that pane is in copy mode, looked at as its panes write and at most
+while that pane is in copy mode or buffer mode, looked at as its panes write and at most
 every half second, as tmux's automatic-rename names it; the name is the
 kernel's for the process.  C-b `,` asks for a name on the status line,
 the old one there to edit with emacs's keys, Enter taking it and Escape
@@ -76,7 +96,8 @@ above: split-window, new-window, kill-pane, kill-window, kill-session,
 select-pane, last-pane, select-window, next-window, previous-window,
 last-window, rename-window, resize-pane, swap-pane, rotate-window,
 select-layout, next-layout, previous-layout, display-panes, copy-mode,
-paste-buffer, send-prefix and detach-client, those of the shell below,
+paste-buffer, list-buffers, choose-buffer, delete-buffer, set-buffer,
+send-prefix and detach-client, those of the shell below,
 with command-prompt,
 confirm-before, display-message and those of the configuration below.
 `display-message [-lp] [-d MS] [-F FORMAT] [FORMAT]` shows a format on
@@ -111,7 +132,8 @@ last session.
 
 Each pane keeps the 2000 rows that scroll off its top, as tmux keeps its
 history.  Copy mode shows the pane as it was when the mode began, history
-and all, with tmux's position at its top right, and moves through it as
+and all, with tmux's position at its top right -- led, when the top row
+is the history's, by the time that row entered it -- and moves through it as
 tmux's does, with tmux's keys: emacs's, or vi's when `VISUAL` or `EDITOR`
 names vi.
 
@@ -121,7 +143,7 @@ names vi.
     PgUp PgDn        a page, two rows short of the pane (emacs M-v C-v;
                      vi C-f, a page down)
     vi C-u C-d       half a page
-    Home End         the row's start and end (emacs C-a C-e, vi 0 $)
+    Home End         the line's start and end (emacs C-a C-e, vi 0 $)
     emacs M-< M->    the top of the history and the bottom (vi g G)
     q                leave (emacs Escape and C-c too)
 
@@ -131,23 +153,104 @@ yellow, and copying it leaves the mode:
 
     emacs C-Space, vi Space    begin a selection
     emacs C-g, vi Escape       clear it
-    vi V                       select whole rows
+    vi V                       select whole lines
+    emacs R, vi v C-v          a rectangle, or back to rows
     vi o                       the cursor to the selection's other end
     emacs M-w C-w, vi Enter    copy it
     vi A                       copy it to the end of the newest buffer
-    emacs C-k, vi D            copy from the cursor to the row's end
+    emacs C-k, vi D            copy from the cursor to the line's end
 
-As tmux copies: with emacs's keys a selection stops short of the cell its
-later end is on, and with vi's takes it; a row's trailing blanks are left
-out, and a row's end, a newline, is taken where the selection runs past
-its last character.  What is copied is kept as the newest of the server's
-paste buffers, 50 at most, and C-b `]` types the newest to the active
-pane, each newline a carriage return.  Keys and pastes a pane's program
-does not take at once wait for it, in order.
+A line is a row and the rows the terminal wrapped it onto.  As tmux
+copies: with emacs's keys a selection stops short of the cell its later
+end is on, and with vi's takes it; a row's trailing blanks are left out,
+and a row's end, a newline, is taken where the selection runs past its
+last character.  A row that wrapped keeps the blanks it holds and goes on
+into the next with no newline.  What is copied is kept as the newest of
+the server's paste buffers, 50 at most, and C-b `]` types the newest to
+the active pane, each newline a carriage return.  Keys and pastes a
+pane's program does not take at once wait for it, in order.
 
-Not yet: rectangles, a row the terminal wrapped copied as one line,
-bracketed paste, the buffer commands (`#`, `=`, `-`), searching, and the
-time a row entered the history, which tmux shows beside the position.
+A rectangle takes the same columns from each row, from its left end to
+its right, with emacs's keys short of the cursor's column where it is
+the right end.  While there is one the cursor keeps its column up and
+down, past a row's end, and the line's end is past the pane's edge.
+
+A search asks for its text on the pane's bottom row:
+
+    vi / ?           search down or up for the text Enter takes
+    emacs C-s C-r    search down or up as the text is typed; C-s and C-r
+                     there search on, or with no text, take the last
+    n N              search again, the same way or the other
+    vi * #           search down or up for the word at the cursor
+
+As tmux searches, a search goes on from the other end, and a line is
+searched as one, its wrapped rows and all.  Text all in lower case
+matches either case, and vi's text is a regular expression where it has
+one of `^$*+()?[].\`.  The matches on the pane show black on cyan, the
+one the cursor is on black on magenta, and the position counts them,
+for 200 ms at most as tmux does: past that it shows the count rounded
+down to 1000, 100 or 10 with a `+`, or none.
+The cursor goes to a match's start, but with emacs's keys a search down
+puts it past the match's end.  A pane's last search is kept for its next
+copy mode, n searching up.  The matches go with a selection, and with
+emacs's keys with a move too.
+
+The word at the cursor runs to a space or a character in tmux's
+word-separators, the printable ASCII not a letter, a digit or `_`,
+over a wrap; on a separator, it is the word after it.
+
+A jump asks for one key on the pane's bottom row, the key typed its
+answer, and moves to that character on the cursor's line, with
+emacs's keys and vi's alike:
+
+    f F              to the next or the one before
+    t T              the cell before the next, or after the one before
+    ; ,              jump again, the same way or the other
+
+A jump stays on its line, the rows a wrap joins, and with emacs's keys
+lets the matches go, as a move does.
+
+## The paste buffers
+
+The buffers are kept as tmux keeps them.  What copy mode copies is an
+automatic buffer, named bufferN; one set by name with `set-buffer -b`,
+or renamed with `-n`, is not, and only automatic buffers count towards
+the 50.  Copy mode's append sets the newest automatic buffer again
+under its name, so it is no longer automatic.  With no `-b`, a paste
+and a delete take the newest automatic buffer.
+
+    list-buffers [-r] [-F FORMAT] [-f FILTER] [-O ORDER]
+    delete-buffer [-b NAME]
+    set-buffer [-a] [-b NAME] [-n NEW] [DATA]
+    paste-buffer [-p] [-b NAME]
+    choose-buffer [-NrZ] [-F FORMAT] [-f FILTER] [-O ORDER] [TEMPLATE]
+
+`list-buffers` writes `NAME: SIZE bytes: "SAMPLE"` for each buffer, the
+newest first, or by `-O name` or `size`; from a key its lines show over
+the pane as tmux shows a command's output.  A sample is the buffer's
+first 200 bytes, a newline, a tab, a backslash and a byte that is not
+printable written as C writes them in a string.  The formats have
+`buffer_name`, `buffer_size`, `buffer_sample`, `buffer_full` and
+`buffer_created`, which `#{t:...}` and `#{t/p:...}` write as a time.
+
+`choose-buffer`, C-b `=`, lists the buffers over the pane, each led by
+the key that picks it, 0 to 9 then M-a to M-z, and its time and sample,
+with a box under them previewing the selected one:
+
+    Up Down, k j, C-p C-n    the buffer above or below, wrapping
+    PgUp PgDn, C-b C-f       a page
+    g G, Home End            the first or the last
+    Enter p, or its key      paste it, as TEMPLATE, `paste-buffer -p -b '%%'`
+    t T C-t                  tag it and go down, untag them all, tag them all
+    P                        paste the tagged ones
+    d D                      delete it, or the tagged ones
+    O r                      the next sort order, or turn it about
+    v                        a bigger preview, none, or the usual
+    q Escape C-g             leave
+
+`-Z` zooms the window while the list shows, `-N` starts with no
+preview, and `-f` keeps the buffers its filter is true for.  Searching,
+filtering, help and the editor of tmux's buffer mode are not here.
 
 ## The screen
 
@@ -298,6 +401,9 @@ PATH`.  Those that serve scripts:
     show-options, show [-gqsvw] [NAME]
     split-window [-hv] [-t PANE], new-window [-d] [-n NAME] [-t SESSION:INDEX],
     select-layout [-np] [-t PANE] [LAYOUT], rename-window [-t WINDOW] NAME
+    capture-pane [-aCeJNpq] [-S START] [-E END] [-t PANE]
+    pipe-pane [-IOo] [-t PANE] [COMMAND]
+    wait-for [-L | -S | -U] CHANNEL
 
 A target is tmux's: `SESSION:WINDOW.PANE`, each part left out for the
 current one; `%N` a pane by its id; a session by its name or the
@@ -311,6 +417,26 @@ x-tmux gives a session made with -d and no client a status line, so its
 panes have 23 rows where tmux's have 24; list-panes has no
 `history_bytes`; send-keys to a pane in copy mode goes to its program;
 a command run from inside a pane is not refused as nesting.
+
+capture-pane writes a pane's lines as tmux does: 0 the screen's top
+row, a negative line the history's, `-` its oldest or the screen's last;
+with -e each change of style as tmux's SGR; with -C a backslash twice
+and ESC as `\033`; with -a the screen under the alternate one; without
+-p the lines kept as a paste buffer.  A line runs to the cells tmux's
+grid would hold for it, its trailing spaces dropped; with -N they stay;
+with -J a line runs to its last cell written and one that wrapped goes
+on into the next.  A cell an erase blanks keeps the whole style, where
+tmux's keeps only the background, so -e may write an attribute or
+foreground there that tmux does not;
+a tab is captured as the spaces it moved over; a curly underscore is
+written 4, and an underscore's colour is not kept; there is no -b, -T,
+-P or -M.  wait-for waits for a signal on a channel, one sent with no
+one waiting kept for the next; -L and -U lock and unlock it, the lock
+given to the next to wait; kill-server lets every waiter go.  pipe-pane
+runs COMMAND with `sh -c`, the pane's output to its standard input
+(-O), its standard output to the pane (-I), or both; no COMMAND closes
+the pane's pipe, -o only opens one when there is none, and
+`#{pane_pipe}` says whether one is open.
 
 Each may be led by `-L NAME` or `-S PATH` for the server's socket,
 `$TMUX_TMPDIR/x-tmux-UID/NAME` (`/tmp` when `TMUX_TMPDIR` is not set,
@@ -342,7 +468,9 @@ them, and its messages to tmux's; `06-keys` holds the keys typed and
 the names bind reads to tmux 3.8's, the bytes send-keys sends to
 tmux's, and a file of commands and a shell's words to how tmux 3.8
 reads them; `07-format` holds formats to what tmux
-3.8's display-message -p gives for them.
+3.8's display-message -p gives for them; `08-capture` holds the lines
+capture-pane names and writes, plain, with -e, -C, -J and -N, to tmux
+3.8's.
 
     X=/path/to/x sh tests/oracle/panes.sh
 
@@ -358,13 +486,9 @@ pane exiting and
 `kill-server`, with tmux's messages; then a configuration's prefix,
 bindings and errors, and source-file; then commands from a shell, run
 against x-tmux and against tmux on a socket of its own, their output,
-messages, status and send-keys' bytes the same.
-
-## Install
-
-    make install    copies the bundle to <share>/langs/tmux and writes
-                    its boot image
+messages, status and send-keys' bytes the same, and capture-pane,
+wait-for and pipe-pane's.
 
 ## Licence
 
-MIT No Attribution: see LICENSE.
+MIT No Attribution (MIT-0). See [LICENSE](LICENSE).

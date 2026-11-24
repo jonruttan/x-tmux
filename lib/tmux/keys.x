@@ -16,7 +16,8 @@
 (module tmux/keys)
 
 (import x/core/doors ptr-ref str-make str->ptr ptr-set! str-byte-len)
-(def %num (fn (_ n) ((prim-ref (lit convert) (lit to)) n (Type named STRING) 10)))
+(import tmux/num tmux-num)
+(def %num tmux-num)
 
 (def %byte
   (fn (_ b)

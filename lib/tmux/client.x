@@ -25,12 +25,21 @@
   proto-fields)
 (import tmux/server tmux-serve)
 
-(import x/core/doors str-make str->ptr int->ptr ptr-set! ptr-call str-byte-len)
-(def %num (fn (_ n) ((prim-ref (lit convert) (lit to)) n (Type named STRING) 10)))
-(def %to-int (fn (_ s) ((prim-ref (lit convert) (lit to)) s (Type named INTEGER) 10)))
+(import x/core/doors str-make str->ptr int->ptr ptr-ref ptr-set! ptr-call str-byte-len ffi-dlopen ffi-dlsym)
+(import tmux/num tmux-num tmux-int)
+(def %num tmux-num)
+(def %to-int (fn (_ s) (tmux-int s 10)))
 (def %int (fn (_ r) (if (> r 2147483647) (- r 4294967296) r)))
-(def %libc (fn (_ name) ((prim-ref (lit ffi) (lit dlsym)) ((prim-ref (lit ffi) (lit dlopen)) () 1) name)))
-(def %write (fn (_ fd s) (ptr-call (%libc "write") fd (str->ptr s) (str-byte-len s))))
+; libc, looked up as each command starts: a handle is a fact of the
+; process, and each key read and each of the server's writes calls these.
+(def %c-write ()) (def %c-read ()) (def %c-recv ())
+(def %resolve!
+  (fn (_)
+    (def lib (ffi-dlopen () 1))
+    (set! %c-write (ffi-dlsym lib "write"))
+    (set! %c-read (ffi-dlsym lib "read"))
+    (set! %c-recv (ffi-dlsym lib "recv"))))
+(def %write (fn (_ fd s) (ptr-call %c-write fd (str->ptr s) (str-byte-len s))))
 (def %esc
   (fn (_ text)
     (def e (str-make 1))
@@ -79,7 +88,7 @@
     (proto-each! c
       (fn (_ type p n)
         (match
-          ((= type 79) (ptr-call (%libc "write") 1 (int->ptr p) n))
+          ((= type 79) (ptr-call %c-write 1 (int->ptr p) n))
           ((= type 88)
             ((fn (_ text)
                (def tab (Str8 index-of "\t" text))
@@ -116,8 +125,8 @@
 (def %first-type
   (fn (_ c)
     (def b (str-make 2))
-    (if (< 0 (%int (ptr-call (%libc "recv") (proto-fd c) (str->ptr b) 1 2)))
-      ((prim-ref (lit ptr) (lit ref)) (str->ptr b) 0 1)
+    (if (< 0 (%int (ptr-call %c-recv (proto-fd c) (str->ptr b) 1 2)))
+      (ptr-ref (str->ptr b) 0 1)
       0)))
 
 ; Keys to the server, its output to the terminal, a change of size told,
@@ -137,7 +146,7 @@
        (def now (%size))
        (unless (if (= (first now) (first size)) (= (rest now) (rest size)) #f)
          (proto-send-text! fd 83 (Str8 append (%num (first now)) "\t" (%num (rest now)))))
-       (def typed (if (null? keys) 1 (%int (ptr-call (%libc "read") 0 (str->ptr buf) 4096))))
+       (def typed (if (null? keys) 1 (%int (ptr-call %c-read 0 (str->ptr buf) 4096))))
        (when (if (null? keys) #f (< 0 typed)) (proto-send! fd 73 (str->ptr buf) typed))
        (match
          ((< typed 1) (pair 1 "[lost tty]"))
@@ -152,6 +161,7 @@
 ; unless DETACHED; a server started for it reads FILES.
 (def tmux-new
   (fn (_ path files detached name)
+    (%resolve!)
     (when (if (not detached) (not (Term tty? 0)) #f)
       (do (%write 2 "open terminal failed: not a terminal\n") (Sys exit 1)))
     (def c ((fn (_ c) (if (null? c) (do (%start! path files) (%connect path)) c)) (%connect path)))
@@ -166,6 +176,7 @@
 ; session is there before it refuses.
 (def tmux-attach
   (fn (_ path name)
+    (%resolve!)
     (def c (%connect path))
     (match
       ((null? c) (do (%write 2 "no sessions\n") 1))
@@ -175,6 +186,7 @@
 ; list-sessions and kill-server: TYPE asked of the server.
 (def tmux-ask
   (fn (_ path type)
+    (%resolve!)
     (def c (%connect path))
     (if (null? c)
       (do (%write 2 (Str8 append "no server running on " path "\n")) 1)
@@ -186,6 +198,7 @@
 ; on standard error, and tmux's status answered.
 (def tmux-command
   (fn (_ path words)
+    (%resolve!)
     (def c (%connect path))
     (def us (str-make 1))
     (ptr-set! (str->ptr us) 0 31 1)
