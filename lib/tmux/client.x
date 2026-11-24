@@ -16,6 +16,7 @@
 (module tmux/client)
 
 (import x/sys/posix)
+(import x/sys/proc)
 (import x/repl/term)
 (import x/sys/file)
 (import x/sys/socket)
@@ -31,15 +32,13 @@
 (def %int (fn (_ r) (if (> r 2147483647) (- r 4294967296) r)))
 ; libc, looked up as each command starts: a handle is a fact of the
 ; process, and each key read and each of the server's writes calls these.
-(def %c-write ()) (def %c-read ()) (def %c-recv ()) (def %c-setsid ()) (def %c-open ())
+(def %c-write ()) (def %c-read ()) (def %c-recv ())
 (def %resolve!
   (fn (_)
     (def lib (ffi-dlopen () 1))
     (set! %c-write (ffi-dlsym lib "write"))
     (set! %c-read (ffi-dlsym lib "read"))
-    (set! %c-recv (ffi-dlsym lib "recv"))
-    (set! %c-setsid (ffi-dlsym lib "setsid"))
-    (set! %c-open (ffi-dlsym lib "open"))))
+    (set! %c-recv (ffi-dlsym lib "recv"))))
 (def %write (fn (_ fd s) (ptr-call %c-write fd (str->ptr s) (str-byte-len s))))
 (def %esc
   (fn (_ text)
@@ -62,10 +61,8 @@
     (def fd (Socket unix-listen path))
     (def pid (Sys fork))
     (if (= pid 0)
-      (do (ptr-call %c-setsid)
-          (def null (%int (ptr-call %c-open (str->ptr "/dev/null") 2)))
-          (Sys dup2 null 0) (Sys dup2 null 1) (Sys dup2 null 2)
-          (when (< 2 null) (Sys close null))
+      (do (Sys setsid)
+          (Proc quiet!)
           (Sys exit (tmux-serve fd path files)))
       (Socket close fd))))
 

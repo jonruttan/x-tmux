@@ -2881,7 +2881,7 @@
       ((fn (_ run)
          (set! %due (rest %due))
          (when (if (null? (first run)) #t (%live? (first run)))
-           (guard (e (unless (null? (first run)) (when (%live? (first run)) (%leave! (first run) 1 (Str8 append "x-tmux: " (%error-text e))))))
+           (guard (e (unless (null? (first run)) (when (%live? (first run)) (%leave! (first run) 1 (Str8 append "x-tmux: " (Err text e))))))
              (%run-for! (first run) (List ref 1 run) (List ref 2 run))))
          (self))
        (first %due)))))
@@ -3059,17 +3059,12 @@
     (if (< 0 (proto-fill! c))
       (proto-each! c
         (fn (_ type p n)
-          (guard (e (when (%live? c) (%leave! c 1 (Str8 append "x-tmux: " (%error-text e)))))
+          (guard (e (when (%live? c) (%leave! c 1 (Str8 append "x-tmux: " (Err text e)))))
             (%message! c type p n))))
       ((fn (_ s)
          (unless (null? s) (do (%enter! s) (set! %client ())))
          (%drop! c))
        (%session-of c)))))
-
-(def %error-text
-  (fn (_ e)
-    (guard (e2 "an internal error")
-      (if (Err engine? e) (Str8 append (Err %str (Err code-of e)) ": " (Err %str (Err subject-of e))) (e msg)))))
 
 ; --- the loop -----------------------------------------------------------
 
