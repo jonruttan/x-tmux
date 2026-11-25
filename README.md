@@ -454,6 +454,11 @@ commands:
 
     make test     the suite
     make check    the suite against tests/contract/known-failures.txt
+    make card     docs/card.md: its format and its programs
+
+[docs/card.md](docs/card.md) is the card: the command line, the keys, the
+commands, the options and the formats, in tables and programs that `make
+card` runs against a server of their own.
 
 `tests/specs/01-screen` pins the reference against what tmux 3.8 shows
 for the same bytes; `02-compiled` holds the compiled engine to the
