@@ -6,9 +6,10 @@ A terminal multiplexer written in
 [x-lang](https://github.com/jonruttan/x-lang), after tmux, loaded as a
 lang.
 
-    x -l tmux -- [COMMAND [ARGS]]
+    x -l tmux -- [OPTIONS] [COMMAND [ARGS]]
 
-    x -l tmux -- new        # a session; C-b d detaches
+    x -l tmux               # a session; C-b d detaches
+    x -l tmux -- --help     # the options and the commands
     x -l tmux -- ls         # the sessions the server keeps
     x -l tmux -- attach     # back into one
 

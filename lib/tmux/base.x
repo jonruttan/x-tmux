@@ -18,8 +18,6 @@
   command-parse command-read command-list command-words command-find command-matches command-flag
   key-read key-name key-bytes format-expand format-time format-true? capture-range capture-lines)
 
-(def tmux-version "0.1.0")
-
 (import tmux/vt vt-make vt-make-history vt-feed! vt-render! vt-out vt-cursor vt-size vt-origin! vt-touch!
   vt-carry vt-history vt-history-row vt-history-attrs vt-view
   vt-row vt-attrs vt-compiled? vt-feed-pure! vt-render-pure!
@@ -34,4 +32,4 @@
 (import tmux/keys key-read key-name key-bytes)
 (import tmux/format format-expand format-time format-true?)
 (import tmux/capture capture-range capture-lines)
-(import tmux/cli tmux-main)
+(import tmux/cli tmux-main tmux-version)

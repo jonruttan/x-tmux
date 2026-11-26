@@ -3,7 +3,9 @@
 ## Run
 
 ```sh
-x -l tmux -- new                  # a session, shown here; C-b d detaches
+x -l tmux                         # a session, shown here; C-b d detaches
+x -l tmux -- --help               # the options and the commands
+x -l tmux -- new                  # a session, as with no command
 x -l tmux -- new -d -s NAME       # a session made and not shown
 x -l tmux -- ls                   # the sessions the server keeps
 x -l tmux -- attach [-t NAME]     # back into one

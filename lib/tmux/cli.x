@@ -32,6 +32,7 @@
 (module tmux/cli)
 
 (import x/sys/posix)
+(import x/sys/opts)
 (import x/sys/gc)
 (import tmux/vt vt-make vt-feed! vt-render! vt-row vt-cursor vt-feed-pure! vt-render-pure!
   vt-feed-compiled! vt-render-compiled! vt-adopt!)
@@ -130,11 +131,35 @@
     (ptr-call %c-write 1 (str->ptr (first ex)) (rest ex))
     0))
 
-(def %usage
-  (fn (_)
-    (%write 2 (Str8 append "usage: x -l tmux -- [-L NAME | -S PATH] [-f FILE] [COMMAND [FLAGS] [ARGUMENTS]]\n"
-                "       x -l tmux -- vt check|bench|dump FILE | vt exercise SEED N\n"))
-    2))
+(def tmux-version "0.1.0")
+
+; The options before the command, and the help: one declaration, so an
+; option cannot be taken and left out of the help.  The command's own
+; flags follow it and are the command's, so the parse stops at the first
+; operand.
+(def tmux-options
+  (Opts declare "x -l tmux --" "[OPTIONS] [COMMAND [FLAGS] [ARGUMENTS]]"
+    "A terminal multiplexer, after tmux: sessions of windows of panes, each a\nshell, kept by a server while no terminal shows them.\n\nWith no command, a new session.  In a session the prefix is C-b: C-b d\ndetaches, C-b : asks for a command; the README lists the keys."
+    (list (Opts arg "-L" "NAME" "Socket $TMUX_TMPDIR/x-tmux-UID/NAME; NAME is default")
+          (Opts arg "-S" "PATH" "The socket by its path, in place of -L's")
+          (Opts arg "-f" "FILE" "Commands a new server reads, not tmux.conf's; repeatable")
+          (Opts flag "-V" "--version" "Print the version and exit")
+          (Opts flag "-h" "--help" "Print this help and exit")
+          (Opts text "")
+          (Opts text "Commands, as tmux's:")
+          (Opts text "\tnew-session, new [-d] [-s NAME]\t\tMade and shown; -d: made only")
+          (Opts text "\tattach-session, attach, a [-t NAME]\tA session shown here")
+          (Opts text "\tlist-sessions, ls\t\t\tThe sessions the server keeps")
+          (Opts text "\tkill-server\t\t\t\tEnd the sessions and the server")
+          (Opts text "\tany other command x-tmux runs\t\tSent to the server and run there")
+          (Opts text "")
+          (Opts text "The screen engine's tools:")
+          (Opts text "\tvt check FILE\t\tFeed FILE to both engines, compared each read")
+          (Opts text "\tvt bench FILE\t\tFeed and render FILE with each engine, timed")
+          (Opts text "\tvt dump FILE\t\tFILE on a 24x80 screen: its rows and cursor")
+          (Opts text "\tvt exercise SEED N\tN random operations as bytes, on standard output"))))
+
+(def %usage (fn (_) (%write 2 (Opts usage tmux-options)) 2))
 
 (def %one-of? (fn (_ s names) (List any? (fn (_ n) (str=? s n)) names)))
 
@@ -143,6 +168,12 @@
   (fn (_ name)
     (def dir ((fn (_ d) (if (if (null? d) #t (= (Str8 length d) 0)) "/tmp" d)) (Sys getenv "TMUX_TMPDIR")))
     (Str8 append dir "/x-tmux-" (%num (Sys getuid)) "/" name)))
+
+; The socket the options name: -S PATH, else -L NAME, NAME default.
+(def %path
+  (fn (_ o)
+    (def given (Opts value o "-S"))
+    (if (null? given) (%socket (Opts value o "-L" "default")) given)))
 
 ; The value of FLAG among a command's OPS, or nil; with no value, whether
 ; it is there.
@@ -180,31 +211,32 @@
           (list "~/.config/tmux/tmux.conf")))
       (List map (fn (_ f) (pair f #f)) given))))
 
-; The command line run; answers the exit status.
+; The command line run; answers the exit status.  The options lead, and
+; the parse stops at the command, whose own flags are its own.
 (def tmux-main
-  (fn (_ ops)
+  (fn (_ argv)
     (%resolve!)
-    (def arg (fn (_ i) (if (< i (List length ops)) (List ref i ops) ())))
     ; the launcher pipes the program to the engine on fd 0 and parks the
     ; user's terminal on fd 3, as x-ash and the REPL reclaim it
     (guard (e ()) (do (Sys dup2 3 0) (Sys close 3)))
-    (if (if (str=? (first ops) "vt") (not (null? (arg 2))) #f)
-      (match
-        ((str=? (arg 1) "check") (%check (arg 2)))
-        ((str=? (arg 1) "bench") (%bench (arg 2)))
-        ((str=? (arg 1) "dump") (%dump (arg 2)))
-        ((if (str=? (arg 1) "exercise") (not (null? (arg 3))) #f) (%exercise (%int (arg 2)) (%int (arg 3))))
-        (#t (%usage)))
-      ; the socket and the files read from the options before the command,
-      ; new-session when there is none, as tmux's
-      ((fn (self ops path files)
-         (def valued (fn (_ o) (if (str=? (first ops) o) (not (null? (rest ops))) #f)))
-         (match
-           ((null? ops) (%command path (%config-files files) (list "new-session")))
-           ((valued "-S") (self (rest (rest ops)) (first (rest ops)) files))
-           ((valued "-L") (self (rest (rest ops)) (%socket (first (rest ops))) files))
-           ((valued "-f") (self (rest (rest ops)) path (List append files (list (first (rest ops))))))
-           (#t (%command path (%config-files files) ops))))
-       ops (%socket "default") ()))))
+    (def o (Opts parse-leading tmux-options argv))
+    (def ops (Opts operands o))
+    (def arg (fn (_ i) (if (< i (List length ops)) (List ref i ops) ())))
+    (match
+      ((Opts on? o "-h") (do (%write 1 (Opts usage tmux-options)) 0))
+      ((Opts on? o "-V") (do (%write 1 (Str8 append "x-tmux " tmux-version "\n")) 0))
+      ((not (null? (Opts unknown o)))
+        (do (%write 2 (Str8 append "tmux: unknown option " (Opts unknown o) "\n"))
+            (%usage)))
+      ((null? ops) (%command (%path o) (%config-files (Opts values o "-f")) (list "new-session")))
+      ((str=? (first ops) "vt")
+        (match
+          ((null? (arg 2)) (%usage))
+          ((str=? (arg 1) "check") (%check (arg 2)))
+          ((str=? (arg 1) "bench") (%bench (arg 2)))
+          ((str=? (arg 1) "dump") (%dump (arg 2)))
+          ((if (str=? (arg 1) "exercise") (not (null? (arg 3))) #f) (%exercise (%int (arg 2)) (%int (arg 3))))
+          (#t (%usage))))
+      (#t (%command (%path o) (%config-files (Opts values o "-f")) ops)))))
 
-(provide tmux/cli tmux-main)
+(provide tmux/cli tmux-main tmux-version)
