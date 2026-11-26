@@ -2,7 +2,7 @@
 ;
 ; ## lib/tmux/run.x -- the entry
 ;
-; @description `x -l tmux -- [COMMAND [ARGS]]`.
+; @description `x -l tmux -- [OPTIONS] [COMMAND [ARGS]]`; with no command, a new session.
 ; @author [Jon Ruttan](jonruttan@gmail.com)
 ; @copyright 2026 Jon Ruttan
 ; @license MIT No Attribution (MIT-0)
@@ -12,11 +12,17 @@
 (set! %lang-name "tmux")
 (set! %repl-prompt "tmux> ")
 
+; The flags x-os's launcher passes ahead of the operands, the engine's
+; and not the program's.
+(def %engine-flag?
+  (fn (_ a) (List any? (fn (_ f) (str=? a f)) (list "--batch" "--quiet" "--no-color"))))
+(def %operands
+  (fn (self l) (if (if (null? l) #f (%engine-flag? (first l))) (self (rest l)) l)))
+
 ; The operands: what follows the "--" after the launcher's own options.
-; With none the session goes on to the REPL.
+; With none, a new session, as tmux's.
 (def main
   (fn (_)
-    (let ((ops (rest (Sys args (lit program)))))
-      (unless (null? ops) (Sys exit (tmux-main ops))))))
+    (Sys exit (tmux-main (%operands (rest (Sys args (lit program))))))))
 
 (provide tmux/run main)
