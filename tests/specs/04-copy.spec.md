@@ -519,7 +519,7 @@ numbers set before each read in place of the clock.
 ### each row kept has the time of the read that kept it; a resize keeps them; ED 3 empties the history
 
 ```tmux
-(import tmux/vt vt-now! vt-history-time)
+(import vt/vt vt-now! vt-history-time)
 (do (def h (vt-make 24 80))
     (spec-feed! vt-feed-pure! (vt-now! h 1000) (spec-lines 1 30))
     (spec-feed! vt-feed-pure! (vt-now! h 2000) (Str8 append "\r\n" (spec-lines 31 40)))
@@ -533,7 +533,7 @@ numbers set before each read in place of the clock.
 ### copy mode's top row's time: none at the bottom, where the top row is the screen's
 
 ```tmux
-(import tmux/vt vt-now!)
+(import vt/vt vt-now!)
 (import tmux/copy copy-top-time)
 (do (def h (vt-make 24 80))
     (spec-feed! vt-feed-pure! (vt-now! h 1000) (spec-lines 1 30))

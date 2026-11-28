@@ -255,7 +255,9 @@ filtering, help and the editor of tmux's buffer mode are not here.
 
 ## The screen
 
-`tmux/vt` is the engine in x, the reference.  `tmux/vt-jit` compiles the
+Each pane's screen is kept by the library
+[x-lib-vt](https://github.com/jonruttan/x-lib-vt), which `bundle.xon`
+requires.  `vt/vt` is the engine in x, the reference.  `vt/jit` compiles the
 same engine with x-lang's assembler lane, proves it against the
 reference on a random exercise of every sequence the screen reads, and
 adopts it; where there is no JIT, or the two disagree, the reference
@@ -461,10 +463,9 @@ commands:
 commands, the options and the formats, in tables and programs that `make
 card` runs against a server of their own.
 
-`tests/specs/01-screen` pins the reference against what tmux 3.8 shows
-for the same bytes; `02-compiled` holds the compiled engine to the
-reference, read by read, on exercises fed in reads that end inside
-sequences; `03-layout` holds the layout to the pane sizes tmux 3.8
+The screen engine's specs are x-lib-vt's: what tmux 3.8 shows for the
+same bytes, and the compiled engine held to the reference read by read.
+`tests/specs/03-layout` holds the layout to the pane sizes tmux 3.8
 reports for the same splits, kills, resizes, swaps, rotations, preset
 layouts and window sizes, and the pane an arrow picks to tmux's;
 `04-copy` holds copy mode's moves to the

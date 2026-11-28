@@ -23,7 +23,7 @@
 ; and the `vt` commands that exercise the screen's engine:
 ;
 ;   vt check FILE        FILE fed in 4096-byte reads to a screen by
-;                         tmux/vt's engine and to one by the compiled
+;                         vt/vt's engine and to one by the compiled
 ;                         engine, compared after each read
 ;   vt bench FILE         FILE fed and rendered by each engine, timed
 ;   vt dump FILE          FILE fed to a 24x80 screen, its rows and cursor
@@ -34,9 +34,9 @@
 (import x/sys/posix)
 (import x/sys/opts)
 (import x/sys/gc)
-(import tmux/vt vt-make vt-feed! vt-render! vt-row vt-cursor vt-feed-pure! vt-render-pure!
+(import vt/vt vt-make vt-feed! vt-render! vt-row vt-cursor vt-feed-pure! vt-render-pure!
   vt-feed-compiled! vt-render-compiled! vt-adopt!)
-(import tmux/vt-jit vt-jit-make vt-exercise vt-same?)
+(import vt/jit vt-jit-make vt-exercise vt-same?)
 (import tmux/client tmux-new tmux-attach tmux-ask tmux-command)
 
 (def %clock (prim-ref (lit sys) (lit clock)))
@@ -57,7 +57,7 @@
 (def %say (fn (_ s) (%write 1 s)))
 
 ; FILE's reads, each (EACH ADDRESS LENGTH), NUL-terminated.  x collects
-; only when asked, and tmux/vt's engine allocates as it goes, so the heap
+; only when asked, and vt/vt's engine allocates as it goes, so the heap
 ; is collected every sixteenth read.
 (def %reads
   (fn (_ path each)

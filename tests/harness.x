@@ -61,7 +61,7 @@
         (List map (fn (_ r) (list r (trim (vt-row h r)))) (List range 0 (first (vt-size h)))))
       (list (list 'cursor (first (vt-cursor h)) (rest (vt-cursor h)))))))
 
-; TEXT's screen by tmux/vt's engine, as spec-rows reads it.
+; TEXT's screen by vt/vt's engine, as spec-rows reads it.
 (def spec-vt (fn (_ text) (spec-rows (spec-screen vt-feed-pure! text))))
 
 ; ROW's attribute bytes, the first N.

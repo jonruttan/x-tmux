@@ -70,10 +70,10 @@
 (import x/sys/host)
 (import x/sys/date)
 (import tmux/format format-expand format-time format-true?)
-(import tmux/vt vt-make vt-make-history vt-feed! vt-render! vt-out vt-cursor vt-size vt-origin! vt-touch! vt-carry
+(import vt/vt vt-make vt-make-history vt-feed! vt-render! vt-out vt-cursor vt-size vt-origin! vt-touch! vt-carry
   vt-cursor-shown? vt-cursor-keys? vt-bracketed? vt-history vt-now! vt-alternate)
 (import tmux/capture capture-range capture-lines)
-(import tmux/vt-jit vt-jit!)
+(import vt/jit vt-jit!)
 (import tmux/copy copy-enter copy-resize copy-view copy-origin! copy-touch! copy-cursor copy-position
   copy-top-time copy-do copy-selecting? copy-text copy-marks copy-vi? copy-key copy-recall copy-searched copy-search
   copy-incremental copy-matches copy-marked? copy-jump)
