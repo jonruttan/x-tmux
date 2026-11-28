@@ -2,12 +2,13 @@
 
 (name "tmux")
 
-; Self-contained: this bundle depends on nothing but the platform.
-;
 ; Helium, plus exactly the libraries this bundle imports and nothing
 ; ambient: a screen is bytes and words, none of the tower.
 (dialect he)
 
-(requires-release "v0.60.0")
+(requires-release "v0.65.0")
+
+; Each pane's screen is kept by the screen emulator library.
+(requires-bundle "vt" "v0.1.0" "jonruttan/x-lib-vt")
 
 (entry run)

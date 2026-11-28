@@ -29,8 +29,8 @@
 
 (module tmux/tree)
 
-(import tmux/vt vt-make vt-feed!)
-(import tmux/width char-width)
+(import vt/vt vt-make vt-feed!)
+(import vt/width char-width)
 (import x/core/doors str-byte-len str-byte-sub str->ptr ptr-ref ptr-set! str-make int/)
 (import tmux/num tmux-num)
 

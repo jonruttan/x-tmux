@@ -34,7 +34,7 @@
 (import x/core/doors str-make str->ptr ptr->int int->ptr ptr-ref ptr-set! ptr-call str-byte-len str-byte-sub
   ffi-dlopen ffi-dlsym)
 
-; libc, looked up when a connection is made, as tmux/vt looks it up when
+; libc, looked up when a connection is made, as vt/vt looks it up when
 ; a screen is: a handle is a fact of the process, and every message sent
 ; or read calls these.
 (def %c-write ()) (def %c-read ()) (def %c-memmove ()) (def %c-memcpy ())

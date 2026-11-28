@@ -31,7 +31,7 @@
 
 (module tmux/capture)
 
-(import tmux/vt vt-line vt-line-attr vt-line-marks vt-history vt-size vt-style-word)
+(import vt/vt vt-line vt-line-attr vt-line-marks vt-history vt-size vt-style-word)
 (import x/core/doors ptr-ref ptr-set! str-make str->ptr str-byte-len str-byte-sub)
 
 (import tmux/num tmux-num)

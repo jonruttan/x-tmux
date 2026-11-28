@@ -34,10 +34,10 @@
 ;
 ; A copy: (SNAP VIEW OFF CX CY LASTCX LASTSX EXIT SEL VI SEARCH COUNT
 ; ORIGIN LAST JUMP RECT), SNAP the copied screen, VIEW what it shows at OFF
-; (tmux/vt's vt-view), EXIT whether a page down to the bottom ends the
+; (vt/vt's vt-view), EXIT whether a page down to the bottom ends the
 ; mode, as tmux's copy-mode -e, SEL the selection's other end, (LINE COL
 ; ROWS), or nil, and VI whether the keys are vi's.  LINE counts from the
-; history's oldest row, as tmux/vt's vt-line; ROWS is whether whole rows
+; history's oldest row, as vt/vt's vt-line; ROWS is whether whole rows
 ; are selected.  SEARCH is (TEXT REGEX UP), what a search again looks for
 ; and which way, or nil; COUNT (N . MORE), the matches the last search
 ; counted, N -1 when it did not count them, MORE whether it stopped short,
@@ -50,7 +50,7 @@
 (module tmux/copy)
 
 (import x/sys/posix)
-(import tmux/vt vt-carry vt-size vt-cursor vt-origin! vt-touch! vt-history vt-history-time vt-view
+(import vt/vt vt-carry vt-size vt-cursor vt-origin! vt-touch! vt-history vt-history-time vt-view
   vt-row-length vt-line vt-line-length vt-line-marks vt-line-wrapped? vt-line-into! vt-line-cell)
 
 (import x/core/doors ptr-ref ptr-set! ptr-ref-word ptr-set-word! ptr-call ffi-dlsym ffi-dlopen str-make str->ptr
@@ -145,7 +145,7 @@
 ; What a copy shows, where its cursor is as (ROW . COL), and the position
 ; tmux shows at the pane's top right.
 (def copy-view (fn (_ c) (%view c)))
-; C put at terminal row ROW, column COL, as tmux/vt's vt-origin!, and every
+; C put at terminal row ROW, column COL, as vt/vt's vt-origin!, and every
 ; row of its view marked to be drawn.
 (def copy-origin! (fn (_ c row col) (vt-origin! (%snap c) row col) (vt-origin! (%view c) row col) c))
 (def copy-touch! (fn (_ c) (vt-touch! (%view c)) c))
